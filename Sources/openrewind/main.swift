@@ -29,7 +29,7 @@ Options:
   --home DIR      Data folder (default ~/.openrewind, or $OPENREWIND_HOME)
 
 Env:
-  OPENREWIND_EXCLUDE   Comma list of app names to never record
+  OPENREWIND_EXCLUDE   Comma list of extra app names to blur (on top of Blocked Apps in Settings)
   OPENREWIND_WHISPER_MODEL   Path to a ggml Whisper model
   (The old OPENSCREEN_ names still work.)
 """

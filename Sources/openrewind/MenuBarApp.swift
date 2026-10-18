@@ -89,6 +89,20 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         registerHotKey(Shortcut.load(defaults))
         Updater.shared.start()
         updateIcon()
+        if !BlocklistStore.shared.onboardingDone { showSetup() }
+    }
+
+    /// The first-run setup; ends in the guided tour if the user asks for it.
+    @objc private func showSetup() {
+        Onboarding.show { [weak self] tour in if tour { self?.overlay.showTutorial() } }
+    }
+
+    @objc private func showTutorial() { overlay.showTutorial() }
+
+    @objc private func showBlockedApps() {
+        SetupWindows.shared.show("blocked", title: "Blocked Apps & Sites", size: NSSize(width: 600, height: 720), resizable: true) {
+            BlockedAppsView()
+        }
     }
 
     // Build the menu fresh each time it opens, so it always shows the live state.
@@ -216,6 +230,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func settingsMenu() -> NSMenu {
         let m = NSMenu()
+        m.addItem(action("Blocked Apps & Sites…", #selector(showBlockedApps)))
+        m.addItem(.separator())
         let sc = Shortcut.load(defaults)
         let shortcut = NSMenuItem(title: "Timeline Shortcut: \(sc.label)", action: nil, keyEquivalent: "")
         shortcut.image = NSImage(systemSymbolName: "keyboard", accessibilityDescription: nil)
@@ -266,6 +282,9 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let login = action("Launch at Login", #selector(toggleLogin))
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         m.addItem(login)
+        m.addItem(.separator())
+        m.addItem(action("Show Tutorial", #selector(showTutorial)))
+        m.addItem(action("Run Setup Again…", #selector(showSetup)))
         return m
     }
 
@@ -419,8 +438,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openPermission(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let p = Permission(rawValue: raw) else { return }
-        p.request()
-        NSWorkspace.shared.open(p.settingsURL)
+        PermissionHelper.shared.show(p)
     }
 
     @objc private func openPrivacySettings() {
@@ -643,8 +661,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openScreenSettings() {
-        Capture.requestScreenPermission()
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+        PermissionHelper.shared.show(.screen)
     }
 
     @objc private func openTimeline() { overlay.show() }
