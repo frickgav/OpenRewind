@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The Windows app: tray icon, screen + audio capture, OCR, timeline overlay. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- 19041 = Windows 10 2004: WinRT OCR and capture exclusion for our own overlay. -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>false</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>OpenRewind</RootNamespace>
+    <AssemblyName>OpenRewind</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- Per-monitor DPI: screenshots come out at real pixel size on scaled displays. -->
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationIcon>OpenRewind.ico</ApplicationIcon>
+    <Version>0.2.0</Version>
+    <Product>OpenRewind</Product>
+    <Copyright>MIT License</Copyright>
+    <!-- Lets this build on Linux/macOS too (CI and contributors); it only runs on Windows. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+    <PackageReference Include="NAudio.WinMM" Version="2.2.1" />
+    <PackageReference Include="Interop.UIAutomationClient" Version="10.19041.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenRewind.Core\OpenRewind.Core.csproj" />
+  </ItemGroup>
+
+</Project>

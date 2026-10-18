@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "openscreen",
+    name: "openrewind",
     platforms: [.macOS(.v14)],
     targets: [
         .executableTarget(
-            name: "openscreen",
-            path: "Sources/openscreen",
+            name: "openrewind",
+            path: "Sources/openrewind",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
                 .linkedFramework("ScreenCaptureKit"),

@@ -3,10 +3,10 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDevelopmentRegion</key><string>en</string>
-    <key>CFBundleDisplayName</key><string>OpenScreen</string>
-    <key>CFBundleName</key><string>OpenScreen</string>
-    <key>CFBundleExecutable</key><string>OpenScreen</string>
-    <key>CFBundleIdentifier</key><string>ai.agilityresources.openscreen</string>
+    <key>CFBundleDisplayName</key><string>OpenRewind</string>
+    <key>CFBundleName</key><string>OpenRewind</string>
+    <key>CFBundleExecutable</key><string>OpenRewind</string>
+    <key>CFBundleIdentifier</key><string>ai.agilityresources.openrewind</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
@@ -16,13 +16,13 @@
     <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSHumanReadableCopyright</key><string>openscreen</string>
+    <key>NSHumanReadableCopyright</key><string>OpenRewind</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>openscreen records your microphone so you can search and replay what was said. Audio stays on this Mac.</string>
+    <string>OpenRewind records your microphone so you can search and replay what was said. Audio stays on this Mac.</string>
     <key>NSAudioCaptureUsageDescription</key>
-    <string>OpenScreen records the sound your Mac plays (videos, calls) so you can search and replay it. Audio stays on this Mac.</string>
+    <string>OpenRewind records the sound your Mac plays (videos, calls) so you can search and replay it. Audio stays on this Mac.</string>
     <key>NSScreenCaptureUsageDescription</key>
-    <string>openscreen records your screen and system audio so you can scroll back in time. Recordings stay on this Mac.</string>
+    <string>OpenRewind records your screen and system audio so you can scroll back in time. Recordings stay on this Mac.</string>
     <key>NSAppTransportSecurity</key>
     <dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict>
