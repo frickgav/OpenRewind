@@ -7,33 +7,34 @@ on:
     paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", ".github/workflows/mac.yml"]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
-      # Signs with the stable certificate from the MACOS_CERTIFICATE_* secrets (see "Signing" in the
-      # README). Without them (forks, or before they're added) a throwaway certificate still tests the path.
-      - name: Load the signing certificate
-        env:
-          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
-          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Branch and PR builds sign with a throwaway certificate. The real one lives only in the
+      # "release" environment, which only the Release workflow on main or a v* tag can open (see
+      # "Signing" in the README), so code nobody has reviewed never runs next to the real key.
+      - name: Load a throwaway signing certificate
         run: |
-          if [ -z "$MACOS_CERTIFICATE_P12" ]; then
-            echo "::notice::MACOS_CERTIFICATE_P12 is not set; signing this build with a throwaway certificate"
-            OUT="$RUNNER_TEMP/throwaway" scripts/make-signing-cert.sh "OpenRewind Throwaway" >/dev/null
-            MACOS_CERTIFICATE_P12="$(cat "$RUNNER_TEMP/throwaway/openrewind-signing.p12.b64")"
-            MACOS_CERTIFICATE_PASSWORD="$(cat "$RUNNER_TEMP/throwaway/password.txt")"
-            export MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD
-          fi
+          OUT="$RUNNER_TEMP/throwaway" scripts/make-signing-cert.sh "OpenRewind Throwaway" >/dev/null
+          MACOS_CERTIFICATE_P12="$(cat "$RUNNER_TEMP/throwaway/openrewind-signing.p12.b64")"
+          MACOS_CERTIFICATE_PASSWORD="$(cat "$RUNNER_TEMP/throwaway/password.txt")"
+          export MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD
           scripts/import-signing-cert.sh
       - name: Build, sign and package
         run: scripts/build-app.sh
+      - name: Remove the signing keychain
+        if: always()
+        run: scripts/import-signing-cert.sh --remove
       - name: Check the signature names the certificate
         run: codesign --display --requirements - dist/OpenRewind.app 2>&1 | grep -E '^designated => .*(certificate (leaf|root)|anchor apple generic)'
       - name: Check the CLI starts
         run: dist/OpenRewind.app/Contents/MacOS/OpenRewind help
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: OpenRewind-mac
           path: dist/*.dmg
