@@ -465,6 +465,8 @@ sealed class TrayApp : ApplicationContext
 
     void UpdateIcon()
     {
+        // The constructor turns recording on before the tray icon exists; it calls this again once it does.
+        if (icon is null) return;
         // NotifyIcon tooltips are limited to 127 characters.
         var tip = PausedUntil is DateTime until ? $"OpenRewind — {Pause.Text(until, DateTime.UtcNow)}"
             : $"OpenRewind — {(engine.ScreenOn ? "Screen on" : "Screen off")} · {(engine.AudioOn ? "Audio on" : "Audio off")}";
