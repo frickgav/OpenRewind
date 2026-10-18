@@ -63,6 +63,15 @@ enum FrameDedup {
 }
 
 final class Recorder {
+    /// UserDefaults key for the screenshot size picked in the menu bar (1.0 = full resolution).
+    static let scaleKey = "snapshotScale"
+
+    /// The menu bar choice, or the config value when none was picked. Read for every screenshot, so a change applies at once.
+    static func snapshotScale(default d: CGFloat) -> CGFloat {
+        let v = UserDefaults.standard.double(forKey: scaleKey)
+        return v > 0 ? CGFloat(min(v, 1)) : d
+    }
+
     let config: Config
     let db: Database
     private var lastThumb: [UInt8]?
@@ -80,7 +89,8 @@ final class Recorder {
         let list = env?.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
             ?? ["1password", "keychain access", "bitwarden", "passwords"]
         // Never record the lock screen or screen saver, whatever the user list says.
-        excluded = Set(list + ["loginwindow", "screensaverengine"])
+        // Nor ourselves: while the timeline is open, frames would only show the desktop behind it.
+        excluded = Set(list + ["loginwindow", "screensaverengine", "openrewind"])
     }
 
     func run() async {
@@ -121,8 +131,11 @@ final class Recorder {
 
         var text = ""
         var source = "ocr"
-        if config.useAccessibility, let pid, pid > 0, let ax = Accessibility.focusedWindowText(pid: pid) {
-            text = ax; source = "accessibility"
+        var url = ""
+        if config.useAccessibility, let pid, pid > 0 {
+            let w = Accessibility.focusedWindow(pid: pid)
+            if let ax = w.text { text = ax; source = "accessibility" }
+            url = w.url ?? ""
         }
         if text.isEmpty { text = OCR.recognize(image) }
         // Pixels moved (cursor blink, animation) but the text is the same: nothing new to search.
@@ -140,12 +153,12 @@ final class Recorder {
         let ts = Time.now()
         let dayDir = config.dataDir.appendingPathComponent(String(ts.prefix(10)))
         try FileManager.default.createDirectory(at: dayDir, withIntermediateDirectories: true)
-        let file = try ImageTools.writeSnapshot(ImageTools.scaled(image, by: config.snapshotScale),
+        let file = try ImageTools.writeSnapshot(ImageTools.scaled(image, by: Recorder.snapshotScale(default: config.snapshotScale)),
                                                 to: dayDir.appendingPathComponent(ts.replacingOccurrences(of: ":", with: "-")))
 
         let id = try db.insert(Frame(id: 0, timestamp: ts, appName: window.appName, windowName: window.windowName,
                                      focused: true, snapshotPath: file.path, text: text, textSource: source,
-                                     hash: Int64(bitPattern: hash)))
+                                     hash: Int64(bitPattern: hash), browserUrl: url))
         lastThumb = thumb; lastText = text; lastKey = key; lastWrite = Date()
         log("frame \(id) \(window.appName) — \(text.count) chars via \(source)")
         return id
