@@ -22,7 +22,9 @@ sealed class TrayApp : ApplicationContext
     {
         this.engine = engine;
         settings = Settings.Load(engine.Config.Home);
-        overlay = new OverlayForm(new TimelineModel(engine.Db));
+        var model = new TimelineModel(engine.Db);
+        model.OpenInBrowser = () => OpenBrowserSearch(model.Query.Trim());
+        overlay = new OverlayForm(model);
         _ = overlay.Handle;  // create it on the UI thread now
 
         if (settings.LocalSearchServer) StartServer();
@@ -215,6 +217,21 @@ sealed class TrayApp : ApplicationContext
         if (engine.ServerOn) engine.StopServer(); else StartServer();
         settings.LocalSearchServer = engine.ServerOn;
         settings.Save();
+    }
+
+    /// The browser search page, with the timeline's query filled in. It needs the local server,
+    /// so pressing O turns the server on (and remembers that, like the Settings switch).
+    void OpenBrowserSearch(string query)
+    {
+        if (!engine.ServerOn)
+        {
+            StartServer();
+            settings.LocalSearchServer = engine.ServerOn;
+            settings.Save();
+        }
+        if (!engine.ServerOn) return;
+        var url = $"http://127.0.0.1:{engine.Config.Port}/";
+        Open(query.Length > 0 ? url + "?q=" + Uri.EscapeDataString(query) : url);
     }
 
     void StartServer()

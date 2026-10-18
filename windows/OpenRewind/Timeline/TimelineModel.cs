@@ -21,6 +21,9 @@ sealed class TimelineModel
     /// The exact time the playhead is on. Follows audio while it plays.
     public DateTime Playhead { get; private set; } = DateTime.UtcNow;
     public DateTime LoadedSince { get; private set; } = DateTime.UtcNow;
+    /// When the timeline was loaded. The bar is laid out against this, not the clock,
+    /// so it holds still while the overlay is open (new screenshots appear on the next open).
+    public DateTime LoadedAt { get; private set; } = DateTime.UtcNow;
 
     // Search.
     public string Query = "";
@@ -32,6 +35,9 @@ sealed class TimelineModel
     public bool ShowHelp;
     /// Where the searched words are on the shown screenshot, as fractions of its size.
     public List<RectangleF> Highlights { get; private set; } = new();
+
+    /// Set by the tray app: opens the browser search page, for the current query if there is one.
+    public Action? OpenInBrowser;
 
     /// Something visible changed; the overlay repaints.
     public event Action? Changed;
@@ -71,7 +77,8 @@ sealed class TimelineModel
     public void Reload(double hours = 24)
     {
         StopAudio();
-        LoadedSince = DateTime.UtcNow.AddHours(-hours);
+        LoadedAt = DateTime.UtcNow;
+        LoadedSince = LoadedAt.AddHours(-hours);
         Frames = Db.TimelineFrames(LoadedSince);
         Audio = Db.TimelineAudio(LoadedSince);
         sessions = TimelineAxis.BuildSessions(Frames, Audio);
@@ -106,8 +113,7 @@ sealed class TimelineModel
         if (date < Frames[0].Time) LoadOlder();
         StopAudio();
         Show(FrameIndex(date));
-        var now = DateTime.UtcNow;
-        Playhead = date > now ? now : date < Frames[0].Time ? Frames[0].Time : date;
+        Playhead = date > LoadedAt ? LoadedAt : date < Frames[0].Time ? Frames[0].Time : date;
         UpdateCaption();
         Notify();
     }

@@ -88,7 +88,7 @@ Copy the app to `/Applications` and open it. It lives in the menu bar:
 - **Open Timeline** (or **⌥⌘T** from anywhere) shows a full-screen overlay.
   Scroll or use ← → to move through time, ⇧ for 1 minute, ↑ ↓ for 10 minutes,
   drag or click the bar, **space** plays the audio at that moment (the picture
-  follows along), **+ / −** zoom, **N** jumps to now, **Esc** closes.
+  follows along), **+ / −** zoom, **N** jumps to now, **O** opens the search page in the browser, **Esc** closes.
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
 - **Settings → Keep Screen / Audio Recordings For**: 1 Day, 1 Week, 1 Month,
