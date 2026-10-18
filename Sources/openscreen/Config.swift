@@ -4,8 +4,8 @@ struct Config {
     var home: URL
     var port: UInt16 = 3031
     var interval: TimeInterval = 2.0
-    /// Max Hamming distance between two frame hashes that still counts as "same screen".
-    var dedupThreshold = 3
+    /// A frame is new when at least this many of the 192x120 thumbnail pixels changed.
+    var minChangedPixels = 4
     /// Snapshot scale (1.0 = full resolution).
     var snapshotScale: CGFloat = 0.5
     var useAccessibility = true
