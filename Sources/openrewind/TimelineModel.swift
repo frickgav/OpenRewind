@@ -30,8 +30,11 @@ final class TimelineModel: ObservableObject {
     var searchWork: DispatchWorkItem?
     /// Set by the overlay: gives the keyboard back to the timeline (so space plays audio again).
     var leaveSearchBox: (() -> Void)?
-    /// Set by the menu bar app: opens the browser search page, for the current query if there is one.
-    var openInBrowser: (() -> Void)?
+    /// Set by the overlay: closes it without giving focus back to the app that was in front.
+    var closeForOpen: (() -> Void)?
+    /// Short message shown for a moment at the top (for example, why O did nothing).
+    @Published var notice: String?
+    private var noticeWork: DispatchWorkItem?
     /// True while the keyboard shortcut card is open.
     @Published var showHelp = false
     /// Where the searched words are on the shown screenshot, as fractions of its size (top-left origin).
@@ -47,6 +50,8 @@ final class TimelineModel: ObservableObject {
     private var imageCache: [Int64: NSImage] = [:]
     private var cacheOrder: [Int64] = []
     var loadedSince = Date()
+    /// "Now" as of the last reload. The bar uses this instead of the clock, so it holds still while open.
+    private(set) var now = Date()
 
     init(db: Database) { self.db = db }
 
@@ -73,6 +78,69 @@ final class TimelineModel: ObservableObject {
         return (f, img)
     }
 
+    /// What "Open" brings back for the shown screenshot.
+    enum OpenTarget {
+        case web(URL)       // a browser tab
+        case file(URL)      // a document the app had open
+        case window         // the app, and its window with the same title if it is still open
+    }
+
+    var currentTarget: OpenTarget? {
+        guard let f = current, !f.appName.isEmpty, f.appName.lowercased() != "openrewind" else { return nil }
+        if let u = URL(string: f.url), let scheme = u.scheme?.lowercased() {
+            if ["http", "https"].contains(scheme) { return .web(u) }
+            if u.isFileURL, FileManager.default.fileExists(atPath: u.path) { return .file(u) }
+        }
+        return appURL(f.appName) == nil ? nil : .window
+    }
+
+    private func appURL(_ name: String) -> URL? {
+        NSWorkspace.shared.runningApplications.first { $0.localizedName == name }?.bundleURL
+            ?? ["/Applications", "/System/Applications", "/System/Applications/Utilities",
+                "/Applications/Utilities", NSHomeDirectory() + "/Applications"]
+                .map { URL(fileURLWithPath: "\($0)/\(name).app") }
+                .first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    /// Go back to this moment: the browser tab, the document, or the app window.
+    func openCurrent() {
+        guard let target = currentTarget, let f = current else {
+            show(notice: "Nothing to open for this moment")
+            return
+        }
+        closeForOpen?()
+        let app = appURL(f.appName)
+        let cfg = NSWorkspace.OpenConfiguration()
+        switch target {
+        case .web(let url), .file(let url):
+            if let app {
+                NSWorkspace.shared.open([url], withApplicationAt: app, configuration: cfg)
+            } else {
+                NSWorkspace.shared.open(url)
+            }
+        case .window:
+            guard let app else { return }
+            let title = f.windowName
+            NSWorkspace.shared.openApplication(at: app, configuration: cfg) { running, _ in
+                guard let pid = running?.processIdentifier else { return }
+                // A freshly launched app needs a moment before its windows exist.
+                for delay in [0.0, 0.6, 1.5] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                        Accessibility.raiseWindow(pid: pid, title: title)
+                    }
+                }
+            }
+        }
+    }
+
+    func show(notice text: String) {
+        notice = text
+        noticeWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.notice = nil }
+        noticeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+    }
+
     /// Audio chunks that cover the playhead (mic and system audio can overlap).
     var audioHere: [TimelineAudio] {
         audio.filter { $0.start <= playhead && playhead < $0.end }
@@ -80,10 +148,11 @@ final class TimelineModel: ObservableObject {
 
     func reload(hours: Double = 24) {
         stopAudio()
-        loadedSince = Date().addingTimeInterval(-hours * 3600)
+        now = Date()
+        loadedSince = now.addingTimeInterval(-hours * 3600)
         frames = db.timelineFrames(since: loadedSince)
         audio = db.timelineAudio(since: loadedSince)
-        sessions = TimelineAxis.sessions(frames: frames, audio: audio)
+        sessions = TimelineAxis.sessions(frames: frames, audio: audio, now: now)
         show(frames.count - 1)
     }
 
@@ -96,7 +165,7 @@ final class TimelineModel: ObservableObject {
         loadedSince = since
         frames = older + frames
         audio = db.timelineAudio(since: since)
-        sessions = TimelineAxis.sessions(frames: frames, audio: audio)
+        sessions = TimelineAxis.sessions(frames: frames, audio: audio, now: now)
         if let keepId, let i = frames.firstIndex(where: { $0.id == keepId }) { index = i }
     }
 
@@ -112,7 +181,7 @@ final class TimelineModel: ObservableObject {
         if date < frames[0].time { loadOlder() }
         stopAudio()
         show(frameIndex(at: date))
-        playhead = max(min(date, Date()), frames.first?.time ?? date)
+        playhead = max(min(date, now), frames.first?.time ?? date)
         updateCaption()
     }
 

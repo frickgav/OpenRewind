@@ -18,6 +18,15 @@ static class Capture
     {
         var hwnd = Native.GetForegroundWindow();
         if (hwnd == IntPtr.Zero) return new("", "", IntPtr.Zero, null);
+        var path = WindowExe(hwnd);
+        var name = path == null ? "" : AppName(path);
+        if (path != null && name.Length > 0) AppPaths[name] = path;
+        return new(name, Native.WindowTitle(hwnd), hwnd, path);
+    }
+
+    /// Exe path of the app that owns a window.
+    public static string? WindowExe(IntPtr hwnd)
+    {
         Native.GetWindowThreadProcessId(hwnd, out var pid);
         var path = Native.ProcessPath(pid);
         // Store apps live inside ApplicationFrameHost; the real app owns a child window.
@@ -32,9 +41,7 @@ static class Capture
             }, IntPtr.Zero);
             if (inner != 0 && Native.ProcessPath(inner) is string p) path = p;
         }
-        var name = path == null ? "" : AppName(path);
-        if (path != null && name.Length > 0) AppPaths[name] = path;
-        return new(name, Native.WindowTitle(hwnd), hwnd, path);
+        return path;
     }
 
     public static bool IsOwnWindow(ActiveWindow w)
@@ -45,7 +52,7 @@ static class Capture
     }
 
     /// Friendly name from the exe's version info ("Google Chrome"), else the file name ("chrome").
-    static string AppName(string path) => nameCache.GetOrAdd(path, p =>
+    public static string AppName(string path) => nameCache.GetOrAdd(path, p =>
     {
         try
         {

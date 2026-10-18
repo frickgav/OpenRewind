@@ -74,7 +74,13 @@ sealed class Recorder
 
         var text = "";
         var source = "ocr";
-        if (config.UseAccessibility && UiaText.FocusedWindowText(window.Hwnd) is string ax) { text = ax; source = "accessibility"; }
+        var url = "";
+        if (config.UseAccessibility)
+        {
+            var w = UiaText.FocusedWindow(window.Hwnd, UiaText.IsBrowser(window.ExePath));
+            if (w.Text is string ax) { text = ax; source = "accessibility"; }
+            url = w.Url ?? "";
+        }
         if (text.Length == 0) text = Ocr.Recognize(image);
         // Pixels moved (cursor blink, animation) but the text is the same: nothing new to search.
         if (key == lastKey && text == lastText && !heartbeatDue)
@@ -94,7 +100,7 @@ sealed class Recorder
         var file = Path.Combine(dayDir, ts.Replace(':', '-') + ".jpg");
         using (var small = ImageTools.Scaled(image, config.SnapshotScale)) ImageTools.WriteJpeg(small, file);
 
-        var id = db.Insert(new Frame(0, ts, window.AppName, window.WindowName, true, file, text, source, unchecked((long)hash)));
+        var id = db.Insert(new Frame(0, ts, window.AppName, window.WindowName, true, file, text, source, unchecked((long)hash), url));
         lastThumb = thumb; lastText = text; lastKey = key; lastWrite = DateTime.UtcNow;
         Log.Write($"frame {id} {window.AppName} — {text.Length} chars via {source}");
         return id;
