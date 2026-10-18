@@ -16,7 +16,10 @@ final class OverlayController {
     private var scrollAccum: CGFloat = 0
     private var previousApp: NSRunningApplication?
 
-    init(db: Database) { model = TimelineModel(db: db) }
+    init(db: Database) {
+        model = TimelineModel(db: db)
+        model.leaveSearchBox = { [weak self] in self?.panel?.makeFirstResponder(nil) }
+    }
 
     var isVisible: Bool { panel?.isVisible == true }
 
@@ -41,6 +44,10 @@ final class OverlayController {
         p.orderFrontRegardless()
         p.makeKey()
         NSAnimationContext.runAnimationGroup { $0.duration = 0.15; p.animator().alphaValue = 1 }
+        // AppKit gives the first text field the keyboard on open. The timeline should have it,
+        // so arrows, space and +/- work at once; ⌘F or / moves into the search box.
+        p.makeFirstResponder(nil)
+        DispatchQueue.main.async { p.makeFirstResponder(nil) }
         installMonitor()
     }
 

@@ -78,3 +78,27 @@ extension Database {
         return out
     }
 }
+
+extension Database {
+    /// Time of the oldest screenshot or audio clip still stored.
+    func oldestRecording() -> Date? {
+        lock.lock(); defer { lock.unlock() }
+        var st: OpaquePointer?
+        let sql = "SELECT MIN(t) FROM (SELECT MIN(timestamp) AS t FROM frames UNION ALL SELECT MIN(timestamp) FROM audio_chunks)"
+        guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(st) }
+        guard sqlite3_step(st) == SQLITE_ROW else { return nil }
+        return Time.iso.date(from: col(st, 0))
+    }
+}
+
+/// Total size of everything in a folder (screenshots, audio, database).
+func folderSize(_ url: URL) -> Int64 {
+    guard let e = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .isRegularFileKey]) else { return 0 }
+    var total: Int64 = 0
+    for case let f as URL in e {
+        let v = try? f.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .isRegularFileKey])
+        if v?.isRegularFile == true { total += Int64(v?.totalFileAllocatedSize ?? 0) }
+    }
+    return total
+}

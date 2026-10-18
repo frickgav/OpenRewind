@@ -241,7 +241,7 @@ struct TimelineView: View {
                 Button { zoom(0.5) } label: { Image(systemName: "plus.magnifyingglass") }.buttonStyle(.plain)
                 Button { zoom(2) } label: { Image(systemName: "minus.magnifyingglass") }.buttonStyle(.plain)
             }
-            TimelineBar(model: model).frame(height: 62)
+            TimelineBar(model: model).frame(height: 102)
             Text("/ or ⌘F search  ·  ⌘G next match  ·  scroll or ← → to move  ·  ⇧ for 1 minute  ·  drag the bar  ·  space plays audio  ·  + − zoom  ·  N now  ·  esc close")
                 .font(.system(size: 11)).foregroundColor(.white.opacity(0.4))
         }
@@ -262,75 +262,146 @@ struct TimelineView: View {
     }
 }
 
-/// Horizontal strip: a tick per frame (colored by app), audio below, playhead in the middle.
+/// The timeline bar. Long breaks are shrunk to a small marker (TimelineAxis), each stretch of
+/// one app is a solid colored block, audio sits on two thin lanes, and clock times run along the bottom.
 struct TimelineBar: View {
     @ObservedObject var model: TimelineModel
-    @State private var dragStart: Date?
+    @State private var dragStartV: TimeInterval?
+
+    // The top 20 pt hold the playhead time bubble.
+    private let appY: CGFloat = 38, appH: CGFloat = 22
+    private let micY: CGFloat = 64, sysY: CGFloat = 71, laneH: CGFloat = 4
+    private let tickY: CGFloat = 80
 
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width
-            let start = model.playhead.addingTimeInterval(-model.span / 2)
-            let end = model.playhead.addingTimeInterval(model.span / 2)
-            let x = { (d: Date) -> CGFloat in CGFloat(d.timeIntervalSince(start) / model.span) * w }
+            let axis = model.axis
+            let center = axis.v(model.playhead)
+            let v0 = center - model.span / 2, v1 = center + model.span / 2
+            let x = { (d: Date) -> CGFloat in CGFloat((axis.v(d) - v0) / model.span) * w }
             ZStack(alignment: .topLeading) {
-                RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06))
+                RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.06)).padding(.top, 20)
                 Canvas { ctx, size in
-                    // Future (after now) is shaded.
-                    let nowX = x(Date())
-                    if nowX < size.width {
-                        ctx.fill(Path(CGRect(x: max(0, nowX), y: 0, width: size.width - max(0, nowX), height: size.height)),
-                                 with: .color(.black.opacity(0.35)))
+                    let startDate = axis.date(v0), endDate = axis.date(v1)
+                    drawApps(ctx, size: size, from: startDate, to: endDate, x: x)
+                    drawAudio(ctx, size: size, from: startDate, to: endDate, x: x)
+                    drawBreaks(ctx, axis: axis, size: size, x: x)
+                    drawTicks(ctx, axis: axis, size: size, from: startDate, to: endDate, x: x)
+                    for h in model.hits where h.time >= startDate && h.time <= endDate {
+                        ctx.fill(Path(CGRect(x: x(h.time) - 1.5, y: 24, width: 3, height: 10)), with: .color(.yellow))
                     }
-                    let lo = model.frameIndex(at: start)
-                    let hi = model.frameIndex(at: end)
-                    if !model.frames.isEmpty {
-                        for i in lo...hi {
-                            let f = model.frames[i]
-                            let fx = x(f.time)
-                            guard fx >= 0, fx <= size.width else { continue }
-                            ctx.fill(Path(CGRect(x: fx - 1, y: 8, width: 2, height: 26)),
-                                     with: .color(Color(TimelineModel.color(for: f.appName)).opacity(0.85)))
-                        }
-                    }
-                    for a in model.audio where a.end > start && a.start < end {
-                        let ax = max(0, x(a.start)), bx = min(size.width, x(a.end))
-                        let y: CGFloat = a.isInput ? 40 : 48
-                        ctx.fill(Path(roundedRect: CGRect(x: ax, y: y, width: max(2, bx - ax), height: 6), cornerRadius: 3),
-                                 with: .color(a.isInput ? Color.orange.opacity(0.8) : Color.green.opacity(0.8)))
-                    }
-                    // Search matches.
-                    for h in model.hits where h.time >= start && h.time <= end {
-                        let hx = x(h.time)
-                        ctx.fill(Path(CGRect(x: hx - 1.5, y: 0, width: 3, height: 8)), with: .color(.yellow))
-                    }
-                    // Playhead.
-                    ctx.fill(Path(CGRect(x: size.width / 2 - 1, y: 0, width: 2, height: size.height)), with: .color(.white))
+                    // Playhead with its time in a small bubble.
+                    let px = size.width / 2
+                    ctx.fill(Path(CGRect(x: px - 1, y: 16, width: 2, height: size.height - 18)), with: .color(.white))
+                    let label = ctx.resolve(Text(model.playhead, format: .dateTime.hour().minute().second())
+                        .font(.system(size: 10, weight: .semibold)).foregroundColor(.black))
+                    let ls = label.measure(in: size)
+                    let bubble = CGRect(x: px - ls.width / 2 - 6, y: 1, width: ls.width + 12, height: 15)
+                    ctx.fill(Path(roundedRect: bubble, cornerRadius: 7.5), with: .color(.white))
+                    ctx.draw(label, at: CGPoint(x: px, y: bubble.midY))
                 }
-                HStack {
-                    Text(start, format: .dateTime.hour().minute())
-                    Spacer()
-                    Text(end, format: .dateTime.hour().minute())
-                }
-                .font(.system(size: 10)).foregroundColor(.white.opacity(0.45))
-                .padding(.horizontal, 6).offset(y: 46)
             }
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { g in
-                        if dragStart == nil {
-                            dragStart = model.playhead
-                            // A click (no movement yet) jumps to where you clicked.
-                            let t = start.addingTimeInterval(Double(g.startLocation.x / w) * model.span)
-                            if abs(g.translation.width) < 2 { dragStart = t; model.jump(to: t); return }
+                        if dragStartV == nil {
+                            // A click jumps to where you clicked; a drag then moves from there.
+                            let v = v0 + Double(g.startLocation.x / w) * model.span
+                            dragStartV = v
+                            model.jump(to: axis.date(v))
+                            return
                         }
-                        if let d = dragStart {
-                            model.jump(to: d.addingTimeInterval(-Double(g.translation.width / w) * model.span))
+                        if let sv = dragStartV {
+                            model.jump(to: axis.date(sv - Double(g.translation.width / w) * model.span))
                         }
                     }
-                    .onEnded { _ in dragStart = nil }
+                    .onEnded { _ in dragStartV = nil }
             )
         }
+    }
+
+    /// Solid blocks: one per run of frames from the same app (a frame lasts until the next, max 60 s).
+    private func drawApps(_ ctx: GraphicsContext, size: CGSize, from: Date, to: Date, x: (Date) -> CGFloat) {
+        let frames = model.frames
+        guard !frames.isEmpty else { return }
+        var i = max(0, model.frameIndex(at: from))
+        let last = model.frameIndex(at: to)
+        while i <= last {
+            let app = frames[i].appName
+            let runStart = frames[i].time
+            var runEnd = runStart.addingTimeInterval(2)
+            var j = i
+            while j <= last {
+                let f = frames[j]
+                guard f.appName == app else { break }
+                let next = j + 1 < frames.count ? frames[j + 1].time : f.time.addingTimeInterval(2)
+                runEnd = min(next, f.time.addingTimeInterval(60))
+                j += 1
+                if next.timeIntervalSince(f.time) > 60 { break }  // idle: end the block here
+            }
+            let a = x(runStart), b = x(runEnd)
+            if b > 0 && a < size.width {
+                let r = CGRect(x: a, y: appY, width: max(2, b - a - 1), height: appH)
+                ctx.fill(Path(roundedRect: r, cornerRadius: 3), with: .color(Color(TimelineModel.color(for: app))))
+            }
+            i = max(j, i + 1)
+        }
+    }
+
+    private func drawAudio(_ ctx: GraphicsContext, size: CGSize, from: Date, to: Date, x: (Date) -> CGFloat) {
+        for a in model.audio where a.end > from && a.start < to {
+            let ax = max(0, x(a.start)), bx = min(size.width, x(a.end))
+            let r = CGRect(x: ax, y: a.isInput ? micY : sysY, width: max(2, bx - ax), height: laneH)
+            ctx.fill(Path(roundedRect: r, cornerRadius: 2), with: .color(a.isInput ? .orange : .green))
+        }
+    }
+
+    /// Each shrunk break: a dark notch with how long it was.
+    private func drawBreaks(_ ctx: GraphicsContext, axis: TimelineAxis, size: CGSize, x: (Date) -> CGFloat) {
+        for g in axis.gaps {
+            let a = x(g.from), b = x(g.to)
+            guard b > 0, a < size.width else { continue }
+            let r = CGRect(x: a + 2, y: 26, width: max(0, b - a - 4), height: size.height - 30)
+            ctx.fill(Path(roundedRect: r, cornerRadius: 4), with: .color(.black.opacity(0.45)))
+            var dash = Path(); dash.move(to: CGPoint(x: r.midX, y: r.minY + 4)); dash.addLine(to: CGPoint(x: r.midX, y: r.maxY - 16))
+            ctx.stroke(dash, with: .color(.white.opacity(0.25)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            let label = ctx.resolve(Text(Self.duration(g.to.timeIntervalSince(g.from)))
+                .font(.system(size: 9, weight: .medium)).foregroundColor(.white.opacity(0.6)))
+            if label.measure(in: size).width < r.width + 30 {
+                ctx.draw(label, at: CGPoint(x: r.midX, y: r.maxY - 7))
+            }
+        }
+    }
+
+    /// Clock labels at round times inside recorded stretches (never inside a break).
+    private func drawTicks(_ ctx: GraphicsContext, axis: TimelineAxis, size: CGSize, from: Date, to: Date, x: (Date) -> CGFloat) {
+        let target = model.span / Double(max(4, Int(size.width / 110)))
+        let steps: [TimeInterval] = [15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200]
+        let step = steps.first(where: { $0 >= target }) ?? 43200
+        var lastLabelX = -CGFloat.infinity
+        for s in axis.sessions where s.end >= from && s.start <= to {
+            let lo = max(s.start, from), hi = min(s.end, to)
+            var t = Date(timeIntervalSince1970: (lo.timeIntervalSince1970 / step).rounded(.up) * step)
+            while t <= hi {
+                let tx = x(t)
+                ctx.fill(Path(CGRect(x: tx - 0.5, y: tickY, width: 1, height: 4)), with: .color(.white.opacity(0.35)))
+                if tx - lastLabelX > 60 {
+                    let fmt: Date.FormatStyle = step >= 3600 ? .dateTime.hour() : .dateTime.hour().minute()
+                    let label = ctx.resolve(Text(t, format: fmt).font(.system(size: 10)).foregroundColor(.white.opacity(0.6)))
+                    ctx.draw(label, at: CGPoint(x: tx, y: tickY + 11))
+                    lastLabelX = tx
+                }
+                t = t.addingTimeInterval(step)
+            }
+        }
+    }
+
+    static func duration(_ s: TimeInterval) -> String {
+        let m = Int(s / 60)
+        if m < 60 { return "\(m)m break" }
+        if m < 24 * 60 { return "\(m / 60)h \(m % 60)m break" }
+        return "\(m / 1440)d break"
     }
 }
