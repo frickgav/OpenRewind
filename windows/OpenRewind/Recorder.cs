@@ -28,11 +28,9 @@ sealed class Recorder
     {
         this.config = config;
         this.db = db;
-        var env = Config.Env("EXCLUDE");
-        var list = env?.Split(',').Select(s => s.Trim().ToLowerInvariant())
-            ?? new[] { "1password", "bitwarden", "keepass", "keepassxc", "dashlane", "lastpass", "passwords" };
-        // Whatever the user list says: the lock screen and the sign-in screen.
-        excluded = new HashSet<string>(list.Concat(new[] { "lockapp", "logonui", "windows logon user interface host" }));
+        // Never recorded at all: the lock screen and the sign-in screen. Apps the user blocks are
+        // blurred instead (see Blocklist and Redactor).
+        excluded = new HashSet<string> { "lockapp", "logonui", "windows logon user interface host" };
     }
 
     public async Task Run(CancellationToken ct)
@@ -55,12 +53,20 @@ sealed class Recorder
         if (win.ExePath != null && excluded.Contains(Path.GetFileNameWithoutExtension(win.ExePath).ToLowerInvariant())) return;
         // Our own timeline is open: nothing new to record.
         if (Capture.IsOwnWindow(win)) return;
-        using var image = Capture.Screenshot();
-        Ingest(image, win);
+        var list = Blocklist.Current;
+        var screen = Screen.FromPoint(Cursor.Position);
+        var wins = Redactor.Windows(list);
+        using var image = Capture.Screenshot(screen);
+        Redactor.Apply(image, screen.Bounds, wins);
+        // A blocked window in front: keep the app name for the timeline, but not its title or text.
+        if (list.BlocksWindow(Blocklist.IdFor(win.ExePath), win.AppName, win.WindowName))
+            Ingest(image, win with { WindowName = "" }, readWindowText: false);
+        else
+            Ingest(image, win);
     }
 
     /// Dedup, extract text, store snapshot, insert row. Returns the new frame id, or null if skipped.
-    public long? Ingest(Bitmap image, ActiveWindow window)
+    public long? Ingest(Bitmap image, ActiveWindow window, bool readWindowText = true)
     {
         var hash = ImageTools.DHash(image);
         var thumb = ImageTools.Thumbnail(image);
@@ -72,7 +78,7 @@ sealed class Recorder
 
         var text = "";
         var source = "ocr";
-        if (config.UseAccessibility && UiaText.FocusedWindowText(window.Hwnd) is string ax) { text = ax; source = "accessibility"; }
+        if (config.UseAccessibility && readWindowText && UiaText.FocusedWindowText(window.Hwnd) is string ax) { text = ax; source = "accessibility"; }
         if (text.Length == 0) text = Ocr.Recognize(image);
         // Pixels moved (cursor blink, animation) but the text is the same: nothing new to search.
         if (key == lastKey && text == lastText && !heartbeatDue)

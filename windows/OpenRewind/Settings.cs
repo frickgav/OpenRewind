@@ -13,6 +13,14 @@ sealed class Settings
     public string KeepAudio { get; set; } = "forever";
     /// The local HTTP API + browser search page. Off unless the user turns it on.
     public bool LocalSearchServer { get; set; } = false;
+    /// Apps that are blurred in screenshots and never have their text stored.
+    public List<BlockedApp> BlockedApps { get; set; } =
+        BlockCatalog.Windows.Where(a => a.Category == BlockCategory.PasswordManager).Select(a => new BlockedApp(a.Id, a.Name)).ToList();
+    /// Window titles with any of these words are hidden too (bank sites in a browser).
+    public List<string> BlockedKeywords { get; set; } = new();
+    public bool BlockPrivateWindows { get; set; } = true;
+    /// The first-run setup has been finished (or skipped).
+    public bool OnboardingDone { get; set; } = false;
 
     string path = "";
 
@@ -31,6 +39,9 @@ sealed class Settings
         try { File.WriteAllText(path, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true })); }
         catch (Exception e) { Log.Write($"cannot save settings: {e.Message}"); }
     }
+
+    /// What recording should hide, from these settings plus OPENREWIND_EXCLUDE.
+    public Blocklist ToBlocklist() => new(BlockedApps, BlockedKeywords, BlockPrivateWindows, Blocklist.EnvNames());
 
     public KeepFor Screen => KeepForInfo.FromRaw(KeepScreen) ?? KeepFor.Forever;
     public KeepFor Audio => KeepForInfo.FromRaw(KeepAudio) ?? KeepFor.Forever;

@@ -56,10 +56,10 @@ static class Capture
         return Path.GetFileNameWithoutExtension(p);
     });
 
-    /// Grab the monitor that holds the mouse. Our own overlay hides itself from capture.
-    public static Bitmap Screenshot()
+    /// Grab the monitor that holds the mouse (or `screen`). Our own overlay hides itself from capture.
+    public static Bitmap Screenshot(Screen? screen = null)
     {
-        var screen = Screen.FromPoint(Cursor.Position);
+        screen ??= Screen.FromPoint(Cursor.Position);
         var b = screen.Bounds;
         var bmp = new Bitmap(b.Width, b.Height, PixelFormat.Format32bppRgb);
         using var g = Graphics.FromImage(bmp);
