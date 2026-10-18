@@ -28,6 +28,9 @@ sealed class OverlayForm : Form
     int resultsScroll;
 
     static readonly Color Mic = Color.FromArgb(255, 159, 10), Sys = Color.FromArgb(48, 209, 88), Accent = Color.FromArgb(10, 132, 255);
+    /// Shows the "new version" banner; set by the tray app.
+    public Updater? Updater { get; set; }
+
     static readonly Color Yellow = Color.FromArgb(255, 214, 10);
 
     public OverlayForm(TimelineModel model)
@@ -81,6 +84,7 @@ sealed class OverlayForm : Form
         Bounds = screen.Bounds;
         k = DeviceDpi / 96f;
         model.Reload();
+        Updater?.CheckIfStale();
         Show();
         Activate();
         Native.SetForegroundWindow(Handle);
@@ -180,6 +184,11 @@ sealed class OverlayForm : Form
         if (StaleMinutes() is int mins)
         {
             DrawStaleBanner(g, padX, y, w, mins);
+            y += 34 * k + gap;
+        }
+        if (Updater is { ShowBanner: true } u && u.Available is ReleaseInfo release)
+        {
+            DrawUpdateBanner(g, padX, y, w, u, release);
             y += 34 * k + gap;
         }
         float hintsH = 18 * k, barH = 102 * k, controlsH = 36 * k;
@@ -336,6 +345,55 @@ sealed class OverlayForm : Form
         var r = new RectangleF(x + w / 2 - (sz.Width + 28 * k) / 2, y, sz.Width + 28 * k, 34 * k);
         Draw.Fill(g, r, 8 * k, Draw.WithAlpha(Yellow, 0.15));
         Draw.Text(g, text, F(13), Color.White, r.X + 14 * k, r.Y + (r.Height - sz.Height) / 2);
+    }
+
+    // MARK: update banner
+
+    /// "A new version is out", with buttons. Closing it hides it until the next version.
+    void DrawUpdateBanner(Graphics g, float x, float y, float w, Updater u, ReleaseInfo r)
+    {
+        var text = u.State switch
+        {
+            Updater.Phase.Downloading => $"Downloading OpenRewind {r.Version}… {(int)(u.Progress * 100)}%",
+            Updater.Phase.Ready => $"OpenRewind {r.Version} is downloaded and ready.",
+            Updater.Phase.Installing => $"Installing OpenRewind {r.Version}…",
+            Updater.Phase.Failed => $"Could not update to {r.Version}: {u.Error}.",
+            _ => $"OpenRewind {r.Version} is out. You have {Updater.Current}.",
+        };
+        var notes = ("What's New", (Action)(() => Updater.Open(r.Page)));
+        (string Label, Action Act)[] buttons = u.State switch
+        {
+            Updater.Phase.Downloading or Updater.Phase.Installing => Array.Empty<(string, Action)>(),
+            Updater.Phase.Ready => new[] { ("Restart to Update", (Action)u.Update), notes },
+            Updater.Phase.Failed => new[] { ("Try Again", (Action)u.Update), ("Download", () => Updater.Open(r.AssetUrl)) },
+            _ => new[] { (Updater.CanInstall ? "Update" : "Download", (Action)u.Update), notes },
+        };
+
+        var font = F(13);
+        var bf = Semibold(12);
+        float pad = 14 * k, space = 10 * k, bpad = 10 * k, close = 20 * k;
+        var ts = Draw.Measure(g, text, font);
+        var widths = buttons.Select(b => Draw.Measure(g, b.Label, bf).Width + 2 * bpad).ToArray();
+        float total = pad + ts.Width + widths.Sum(bw => space + bw) + space + close + pad;
+        var r0 = new RectangleF(x + w / 2 - total / 2, y, total, 34 * k);
+        Draw.Fill(g, r0, 8 * k, Draw.WithAlpha(Accent, 0.22));
+        float mid = r0.Y + r0.Height / 2, cx = r0.X + pad;
+        Draw.Text(g, text, font, Color.White, cx, mid - ts.Height / 2);
+        cx += ts.Width;
+        var mouse = PointToClient(Cursor.Position);
+        for (int i = 0; i < buttons.Length; i++)
+        {
+            cx += space;
+            var br = new RectangleF(cx, mid - 11 * k, widths[i], 22 * k);
+            Draw.Fill(g, br, br.Height / 2, Draw.White(br.Contains(mouse) ? 0.26 : 0.16));
+            Draw.TextCentered(g, buttons[i].Label, bf, Color.White, br.X + br.Width / 2, mid);
+            hot.Add((br, buttons[i].Act));
+            cx += widths[i];
+        }
+        cx += space;
+        var xr = new RectangleF(cx, mid - close / 2, close, close);
+        Draw.TextCentered(g, "✕", F(11), Draw.White(xr.Contains(mouse) ? 0.9 : 0.6), xr.X + xr.Width / 2, mid);
+        hot.Add((xr, u.Dismiss));
     }
 
     // MARK: screenshot
