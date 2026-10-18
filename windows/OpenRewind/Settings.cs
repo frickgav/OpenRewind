@@ -15,6 +15,10 @@ sealed class Settings
     public int TypingFrameGap { get; set; } = 2;
     /// The local HTTP API + browser search page. Off unless the user turns it on.
     public bool LocalSearchServer { get; set; } = false;
+    /// Download new versions in the background; they are installed only on a click.
+    public bool AutoDownloadUpdates { get; set; } = true;
+    /// The version whose timeline banner was closed; a newer version shows it again.
+    public string? DismissedUpdateVersion { get; set; }
 
     string path = "";
 
