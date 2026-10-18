@@ -216,4 +216,16 @@ public class CoreTests : IDisposable
         Assert.False(SearchHits.Matches("April", terms));
         Assert.Empty(SearchHits.Terms("  \"\" "));
     }
+
+    [Fact]
+    public void FewChangedWordsAreAMinorChange()
+    {
+        var page = string.Join(" ", Enumerable.Range(0, 300).Select(i => "word" + i));
+        Assert.Equal(0, FrameDedup.WordsChanged("a b c", "c b a"));
+        Assert.Equal(2, FrameDedup.WordsChanged("10:41 AM inbox", "10:42 AM inbox"));
+        Assert.True(FrameDedup.IsMinorChange(page, page + " typed more"));
+        Assert.True(FrameDedup.IsMinorChange("hello", "hello there"));
+        Assert.False(FrameDedup.IsMinorChange(page, string.Join(" ", Enumerable.Range(0, 300).Select(i => "other" + i))));
+        Assert.False(FrameDedup.IsMinorChange("", "a whole new screen of text here"));
+    }
 }

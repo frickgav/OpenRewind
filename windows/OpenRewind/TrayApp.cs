@@ -29,6 +29,7 @@ sealed class TrayApp : ApplicationContext
 
         if (settings.LocalSearchServer) StartServer();
         engine.StartTranscriber();
+        engine.Recorder.MinorChangeGap = settings.TypingFrameGap;
         engine.SetScreen(settings.RecordScreen);
         engine.SetAudio(settings.RecordAudio);
         retention = new RetentionJob(engine.Db, settings.Screen, settings.Audio);
@@ -70,6 +71,7 @@ sealed class TrayApp : ApplicationContext
         var s = new ToolStripMenuItem("Settings");
         s.DropDownItems.Add(KeepMenu("Keep Screen Recordings For", screen: true));
         s.DropDownItems.Add(KeepMenu("Keep Audio Recordings For", screen: false));
+        s.DropDownItems.Add(TypingGapMenu());
         s.DropDownItems.Add(new ToolStripSeparator());
         var del = new ToolStripMenuItem("Delete Recordings");
         del.DropDownItems.Add(Item("Last 15 Minutes", () => DeleteRecent("last 15 minutes", DateTime.UtcNow.AddMinutes(-15))));
@@ -96,6 +98,23 @@ sealed class TrayApp : ApplicationContext
     static ToolStripMenuItem Item(string title, Action act) => new(title, null, (_, _) => act());
 
     static ToolStripMenuItem Toggle(string title, bool on, Action act) => new(title, null, (_, _) => act()) { Checked = on };
+
+    /// Fewer saved frames while typing means less disk space; the screen you stop on is always saved.
+    ToolStripMenuItem TypingGapMenu()
+    {
+        var item = new ToolStripMenuItem("Save Frames While Typing")
+        {
+            ToolTipText = "While only a few words on screen change, save a frame this often. Longer uses less disk space; the screen you stop on is still saved."
+        };
+        foreach (var secs in FrameDedup.GapChoices)
+            item.DropDownItems.Add(Toggle($"Every {secs} Seconds" + (secs == 2 ? " (Default)" : ""), secs == settings.TypingFrameGap, () =>
+            {
+                settings.TypingFrameGap = secs;
+                engine.Recorder.MinorChangeGap = secs;
+                settings.Save();
+            }));
+        return item;
+    }
 
     ToolStripMenuItem KeepMenu(string title, bool screen)
     {
