@@ -1,6 +1,7 @@
 namespace OpenRewind;
 
-public record TimelineFrame(long Id, DateTime Time, string AppName, string WindowName, string Path);
+/// Url is the browser tab's address in this frame, or "".
+public record TimelineFrame(long Id, DateTime Time, string AppName, string WindowName, string Path, string Url = "");
 
 public record TimelineAudio(long Id, DateTime Start, double Duration, string Device, bool IsInput, string Path)
 {
@@ -16,12 +17,12 @@ public sealed partial class Database
     {
         lock (gate)
         {
-            using var cmd = Cmd("SELECT id, timestamp, app_name, window_name, snapshot_path FROM frames WHERE timestamp >= ? ORDER BY timestamp ASC", Time.Iso(since));
+            using var cmd = Cmd("SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url FROM frames WHERE timestamp >= ? ORDER BY timestamp ASC", Time.Iso(since));
             using var r = cmd.ExecuteReader();
             var out_ = new List<TimelineFrame>();
             while (r.Read())
                 if (Time.ParseIso(r.GetString(1)) is DateTime t)
-                    out_.Add(new TimelineFrame(r.GetInt64(0), t, r.GetString(2), r.GetString(3), r.GetString(4)));
+                    out_.Add(new TimelineFrame(r.GetInt64(0), t, r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5)));
             return out_;
         }
     }

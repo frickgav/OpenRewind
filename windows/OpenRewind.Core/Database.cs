@@ -2,8 +2,9 @@ using Microsoft.Data.Sqlite;
 
 namespace OpenRewind;
 
+/// BrowserUrl is the address of the browser tab in this frame, or "".
 public record Frame(long Id, string Timestamp, string AppName, string WindowName, bool Focused,
-                    string SnapshotPath, string Text, string TextSource, long Hash);
+                    string SnapshotPath, string Text, string TextSource, long Hash, string BrowserUrl = "");
 
 public record AudioChunk(long Id, string FilePath, string Timestamp, string Device, bool IsInput, string Status);
 
@@ -134,6 +135,9 @@ public sealed partial class Database : IDisposable
             VALUES ('delete', old.id, old.transcription, old.device);
         END;
         """);
+        // Added later: older databases do not have this column yet.
+        if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'browser_url'") == 0)
+            Exec("ALTER TABLE frames ADD COLUMN browser_url TEXT NOT NULL DEFAULT ''");
     }
 
     // MARK: frames
@@ -142,13 +146,13 @@ public sealed partial class Database : IDisposable
     {
         lock (gate)
         {
-            using var cmd = Cmd("INSERT INTO frames (timestamp, app_name, window_name, focused, snapshot_path, text, text_source, hash) VALUES (?,?,?,?,?,?,?,?); SELECT last_insert_rowid();",
-                f.Timestamp, f.AppName, f.WindowName, f.Focused ? 1 : 0, f.SnapshotPath, f.Text, f.TextSource, f.Hash);
+            using var cmd = Cmd("INSERT INTO frames (timestamp, app_name, window_name, focused, snapshot_path, text, text_source, hash, browser_url) VALUES (?,?,?,?,?,?,?,?,?); SELECT last_insert_rowid();",
+                f.Timestamp, f.AppName, f.WindowName, f.Focused ? 1 : 0, f.SnapshotPath, f.Text, f.TextSource, f.Hash, f.BrowserUrl);
             return (long)cmd.ExecuteScalar()!;
         }
     }
 
-    const string Cols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash";
+    const string Cols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url";
 
     public Frame? FrameById(long id) => Frames($"SELECT {Cols} FROM frames f WHERE f.id = ?", id).FirstOrDefault();
 
@@ -355,7 +359,7 @@ public sealed partial class Database : IDisposable
                 var out_ = new List<Frame>();
                 while (r.Read())
                     out_.Add(new Frame(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetInt64(4) != 0,
-                                       r.GetString(5), r.GetString(6), r.GetString(7), r.GetInt64(8)));
+                                       r.GetString(5), r.GetString(6), r.GetString(7), r.GetInt64(8), r.GetString(9)));
                 return out_;
             }
             catch (SqliteException e) { Log.Write($"sql error: {e.Message}"); return new(); }

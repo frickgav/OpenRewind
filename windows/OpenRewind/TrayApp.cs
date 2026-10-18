@@ -13,7 +13,9 @@ sealed class TrayApp : ApplicationContext
     readonly ContextMenuStrip menu = new();
     readonly OverlayForm overlay;
     readonly TimelineModel timeline;
-    readonly HotKey hotKey;
+    HotKey hotKey;
+    /// Turns recording back on when a timed pause ends.
+    readonly System.Windows.Forms.Timer resumeTimer = new();
     readonly RetentionJob retention;
     readonly Updater updater;
     /// Last measured size of the data folder; measured in the background when the menu opens.
@@ -24,17 +26,18 @@ sealed class TrayApp : ApplicationContext
     {
         this.engine = engine;
         settings = Settings.Load(engine.Config.Home);
+        Program.RefreshIconIfNew(settings);
         Blocklist.Current = settings.ToBlocklist();
         timeline = new TimelineModel(engine.Db);
-        timeline.OpenInBrowser = () => OpenBrowserSearch(timeline.Query.Trim());
-        overlay = new OverlayForm(timeline);
+        overlay = new OverlayForm(timeline) { Look = settings.TimelineLook };
         _ = overlay.Handle;  // create it on the UI thread now
 
         if (settings.LocalSearchServer) StartServer();
         engine.StartTranscriber();
         engine.Recorder.MinorChangeGap = settings.TypingFrameGap;
-        engine.SetScreen(settings.RecordScreen);
-        engine.SetAudio(settings.RecordAudio);
+        engine.Config.SnapshotScale = ScreenshotSizes.Scale(settings.ScreenshotPercent);
+        resumeTimer.Tick += (_, _) => CheckPause();
+        if (PausedUntil is DateTime until) SchedulePause(until); else ApplyRecordingPrefs();
         retention = new RetentionJob(engine.Db, settings.Screen, settings.Audio);
         retention.Start();
 
@@ -43,8 +46,8 @@ sealed class TrayApp : ApplicationContext
         overlay.Updater = updater;
         updater.Start();
 
-        // Ctrl+Alt+T opens the timeline from anywhere (Option+Command+T on the Mac).
-        hotKey = new HotKey(Native.MOD_CONTROL | Native.MOD_ALT, Keys.T, overlay.Toggle);
+        // Ctrl+Alt+T (or the shortcut picked in Settings) opens the timeline from anywhere.
+        hotKey = new HotKey(Shortcut, overlay.Toggle);
 
         menu.Opening += (_, _) => BuildMenu();
         icon = new NotifyIcon { Icon = Program.AppIcon, ContextMenuStrip = menu, Visible = true };
@@ -58,12 +61,17 @@ sealed class TrayApp : ApplicationContext
     void ShowSetup()
     {
         if (setup is { IsDisposed: false }) { setup.Activate(); return; }
+        OnboardingForm.Hotkey = Shortcut.Label;
         setup = new OnboardingForm(settings, tour => { if (tour) ShowTutorial(); });
         setup.Show();
     }
     OnboardingForm? setup;
 
-    void ShowTutorial() => TutorialCoach.Start(overlay, timeline);
+    void ShowTutorial()
+    {
+        OnboardingForm.Hotkey = Shortcut.Label;
+        TutorialCoach.Start(overlay, timeline);
+    }
 
     // Build the menu fresh each time it opens, so it always shows the live state.
     void BuildMenu()
@@ -73,15 +81,29 @@ sealed class TrayApp : ApplicationContext
         if (UpdateItem() is ToolStripMenuItem update) menu.Items.Add(update);
         menu.Items.Add(new ToolStripSeparator());
 
-        menu.Items.Add(Toggle("Record Screen", engine.ScreenOn, ToggleScreen));
+        if (PausedUntil is DateTime until)
+            menu.Items.Add(Item($"Resume Recording ({Pause.Text(until, DateTime.UtcNow)})", ResumeRecording));
+        else
+        {
+            var pause = new ToolStripMenuItem("Pause Recording");
+            foreach (var (title, minutes) in Pause.Choices) pause.DropDownItems.Add(Item(title, () => PauseRecording(minutes)));
+            menu.Items.Add(pause);
+        }
+        menu.Items.Add(new ToolStripSeparator());
+
+        // While paused, the switches show and change what comes back on after the pause.
+        bool paused = PausedUntil != null;
+        menu.Items.Add(Toggle("Record Screen", paused ? settings.RecordScreen : engine.ScreenOn, ToggleScreen));
         if (engine.ScreenOn && !Ocr.Available && !engine.Config.UseAccessibility)
             menu.Items.Add(new ToolStripMenuItem("   No Windows OCR language installed") { Enabled = false });
-        menu.Items.Add(Toggle("Record Audio", engine.AudioOn, ToggleAudio));
+        menu.Items.Add(Toggle("Record Audio", paused ? settings.RecordAudio : engine.AudioOn, ToggleAudio));
+        if (engine.AudioOn && !Permissions.MicrophoneOn)
+            menu.Items.Add(Item("   ⚠ Microphone is off in Windows — Open Settings…", () => Open(Permissions.MicrophoneSettings)));
         if (engine.AudioOn && engine.Transcriber == null)
             menu.Items.Add(Item("   Transcription off: set up Whisper…", () => Open("https://github.com/frickgav/openscreen/blob/main/windows/README.md#whisper")));
         menu.Items.Add(new ToolStripSeparator());
 
-        menu.Items.Add(new ToolStripMenuItem("Open Timeline", null, (_, _) => overlay.ShowOverlay()) { ShortcutKeyDisplayString = "Ctrl+Alt+T" });
+        menu.Items.Add(new ToolStripMenuItem("Open Timeline", null, (_, _) => overlay.ShowOverlay()) { ShortcutKeyDisplayString = Shortcut.Label });
         // The browser page when the local server is on, else the timeline's own search box.
         menu.Items.Add(Item("Search…", () => { if (engine.ServerOn) Open($"http://127.0.0.1:{engine.Config.Port}/"); else overlay.ShowSearch(); }));
         menu.Items.Add(Item("Show Data Folder", () => Open(engine.Config.Home)));
@@ -89,8 +111,12 @@ sealed class TrayApp : ApplicationContext
         MeasureStorage();
         menu.Items.Add(new ToolStripSeparator());
 
-        var s = new ToolStripMenuItem("Settings");
+        var s = new ToolStripMenuItem(Permissions.MicrophoneOn ? "Settings" : "Settings  ⚠");
         s.DropDownItems.Add(Item("Blocked Apps & Sites…", () => BlockedAppsForm.ShowFor(settings)));
+        s.DropDownItems.Add(new ToolStripSeparator());
+        s.DropDownItems.Add(ShortcutMenu());
+        s.DropDownItems.Add(ScreenshotSizeMenu());
+        s.DropDownItems.Add(LookMenu());
         s.DropDownItems.Add(new ToolStripSeparator());
         s.DropDownItems.Add(KeepMenu("Keep Screen Recordings For", screen: true));
         s.DropDownItems.Add(KeepMenu("Keep Audio Recordings For", screen: false));
@@ -114,6 +140,8 @@ sealed class TrayApp : ApplicationContext
         auto.ToolTipText = "Download new versions in the background. They are installed only when you click Update.";
         s.DropDownItems.Add(auto);
         s.DropDownItems.Add(Item($"Check for Updates… (version {Updater.Current})", CheckForUpdates));
+        s.DropDownItems.Add(new ToolStripSeparator());
+        s.DropDownItems.Add(PermissionsMenu());
         s.DropDownItems.Add(new ToolStripSeparator());
         s.DropDownItems.Add(Toggle("Launch at Login", Settings.LaunchAtLogin, () =>
         {
@@ -145,6 +173,152 @@ sealed class TrayApp : ApplicationContext
                 settings.Save();
             }));
         return item;
+    }
+
+    /// Bigger screenshots are sharper to read back in the timeline and use more disk space.
+    ToolStripMenuItem ScreenshotSizeMenu()
+    {
+        var item = new ToolStripMenuItem("Screenshot Resolution")
+        {
+            ToolTipText = "How big each saved screenshot is compared with your screen. Applies to new screenshots."
+        };
+        // Size of the main display in real pixels, to show what each choice gives.
+        var screen = Screen.PrimaryScreen?.Bounds ?? Rectangle.Empty;
+        var current = ScreenshotSizes.Nearest(settings.ScreenshotPercent);
+        foreach (var pct in ScreenshotSizes.Choices)
+            item.DropDownItems.Add(Toggle(ScreenshotSizes.Title(pct, screen.Width, screen.Height), pct == current, () =>
+            {
+                settings.ScreenshotPercent = pct;
+                engine.Config.SnapshotScale = ScreenshotSizes.Scale(pct);
+                settings.Save();
+                Log.Write($"screenshot resolution set to {pct}%");
+            }));
+        item.DropDownItems.Add(new ToolStripSeparator());
+        item.DropDownItems.Add(new ToolStripMenuItem("Higher looks sharper but uses more disk space") { Enabled = false });
+        return item;
+    }
+
+    // MARK: timeline look
+
+    ToolStripMenuItem LookMenu()
+    {
+        var item = new ToolStripMenuItem("Timeline Look");
+        foreach (var (raw, title) in new[] { ("system", "Match System"), ("light", "Light"), ("dark", "Dark") })
+            item.DropDownItems.Add(Toggle(title, settings.TimelineLook == raw, () =>
+            {
+                settings.TimelineLook = raw;
+                overlay.Look = raw;
+                settings.Save();
+                Log.Write($"timeline look set to {raw}");
+            }));
+        return item;
+    }
+
+    // MARK: shortcut
+
+    HotkeyShortcut Shortcut => settings.TimelineShortcut ?? HotkeyShortcut.Standard;
+
+    ToolStripMenuItem ShortcutMenu()
+    {
+        var item = new ToolStripMenuItem($"Timeline Shortcut: {Shortcut.Label}");
+        item.DropDownItems.Add(Item("Change Shortcut…", ChangeShortcut));
+        item.DropDownItems.Add(new ToolStripMenuItem($"Reset to {HotkeyShortcut.Standard.Label}", null, (_, _) => SetShortcut(HotkeyShortcut.Standard))
+        {
+            Enabled = Shortcut != HotkeyShortcut.Standard
+        });
+        return item;
+    }
+
+    void ChangeShortcut()
+    {
+        var old = Shortcut;
+        hotKey.Dispose();  // so pressing the old shortcut now does not open the timeline
+        using var picker = new ShortcutPicker(old);
+        var picked = picker.ShowDialog() == DialogResult.OK ? picker.Picked : null;
+        hotKey = new HotKey(old, overlay.Toggle);
+        if (picked != null && picked != old) SetShortcut(picked);
+    }
+
+    /// Switch to a new shortcut; keeps the old one when Windows refuses the new one.
+    void SetShortcut(HotkeyShortcut sc)
+    {
+        var old = Shortcut;
+        hotKey.Dispose();
+        var next = new HotKey(sc, overlay.Toggle);
+        if (next.Registered)
+        {
+            hotKey = next;
+            settings.TimelineShortcut = sc == HotkeyShortcut.Standard ? null : sc;
+            settings.Save();
+            Log.Write($"timeline shortcut set to {sc.Label}");
+            return;
+        }
+        next.Dispose();
+        hotKey = new HotKey(old, overlay.Toggle);
+        MessageBox.Show($"Another app or Windows uses this shortcut. The shortcut stays {old.Label}.", $"{sc.Label} is already in use",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+
+    // MARK: permissions
+
+    /// One line per Windows permission with its state. Only the microphone has a switch on Windows.
+    ToolStripMenuItem PermissionsMenu()
+    {
+        bool mic = Permissions.MicrophoneOn;
+        var item = new ToolStripMenuItem(mic ? "Permissions  ✓ All on" : "Permissions  ⚠ 1 needed");
+        item.DropDownItems.Add(Item(mic ? "✓  Microphone — On" : "⚠  Microphone — Off, click to turn on", () => Open(Permissions.MicrophoneSettings)));
+        item.DropDownItems.Add(new ToolStripMenuItem("      Records your voice") { Enabled = false });
+        item.DropDownItems.Add(new ToolStripSeparator());
+        item.DropDownItems.Add(new ToolStripMenuItem("Screenshots and window text need no permission on Windows") { Enabled = false });
+        item.DropDownItems.Add(Item("Open Privacy & Security Settings…", () => Open("ms-settings:privacy")));
+        return item;
+    }
+
+    // MARK: pause
+
+    /// A pause that is still running; a pause that ended while the app was closed counts as over.
+    DateTime? PausedUntil => Pause.Active(settings.PausedUntil, DateTime.UtcNow);
+
+    void PauseRecording(int minutes)
+    {
+        var until = Pause.Until(minutes, DateTime.UtcNow);
+        settings.PausedUntil = until;
+        settings.Save();
+        SchedulePause(until);
+        Log.Write($"recording paused ({Pause.Text(until, DateTime.UtcNow)})");
+    }
+
+    void ResumeRecording()
+    {
+        settings.PausedUntil = null;
+        settings.Save();
+        resumeTimer.Stop();
+        ApplyRecordingPrefs();
+        Log.Write("recording resumed");
+    }
+
+    /// Stop both recorders now; the timer turns them back on at `until`.
+    void SchedulePause(DateTime until)
+    {
+        engine.SetScreen(false);
+        engine.SetAudio(false);
+        // Check every 15 s rather than one long timer, so sleep and clock changes cannot make it late.
+        resumeTimer.Interval = 15_000;
+        if (until != DateTime.MaxValue) resumeTimer.Start(); else resumeTimer.Stop();
+        UpdateIcon();
+    }
+
+    void CheckPause()
+    {
+        if (PausedUntil == null) ResumeRecording();
+    }
+
+    /// Turn screen and audio on or off to match the switches.
+    void ApplyRecordingPrefs()
+    {
+        engine.SetScreen(settings.RecordScreen);
+        engine.SetAudio(settings.RecordAudio);
+        UpdateIcon();
     }
 
     ToolStripMenuItem KeepMenu(string title, bool screen)
@@ -284,13 +458,16 @@ sealed class TrayApp : ApplicationContext
     {
         var s = engine.Db.Stats();
         var a = engine.Db.AudioStats();
-        return $"{(engine.ScreenOn ? "Screen on" : "Screen off")} · {(engine.AudioOn ? "Audio on" : "Audio off")}  —  {s.Count} frames, {a.Segments} audio";
+        var counts = $"  —  {s.Count} frames, {a.Segments} audio";
+        if (PausedUntil is DateTime until) { var t = Pause.Text(until, DateTime.UtcNow); return char.ToUpper(t[0]) + t[1..] + counts; }
+        return $"{(engine.ScreenOn ? "Screen on" : "Screen off")} · {(engine.AudioOn ? "Audio on" : "Audio off")}" + counts;
     }
 
     void UpdateIcon()
     {
         // NotifyIcon tooltips are limited to 127 characters.
-        var tip = $"OpenRewind — {(engine.ScreenOn ? "Screen on" : "Screen off")} · {(engine.AudioOn ? "Audio on" : "Audio off")}";
+        var tip = PausedUntil is DateTime until ? $"OpenRewind — {Pause.Text(until, DateTime.UtcNow)}"
+            : $"OpenRewind — {(engine.ScreenOn ? "Screen on" : "Screen off")} · {(engine.AudioOn ? "Audio on" : "Audio off")}";
         icon.Text = tip.Length > 127 ? tip[..127] : tip;
         icon.Icon = engine.ScreenOn || engine.AudioOn ? Program.AppIcon : Program.PausedIcon;
     }
@@ -302,21 +479,6 @@ sealed class TrayApp : ApplicationContext
         settings.Save();
     }
 
-    /// The browser search page, with the timeline's query filled in. It needs the local server,
-    /// so pressing O turns the server on (and remembers that, like the Settings switch).
-    void OpenBrowserSearch(string query)
-    {
-        if (!engine.ServerOn)
-        {
-            StartServer();
-            settings.LocalSearchServer = engine.ServerOn;
-            settings.Save();
-        }
-        if (!engine.ServerOn) return;
-        var url = $"http://127.0.0.1:{engine.Config.Port}/";
-        Open(query.Length > 0 ? url + "?q=" + Uri.EscapeDataString(query) : url);
-    }
-
     void StartServer()
     {
         try { engine.StartServer(); }
@@ -325,8 +487,9 @@ sealed class TrayApp : ApplicationContext
 
     void ToggleScreen()
     {
-        var on = !engine.ScreenOn;
-        engine.SetScreen(on);
+        bool paused = PausedUntil != null;
+        var on = !(paused ? settings.RecordScreen : engine.ScreenOn);
+        if (!paused) engine.SetScreen(on);
         settings.RecordScreen = on;
         settings.Save();
         UpdateIcon();
@@ -334,8 +497,9 @@ sealed class TrayApp : ApplicationContext
 
     void ToggleAudio()
     {
-        var on = !engine.AudioOn;
-        engine.SetAudio(on);
+        bool paused = PausedUntil != null;
+        var on = !(paused ? settings.RecordAudio : engine.AudioOn);
+        if (!paused) engine.SetAudio(on);
         settings.RecordAudio = on;
         settings.Save();
         UpdateIcon();
@@ -352,6 +516,7 @@ sealed class TrayApp : ApplicationContext
         icon.Visible = false;
         overlay.HideOverlay();
         hotKey.Dispose();
+        resumeTimer.Dispose();
         retention.Dispose();
         updater.Dispose();
         engine.Shutdown();

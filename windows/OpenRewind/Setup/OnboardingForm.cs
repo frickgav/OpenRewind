@@ -24,7 +24,8 @@ sealed class OnboardingForm : Form
     CheckRow? pwRow, moneyRow, privateRow, bankRow;
     AppPicker? picker;
 
-    public const string Hotkey = "Ctrl+Alt+T";
+    /// The timeline shortcut as the user set it; TrayApp keeps it current.
+    public static string Hotkey { get; set; } = HotkeyShortcut.Standard.Label;
 
     public OnboardingForm(Settings settings, Action<bool> done)
     {

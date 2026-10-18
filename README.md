@@ -88,15 +88,30 @@ scripts/build-app.sh
 ```
 
 This makes `dist/OpenRewind.app` and `dist/openrewind-<version>.dmg`.
-Copy the app to `/Applications` and open it. It lives in the menu bar:
+Copy the app to `/Applications` and open it, or run `scripts/install.sh`, which builds,
+copies to `/Applications` and restarts the app in one step. It lives in the menu bar:
 
 - **Record Screen** and **Record Audio** switch on and off on their own (remembered).
+- **Pause Recording**: for 30 minutes, 1 hour, 1 day, or until you resume. Both screen and
+  audio stop; the menu shows **Resume Recording** and when recording comes back on (also
+  after a restart). The switches still pick what comes back on.
 - **Open Timeline** (or **⌥⌘T** from anywhere) shows a full-screen overlay.
   Scroll or use ← → to move through time, ⇧ for 1 minute, ↑ ↓ for 10 minutes,
   drag or click the bar, **space** plays the audio at that moment (the picture
-  follows along), **+ / −** zoom, **N** jumps to now, **O** opens the search page in the browser, **Esc** closes.
+  follows along), **+ / −** zoom, **N** jumps to now, **Esc** closes.
+- **O** (or the button at the bottom right of the screenshot) goes back to that moment:
+  it reopens the browser tab (Safari, Chrome, Arc, Dia, Edge, Brave, Firefox), the document
+  the app had open (Pages, Preview, Xcode…), or brings the app's window with that title to the front.
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
+- **Settings → Timeline Shortcut**: **Change Shortcut…** waits for the new key combination
+  (⌘, ⌥ or ⌃ with a key, or an F-key alone); **Reset** goes back to ⌥⌘T.
+- **Settings → Screenshot Resolution**: Full (100%), High (75%), Medium (50%, default) or
+  Low (33%), with the pixel size each gives on your main display. Higher looks sharper but
+  uses more disk space. Applies to the next screenshot.
+- **Settings → Timeline Look**: Match System, Light or Dark.
+- **Settings → Permissions** lists Screen Recording, Microphone and Accessibility with their
+  state; click one to open its page in System Settings. **Settings** shows ⚠︎ when one is off.
 - **Settings → Keep Screen / Audio Recordings For**: 1 Day, 1 Week, 1 Month,
   1 Year, or Until I Delete Them (default). Older recordings are deleted at
   launch and every hour.

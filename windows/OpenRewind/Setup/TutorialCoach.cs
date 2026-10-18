@@ -19,7 +19,7 @@ sealed class TutorialCoach : Form
     record Step(string Title, string Text, Anchor At);
     enum Anchor { Bar, Search, Center }
 
-    static readonly Step[] Steps =
+    static Step[] Steps => new Step[]
     {
         new("This is your timeline", "Every colored block is an app you used. The newest moment is on the right, and the big picture shows what was on screen.", Anchor.Bar),
         new("Go back in time", "Scroll with the mouse wheel or trackpad, drag along the bar, or press ← and →. Try it now.", Anchor.Bar),
