@@ -72,7 +72,7 @@ struct CheckBox: View {
 }
 
 /// App icons, looked up once.
-enum AppIcons {
+enum FoundAppIcons {
     private static var cache: [String: NSImage] = [:]
     static func icon(_ app: FoundApp) -> Image {
         if let i = cache[app.id] { return Image(nsImage: i) }
@@ -111,7 +111,7 @@ struct AppPickerList: View {
                     ScrollView {
                         LazyVStack(spacing: 4) {
                             ForEach(shown) { app in
-                                CheckRowView(icon: AppIcons.icon(app), title: app.name, on: Binding(
+                                CheckRowView(icon: FoundAppIcons.icon(app), title: app.name, on: Binding(
                                     get: { selected.contains(app.id) },
                                     set: { if $0 { selected.insert(app.id) } else { selected.remove(app.id) } }))
                             }
