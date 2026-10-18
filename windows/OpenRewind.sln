@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenRewind.Core", "OpenRewind.Core\OpenRewind.Core.csproj", "{84B925A6-15FC-473A-92C6-387BAD4EF4A3}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenRewind.Tests", "OpenRewind.Tests\OpenRewind.Tests.csproj", "{797DD2B9-EDDA-4D33-AEAB-3AB0EAA803FC}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{84B925A6-15FC-473A-92C6-387BAD4EF4A3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{84B925A6-15FC-473A-92C6-387BAD4EF4A3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{84B925A6-15FC-473A-92C6-387BAD4EF4A3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{84B925A6-15FC-473A-92C6-387BAD4EF4A3}.Release|Any CPU.Build.0 = Release|Any CPU
+		{797DD2B9-EDDA-4D33-AEAB-3AB0EAA803FC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{797DD2B9-EDDA-4D33-AEAB-3AB0EAA803FC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{797DD2B9-EDDA-4D33-AEAB-3AB0EAA803FC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{797DD2B9-EDDA-4D33-AEAB-3AB0EAA803FC}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

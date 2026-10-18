@@ -1,27 +1,27 @@
 #!/bin/bash
-# Build OpenScreen.app and a .dmg you can put online.
+# Build OpenRewind.app and a .dmg you can put online.
 #
 #   scripts/build-app.sh               build + sign + dmg
 #   VERSION=0.2.0 scripts/build-app.sh
 #   SIGN_IDENTITY="Developer ID Application: ..." scripts/build-app.sh
-#   NOTARY_PROFILE=openscreen scripts/build-app.sh   also notarize + staple (see README)
+#   NOTARY_PROFILE=openrewind scripts/build-app.sh   also notarize + staple (see README)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VERSION="${VERSION:-0.2.0}"
 BUILD="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 DIST="dist"
-APP="$DIST/OpenScreen.app"
-DMG="$DIST/openscreen-$VERSION.dmg"
+APP="$DIST/OpenRewind.app"
+DMG="$DIST/openrewind-$VERSION.dmg"
 
 echo "→ compiling (release, arm64)"
 swift build -c release --arch arm64
-BIN="$(swift build -c release --arch arm64 --show-bin-path)/openscreen"
+BIN="$(swift build -c release --arch arm64 --show-bin-path)/openrewind"
 
 echo "→ assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/OpenScreen"
+cp "$BIN" "$APP/Contents/MacOS/OpenRewind"
 sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" packaging/Info.plist > "$APP/Contents/Info.plist"
 
 ICONSET="$DIST/AppIcon.iconset"
@@ -40,7 +40,7 @@ fi
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 echo "→ signing with: $SIGN_IDENTITY"
 codesign --force --options runtime --timestamp=none \
-  --entitlements packaging/openscreen.entitlements \
+  --entitlements packaging/openrewind.entitlements \
   --sign "$SIGN_IDENTITY" "$APP"
 codesign --verify --strict --verbose=1 "$APP"
 
@@ -50,7 +50,7 @@ rm -rf "$STAGE" "$DMG"
 mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
-hdiutil create -volname "openscreen $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+hdiutil create -volname "openrewind $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 rm -rf "$STAGE"
 if [ "$SIGN_IDENTITY" != "-" ]; then codesign --force --sign "$SIGN_IDENTITY" "$DMG"; fi
 

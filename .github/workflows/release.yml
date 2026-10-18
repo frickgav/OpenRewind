@@ -1,6 +1,6 @@
 name: Release
 
-# Builds the Mac .dmg (and the Windows app, once scripts/build-windows.ps1 is on main)
+# Builds the Mac .dmg and the Windows app (signed when the Azure Trusted Signing secrets are set)
 # and attaches them to a GitHub Release with stable file names, so the website can link to
 #   https://github.com/frickgav/openscreen/releases/latest/download/OpenRewind-mac.dmg
 #   https://github.com/frickgav/openscreen/releases/latest/download/OpenRewind-windows-x64.zip
@@ -46,6 +46,9 @@ jobs:
     strategy:
       matrix:
         arch: [x64, arm64]
+    env:
+      # Signing runs only when the Azure Trusted Signing secrets are set (see windows/README.md).
+      CAN_SIGN: ${{ secrets.AZURE_CLIENT_ID != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -59,6 +62,25 @@ jobs:
           $env:VERSION = $env:VERSION.TrimStart("v")
           scripts/build-windows.ps1 -Arch ${{ matrix.arch }}
           Copy-Item "dist/OpenRewind-$env:VERSION-win-${{ matrix.arch }}.zip" "dist/OpenRewind-windows-${{ matrix.arch }}.zip"
+      - name: Sign with Azure Trusted Signing
+        if: hashFiles('scripts/build-windows.ps1') != '' && env.CAN_SIGN == 'true'
+        uses: azure/trusted-signing-action@v0.5.1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files-folder: dist/win-${{ matrix.arch }}
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Zip the signed app
+        if: hashFiles('scripts/build-windows.ps1') != '' && env.CAN_SIGN == 'true'
+        shell: pwsh
+        run: Compress-Archive -Force -Path "dist/win-${{ matrix.arch }}/*" -DestinationPath "dist/OpenRewind-windows-${{ matrix.arch }}.zip"
       - uses: actions/upload-artifact@v4
         if: hashFiles('scripts/build-windows.ps1') != ''
         with:

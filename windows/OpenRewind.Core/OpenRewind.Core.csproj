@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Everything that does not touch Windows APIs: database, search, API server, Whisper, timeline math.
+       It builds and tests on any OS, so CI and contributors on Mac/Linux can run it. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>OpenRewind</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11" />
+  </ItemGroup>
+
+  <!-- The search page is shared with the Mac app: read it straight out of the Swift source. -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\Sources\openrewind\WebUI.swift" LogicalName="WebUI.swift" />
+  </ItemGroup>
+
+</Project>
