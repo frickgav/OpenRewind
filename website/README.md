@@ -21,8 +21,14 @@ Then open http://localhost:8080.
 
 ## Downloads
 
-Every download button points at `https://github.com/frickgav/openscreen/releases/latest`.
-Attach the `.dmg` (macOS) and the Windows installer to a GitHub Release and the buttons work.
+The buttons download straight from the latest GitHub Release:
+
+- `releases/latest/download/OpenRewind-mac.dmg`
+- `releases/latest/download/OpenRewind-windows-x64.zip` (and `-arm64.zip`)
+
+`.github/workflows/release.yml` builds those files and attaches them. To cut a release, push a tag
+(`git tag v0.2.0 && git push origin v0.2.0`) or run **Actions → Release → Run workflow**.
+The repo must be public for visitors to download release files.
 
 ## Deploy on Vercel
 
