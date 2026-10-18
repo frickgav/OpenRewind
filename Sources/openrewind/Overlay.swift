@@ -37,6 +37,7 @@ final class OverlayController {
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main!
         model.reload()
+        Updater.shared.checkIfStale()
 
         let p = panel ?? makePanel()
         p.setFrame(screen.frame, display: true)
