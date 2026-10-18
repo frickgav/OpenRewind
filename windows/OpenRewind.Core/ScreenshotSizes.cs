@@ -4,17 +4,22 @@ namespace OpenRewind;
 /// Text is read from the full-size capture either way; this only sets what is kept on disk.
 public static class ScreenshotSizes
 {
-    public static readonly int[] Choices = { 100, 75, 50, 25 };
+    public static readonly int[] Choices = { 100, 75, 50, 33 };
     public const int Default = 50;
 
-    public static string Title(int percent) => percent switch
+    /// "Medium (50%)", and with the screen size "Medium (50%)  —  1280 × 720".
+    public static string Title(int percent, int screenWidth = 0, int screenHeight = 0)
     {
-        100 => "Full (100%)",
-        50 => "Half (50%, Default)",
-        25 => "Quarter (25%)",
-        _ => $"{percent}%",
-    };
+        var pct = Nearest(percent);
+        var name = pct switch { 100 => "Full", 75 => "High", 50 => "Medium", _ => "Low" };
+        var t = $"{name} ({pct}%)";
+        if (screenWidth > 0 && screenHeight > 0)
+            t += $"  —  {(int)(screenWidth * pct / 100.0)} × {(int)(screenHeight * pct / 100.0)}";
+        return t;
+    }
 
-    /// An unknown value (hand-edited settings) falls back to the default.
-    public static double Scale(int percent) => (Choices.Contains(percent) ? percent : Default) / 100.0;
+    /// The closest choice, for values from older versions (25) or hand-edited settings.
+    public static int Nearest(int percent) => Choices.MinBy(c => Math.Abs(c - percent));
+
+    public static double Scale(int percent) => Nearest(percent) / 100.0;
 }

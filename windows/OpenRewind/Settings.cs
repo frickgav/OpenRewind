@@ -21,6 +21,12 @@ sealed class Settings
     public bool AutoDownloadUpdates { get; set; } = true;
     /// The version whose timeline banner was closed; a newer version shows it again.
     public string? DismissedUpdateVersion { get; set; }
+    /// Pause Recording: when screen and audio come back on (UTC); DateTime.MaxValue = until resumed. Null when not paused.
+    public DateTime? PausedUntil { get; set; }
+    /// Timeline hotkey (see HotkeyShortcut). Null = Ctrl+Alt+T.
+    public HotkeyShortcut? TimelineShortcut { get; set; }
+    /// Timeline Look: "system", "light" or "dark".
+    public string TimelineLook { get; set; } = "system";
 
     string path = "";
 

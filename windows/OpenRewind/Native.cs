@@ -19,9 +19,20 @@ static class Native
     public const int WM_HOTKEY = 0x0312;
 
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(int pid);
+    public const int ASFW_ANY = -1;
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int cmd);
+    public const int SW_RESTORE = 9;
+    [DllImport("user32.dll")] public static extern short GetKeyState(int vk);
+    public const int VK_LWIN = 0x5B, VK_RWIN = 0x5C;
+    [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint code, uint mapType);
+    public const uint MAPVK_VK_TO_CHAR = 2;
 
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
     [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc cb, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lParam);
 
     [DllImport("user32.dll", SetLastError = true)]
     static extern bool SystemParametersInfo(uint action, uint param, out bool result, uint winIni);

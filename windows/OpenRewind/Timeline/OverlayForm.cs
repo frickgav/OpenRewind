@@ -33,6 +33,39 @@ sealed class OverlayForm : Form
 
     static readonly Color Yellow = Color.FromArgb(255, 214, 10);
 
+    /// Settings → Timeline Look: "system", "light" or "dark". Set by the tray app.
+    public string Look { get; set; } = "system";
+    /// The look in use, worked out when the timeline opens.
+    bool dark = true;
+    /// Black or white, whichever stands out on the background, at this opacity.
+    Color Ink(double opacity) => dark ? Draw.White(opacity) : Draw.Black(opacity);
+    Color TextColor => dark ? Color.White : Color.FromArgb(26, 26, 26);
+    Color PillColor(bool focused) => dark ? (focused ? Color.FromArgb(58, 58, 62) : Color.FromArgb(44, 44, 48))
+                                          : (focused ? Color.White : Color.FromArgb(228, 228, 232));
+    /// Solid cards: results list, help, notices, hover preview.
+    Color CardColor => dark ? Color.FromArgb(31, 31, 33) : Color.FromArgb(250, 250, 250);
+    /// Shrunk breaks and the area after now on the bar.
+    Color Shade(double darkOpacity) => Draw.Black(dark ? darkOpacity : darkOpacity / 5);
+    /// Search words in snippets: plain yellow is hard to read on white.
+    Color MatchColor => dark ? Yellow : Color.FromArgb(184, 107, 0);
+
+    static bool SystemUsesDark()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return key?.GetValue("AppsUseLightTheme") is int light && light == 0;
+        }
+        catch { return true; }
+    }
+
+    void ApplyLook()
+    {
+        dark = Look switch { "light" => false, "dark" => true, _ => SystemUsesDark() };
+        BackColor = dark ? Color.FromArgb(18, 18, 20) : Color.FromArgb(242, 242, 245);
+        ForeColor = search.ForeColor = TextColor;
+    }
+
     public OverlayForm(TimelineModel model)
     {
         this.model = model;
@@ -78,6 +111,7 @@ sealed class OverlayForm : Form
     public void ShowOverlay()
     {
         if (!Visible) previousWindow = Native.GetForegroundWindow();
+        ApplyLook();
         var screen = Screen.FromPoint(Cursor.Position);
         backdrop?.Dispose();
         backdrop = BlurredDesktop(screen.Bounds);
@@ -101,12 +135,13 @@ sealed class OverlayForm : Form
         FocusSearch();
     }
 
-    public void HideOverlay()
+    /// `restoreFocus: false` when another app is about to come to the front (O opens it).
+    public void HideOverlay(bool restoreFocus = true)
     {
         model.StopAudio();
         clock.Stop();
         Hide();
-        if (previousWindow != IntPtr.Zero) Native.SetForegroundWindow(previousWindow);
+        if (restoreFocus && previousWindow != IntPtr.Zero) Native.SetForegroundWindow(previousWindow);
         previousWindow = IntPtr.Zero;
     }
 
@@ -174,7 +209,7 @@ sealed class OverlayForm : Form
         hot.Clear();
 
         if (backdrop != null) g.DrawImage(backdrop, ClientRectangle);
-        using (var dim = new SolidBrush(Color.FromArgb(205, 14, 14, 16))) g.FillRectangle(dim, ClientRectangle);
+        using (var dim = new SolidBrush(dark ? Color.FromArgb(205, 14, 14, 16) : Color.FromArgb(200, 246, 246, 248))) g.FillRectangle(dim, ClientRectangle);
 
         float padX = 28 * k, top = 22 * k, bottom = 16 * k, gap = 14 * k;
         float w = ClientSize.Width - 2 * padX;
@@ -202,8 +237,21 @@ sealed class OverlayForm : Form
         DrawBar(g, bar);
         y += barH + gap;
         DrawHints(g, padX, y + hintsH / 2);
+        if (model.Notice is string notice) DrawNotice(g, notice);
         if (model.ShowResults) DrawResults(g);
         if (model.ShowHelp) DrawHelp(g);
+    }
+
+    /// Small message under the top bar, for a moment.
+    void DrawNotice(Graphics g, string text)
+    {
+        var f = Semibold(13);
+        var sz = Draw.Measure(g, text, f);
+        var r = new RectangleF(ClientSize.Width / 2f - (sz.Width + 40 * k) / 2, 74 * k, sz.Width + 40 * k, 34 * k);
+        Draw.Fill(g, r, r.Height / 2, CardColor);
+        Draw.Stroke(g, r, r.Height / 2, Ink(0.12));
+        Draw.Text(g, "ⓘ", f, Ink(0.6), r.X + 14 * k, r.Y + (r.Height - sz.Height) / 2);
+        Draw.Text(g, text, f, TextColor, r.X + 32 * k, r.Y + (r.Height - sz.Height) / 2);
     }
 
     // MARK: top bar
@@ -214,10 +262,10 @@ sealed class OverlayForm : Form
         float pillW = Math.Min(460 * k, r.Width * 0.36f);
         searchPill = new RectangleF(r.X, r.Y + 3 * k, pillW, r.Height - 6 * k);
         bool focused = search.Focused;
-        Draw.Fill(g, searchPill, searchPill.Height / 2, focused ? Color.FromArgb(58, 58, 62) : Color.FromArgb(44, 44, 48));
-        Draw.Stroke(g, searchPill, searchPill.Height / 2, Draw.White(focused ? 0.35 : 0.12));
+        Draw.Fill(g, searchPill, searchPill.Height / 2, PillColor(focused));
+        Draw.Stroke(g, searchPill, searchPill.Height / 2, Ink(focused ? 0.35 : 0.12));
         // Magnifier.
-        using (var pen = new Pen(Draw.White(0.6), 1.6f * k))
+        using (var pen = new Pen(Ink(0.6), 1.6f * k))
         {
             float cx = searchPill.X + 20 * k, cy = searchPill.Y + searchPill.Height / 2 - 1 * k, rr = 5.5f * k;
             g.DrawEllipse(pen, cx - rr, cy - rr, rr * 2, rr * 2);
@@ -229,7 +277,7 @@ sealed class OverlayForm : Form
         float right = searchPill.Right - 14 * k, mid = searchPill.Y + searchPill.Height / 2;
         if (model.Query.Length == 0 && search.Text.Length == 0)
         {
-            if (!focused) right -= Draw.Keycap(g, "/", F(10), right - 18 * k, mid, k);
+            if (!focused) right -= Draw.Keycap(g, Ink(1), "/", F(10), right - 18 * k, mid, k);
         }
         else
         {
@@ -242,19 +290,19 @@ sealed class OverlayForm : Form
                 var count = $"{model.SelectedHit + 1} of {model.Hits.Count}";
                 var sz = Draw.Measure(g, count, F(12));
                 right -= sz.Width + 6 * k;
-                Draw.Text(g, count, F(12), Draw.White(0.6), right, mid - sz.Height / 2);
+                Draw.Text(g, count, F(12), Ink(0.6), right, mid - sz.Height / 2);
             }
             else if (model.Hits.Count == 0 && !model.ShowResults && model.Query.Length > 0)
             {
                 var sz = Draw.Measure(g, "No matches", F(12));
                 right -= sz.Width + 6 * k;
-                Draw.Text(g, "No matches", F(12), Draw.White(0.42), right, mid - sz.Height / 2);
+                Draw.Text(g, "No matches", F(12), Ink(0.42), right, mid - sz.Height / 2);
             }
         }
         // The real text box sits inside the pill.
         var font = F(15);
         if (search.Font.Size != font.Size) search.Font = font;
-        search.BackColor = focused ? Color.FromArgb(58, 58, 62) : Color.FromArgb(44, 44, 48);
+        search.BackColor = PillColor(focused);
         var box = new Rectangle((int)(searchPill.X + 36 * k), (int)(mid - search.PreferredHeight / 2f), (int)Math.Max(40 * k, right - searchPill.X - 44 * k), search.PreferredHeight);
         if (search.Bounds != box) search.Bounds = box;
 
@@ -263,18 +311,15 @@ sealed class OverlayForm : Form
         var time = local.ToString("T", CultureInfo.CurrentCulture);
         var tf = Semibold(28);
         var ts = Draw.Measure(g, time, tf);
-        Draw.Text(g, time, tf, Color.White, r.X + r.Width / 2 - ts.Width / 2, r.Y - 4 * k);
+        Draw.Text(g, time, tf, TextColor, r.X + r.Width / 2 - ts.Width / 2, r.Y - 4 * k);
         var rel = Relative(model.Playhead);
         var rs = Draw.Measure(g, rel, F(12));
-        Draw.Text(g, rel, F(12), Draw.White(0.6), r.X + r.Width / 2 - rs.Width / 2, r.Y + ts.Height - 6 * k);
+        Draw.Text(g, rel, F(12), Ink(0.6), r.X + r.Width / 2 - rs.Width / 2, r.Y + ts.Height - 6 * k);
 
         // Right: help and close.
         float bx = r.Right - 30 * k;
-        RoundButton(g, new RectangleF(bx, r.Y + 7 * k, 30 * k, 30 * k), "✕", HideOverlay);
+        RoundButton(g, new RectangleF(bx, r.Y + 7 * k, 30 * k, 30 * k), "✕", () => HideOverlay());
         RoundButton(g, new RectangleF(bx - 40 * k, r.Y + 7 * k, 30 * k, 30 * k), "?", () => { model.ShowHelp = !model.ShowHelp; Invalidate(); });
-        var web = new RectangleF(bx - 80 * k, r.Y + 7 * k, 30 * k, 30 * k);
-        RoundButton(g, web, "", OpenInBrowser);
-        DrawOpenIcon(g, web);
     }
 
     float HotIcon(Graphics g, string glyph, float right, float mid, Action act)
@@ -282,7 +327,7 @@ sealed class OverlayForm : Form
         var f = F(11);
         var sz = Draw.Measure(g, glyph, f);
         var r = new RectangleF(right - sz.Width - 6 * k, mid - 10 * k, sz.Width + 6 * k, 20 * k);
-        Draw.Text(g, glyph, f, Draw.White(0.6), r.X + 3 * k, mid - sz.Height / 2);
+        Draw.Text(g, glyph, f, Ink(0.6), r.X + 3 * k, mid - sz.Height / 2);
         hot.Add((r, act));
         return r.X;
     }
@@ -292,7 +337,7 @@ sealed class OverlayForm : Form
         var f = Semibold(12);
         var sz = Draw.Measure(g, label, f);
         var r = new RectangleF(right - sz.Width, mid - 10 * k, sz.Width, 20 * k);
-        Draw.Text(g, label, f, Color.White, r.X, mid - sz.Height / 2);
+        Draw.Text(g, label, f, TextColor, r.X, mid - sz.Height / 2);
         hot.Add((r, act));
         return r.X;
     }
@@ -300,15 +345,15 @@ sealed class OverlayForm : Form
     void RoundButton(Graphics g, RectangleF r, string glyph, Action act)
     {
         bool hover = r.Contains(PointToClient(Cursor.Position));
-        using (var b = new SolidBrush(Draw.White(hover ? 0.2 : 0.1))) g.FillEllipse(b, r);
-        Draw.TextCentered(g, glyph, Semibold(12), Color.White, r.X + r.Width / 2, r.Y + r.Height / 2);
+        using (var b = new SolidBrush(Ink(hover ? 0.2 : 0.1))) g.FillEllipse(b, r);
+        Draw.TextCentered(g, glyph, Semibold(12), TextColor, r.X + r.Width / 2, r.Y + r.Height / 2);
         hot.Add((r, act));
     }
 
     /// "Open outside": a box with an arrow leaving its top-right corner, drawn so no font is needed.
-    void DrawOpenIcon(Graphics g, RectangleF r)
+    void DrawOpenIcon(Graphics g, float cx, float cy)
     {
-        float cx = r.X + r.Width / 2, cy = r.Y + r.Height / 2, h = 5.5f * k;
+        float h = 5.5f * k;
         using var pen = new Pen(Color.White, 1.6f * k) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
         g.DrawLines(pen, new[] { new PointF(cx - 0.5f * k, cy - h), new PointF(cx - h, cy - h), new PointF(cx - h, cy + h),
                                   new PointF(cx + h, cy + h), new PointF(cx + h, cy + 0.5f * k) });
@@ -343,8 +388,8 @@ sealed class OverlayForm : Form
         var text = $"⚠  Newest screenshot is from {ago} ago. Screen recording may be off, or the screen has not changed.";
         var sz = Draw.Measure(g, text, F(13));
         var r = new RectangleF(x + w / 2 - (sz.Width + 28 * k) / 2, y, sz.Width + 28 * k, 34 * k);
-        Draw.Fill(g, r, 8 * k, Draw.WithAlpha(Yellow, 0.15));
-        Draw.Text(g, text, F(13), Color.White, r.X + 14 * k, r.Y + (r.Height - sz.Height) / 2);
+        Draw.Fill(g, r, 8 * k, Draw.WithAlpha(dark ? Yellow : Color.Orange, dark ? 0.15 : 0.2));
+        Draw.Text(g, text, F(13), TextColor, r.X + 14 * k, r.Y + (r.Height - sz.Height) / 2);
     }
 
     // MARK: update banner
@@ -378,21 +423,21 @@ sealed class OverlayForm : Form
         var r0 = new RectangleF(x + w / 2 - total / 2, y, total, 34 * k);
         Draw.Fill(g, r0, 8 * k, Draw.WithAlpha(Accent, 0.22));
         float mid = r0.Y + r0.Height / 2, cx = r0.X + pad;
-        Draw.Text(g, text, font, Color.White, cx, mid - ts.Height / 2);
+        Draw.Text(g, text, font, TextColor, cx, mid - ts.Height / 2);
         cx += ts.Width;
         var mouse = PointToClient(Cursor.Position);
         for (int i = 0; i < buttons.Length; i++)
         {
             cx += space;
             var br = new RectangleF(cx, mid - 11 * k, widths[i], 22 * k);
-            Draw.Fill(g, br, br.Height / 2, Draw.White(br.Contains(mouse) ? 0.26 : 0.16));
-            Draw.TextCentered(g, buttons[i].Label, bf, Color.White, br.X + br.Width / 2, mid);
+            Draw.Fill(g, br, br.Height / 2, Ink(br.Contains(mouse) ? 0.26 : 0.16));
+            Draw.TextCentered(g, buttons[i].Label, bf, TextColor, br.X + br.Width / 2, mid);
             hot.Add((br, buttons[i].Act));
             cx += widths[i];
         }
         cx += space;
         var xr = new RectangleF(cx, mid - close / 2, close, close);
-        Draw.TextCentered(g, "✕", F(11), Draw.White(xr.Contains(mouse) ? 0.9 : 0.6), xr.X + xr.Width / 2, mid);
+        Draw.TextCentered(g, "✕", F(11), Ink(xr.Contains(mouse) ? 0.9 : 0.6), xr.X + xr.Width / 2, mid);
         hot.Add((xr, u.Dismiss));
     }
 
@@ -426,7 +471,8 @@ sealed class OverlayForm : Form
                 DrawHighlights(g, ir);
                 g.Restore(state);
             }
-            Draw.Stroke(g, ir, 12 * k, Draw.White(0.12));
+            Draw.Stroke(g, ir, 12 * k, Ink(0.12));
+            DrawOpenButton(g, ir);
         }
         else
         {
@@ -434,10 +480,10 @@ sealed class OverlayForm : Form
             var title = empty ? "Nothing recorded yet" : "Screenshot not found";
             var sub = empty ? "Turn on Record Screen in the tray menu." : "The file for this moment was deleted or moved.";
             var card = new RectangleF(r.X + r.Width / 2 - 200 * k, r.Y + r.Height / 2 - 60 * k, 400 * k, 120 * k);
-            Draw.Fill(g, card, 14 * k, Draw.White(0.08));
-            Draw.TextCentered(g, empty ? "●" : "▢", F(30), Draw.White(0.42), card.X + card.Width / 2, card.Y + 32 * k);
-            Draw.TextCentered(g, title, Semibold(16), Color.White, card.X + card.Width / 2, card.Y + 68 * k);
-            Draw.TextCentered(g, sub, F(13), Draw.White(0.6), card.X + card.Width / 2, card.Y + 94 * k);
+            Draw.Fill(g, card, 14 * k, Ink(0.08));
+            Draw.TextCentered(g, empty ? "●" : "▢", F(30), Ink(0.42), card.X + card.Width / 2, card.Y + 32 * k);
+            Draw.TextCentered(g, title, Semibold(16), TextColor, card.X + card.Width / 2, card.Y + 68 * k);
+            Draw.TextCentered(g, sub, F(13), Ink(0.6), card.X + card.Width / 2, card.Y + 94 * k);
         }
         if (model.Caption is string c)
         {
@@ -448,6 +494,31 @@ sealed class OverlayForm : Form
             Draw.Fill(g, cr, 10 * k, Draw.Black(0.78));
             Draw.Wrapped(g, c, Semibold(17), Color.White, new RectangleF(cr.X + 16 * k, cr.Y + 9 * k, sz.Width + 2, sz.Height), center: true);
         }
+    }
+
+    /// Goes back to what was on screen at this moment: the browser tab, or the app window. Same as O.
+    void DrawOpenButton(Graphics g, RectangleF ir)
+    {
+        if (model.CurrentTarget is not OpenTarget t || model.Current is not TimelineFrame f) return;
+        var title = t.IsWeb ? "Open this tab in browser" : $"Go to {f.AppName}";
+        var detail = t.IsWeb ? WebAddress.Host(t.Url!) : f.WindowName.Length > 0 ? f.WindowName : f.AppName;
+        Font tf = Semibold(14), df = F(11);
+        float maxText = 260 * k;
+        float textW = Math.Min(maxText, Math.Max(Draw.Measure(g, title, tf).Width, Draw.Measure(g, detail, df).Width));
+        var keyW = Draw.Measure(g, "O", F(10)).Width + 10 * k;
+        float w = 16 * k + 16 * k + 8 * k + textW + 8 * k + Math.Max(18 * k, keyW) + 16 * k, h = 46 * k;
+        var r = new RectangleF(ir.Right - 18 * k - w, ir.Bottom - 18 * k - h, w, h);
+        bool hover = r.Contains(PointToClient(Cursor.Position));
+        using (var shadow = Draw.Round(new RectangleF(r.X, r.Y + 3 * k, r.Width, r.Height), r.Height / 2))
+        using (var sb = new SolidBrush(Draw.Black(0.25))) g.FillPath(sb, shadow);
+        Draw.Fill(g, r, r.Height / 2, hover ? ControlPaint.Light(Accent, 0.15f) : Accent);
+        float mid = r.Y + r.Height / 2;
+        DrawOpenIcon(g, r.X + 24 * k, mid);
+        float tx = r.X + 40 * k;
+        Draw.Text(g, title, tf, Color.White, tx, mid - 18 * k, textW + 2);
+        Draw.Text(g, detail, df, Draw.White(0.8), tx, mid + 2 * k, textW + 2);
+        Draw.Keycap(g, Color.White, "O", F(10), r.Right - 16 * k - Math.Max(18 * k, keyW), mid, k);
+        hot.Add((r, OpenCurrent));
     }
 
     // MARK: controls row
@@ -462,26 +533,26 @@ sealed class OverlayForm : Form
             var icon = AppIcons.Get(f.AppName);
             var ir = new RectangleF(x, mid - 14 * k, 28 * k, 28 * k);
             if (icon != null) g.DrawImage(icon, ir);
-            else Draw.Fill(g, ir, 7 * k, Draw.White(0.14));
+            else Draw.Fill(g, ir, 7 * k, Ink(0.14));
             // Same color as this app's blocks on the bar below.
             var dot = new RectangleF(ir.Right - 7 * k, ir.Bottom - 7 * k, 9 * k, 9 * k);
             using (var b = new SolidBrush(TimelineModel.AppColor(f.AppName))) g.FillEllipse(b, dot);
-            using (var p = new Pen(Draw.Black(0.6), 1.5f * k)) g.DrawEllipse(p, dot);
+            using (var p = new Pen(dark ? Draw.Black(0.6) : Draw.White(0.9), 1.5f * k)) g.DrawEllipse(p, dot);
             float tx = ir.Right + 10 * k, maxW = r.Width / 3 - 40 * k;
             var name = f.AppName.Length == 0 ? "Unknown app" : f.AppName;
             if (f.WindowName.Length > 0)
             {
-                Draw.Text(g, name, Semibold(13), Color.White, tx, mid - 17 * k, maxW);
-                Draw.Text(g, f.WindowName, F(12), Draw.White(0.6), tx, mid + 1 * k, maxW);
+                Draw.Text(g, name, Semibold(13), TextColor, tx, mid - 17 * k, maxW);
+                Draw.Text(g, f.WindowName, F(12), Ink(0.6), tx, mid + 1 * k, maxW);
             }
-            else Draw.Text(g, name, Semibold(13), Color.White, tx, mid - 9 * k, maxW);
+            else Draw.Text(g, name, Semibold(13), TextColor, tx, mid - 9 * k, maxW);
         }
 
         // Audio buttons, centered.
         var here = model.AudioHere;
         if (here.Count == 0)
         {
-            Draw.TextCentered(g, "No audio at this moment", F(12), Draw.White(0.42), r.X + r.Width / 2, mid);
+            Draw.TextCentered(g, "No audio at this moment", F(12), Ink(0.42), r.X + r.Width / 2, mid);
         }
         else
         {
@@ -493,9 +564,9 @@ sealed class OverlayForm : Form
                 var a = here[i];
                 bool on = model.PlayingChunk == a.Id;
                 var br = new RectangleF(x, mid - 15 * k, widths[i], 30 * k);
-                Draw.Fill(g, br, br.Height / 2, on ? Accent : Draw.White(0.14));
-                Draw.Text(g, on ? "❚❚" : "▶", F(10), Color.White, br.X + 13 * k, mid - 7 * k);
-                Draw.Text(g, a.IsInput ? "Microphone" : "System audio", f13, Color.White, br.X + 28 * k, mid - 8 * k);
+                Draw.Fill(g, br, br.Height / 2, on ? Accent : Ink(0.14));
+                Draw.Text(g, on ? "❚❚" : "▶", F(10), on ? Color.White : TextColor, br.X + 13 * k, mid - 7 * k);
+                Draw.Text(g, a.IsInput ? "Microphone" : "System audio", f13, on ? Color.White : TextColor, br.X + 28 * k, mid - 8 * k);
                 // Matches the audio lane color on the bar.
                 using (var b = new SolidBrush(a.IsInput ? Mic : Sys)) g.FillEllipse(b, br.Right - 15 * k, mid - 3.5f * k, 7 * k, 7 * k);
                 var capture = a;
@@ -508,14 +579,14 @@ sealed class OverlayForm : Form
         var steps = new (string Label, double Span)[] { ("5m", 300), ("15m", 900), ("1h", 3600), ("4h", 4 * 3600), ("12h", 12 * 3600) };
         float segW = 38 * k, pw = segW * steps.Length + 4 * k;
         var pr = new RectangleF(r.Right - pw, mid - 14 * k, pw, 28 * k);
-        Draw.Fill(g, pr, pr.Height / 2, Draw.White(0.08));
+        Draw.Fill(g, pr, pr.Height / 2, Ink(0.08));
         for (int i = 0; i < steps.Length; i++)
         {
             var s = steps[i];
             bool on = Math.Abs(model.Span - s.Span) < 1;
             var sr = new RectangleF(pr.X + 2 * k + i * segW, pr.Y + 2 * k, segW, pr.Height - 4 * k);
-            if (on) Draw.Fill(g, sr, sr.Height / 2, Draw.White(0.22));
-            Draw.TextCentered(g, s.Label, on ? Semibold(12) : F(12), on ? Color.White : Draw.White(0.6), sr.X + sr.Width / 2, sr.Y + sr.Height / 2);
+            if (on) Draw.Fill(g, sr, sr.Height / 2, Ink(0.22));
+            Draw.TextCentered(g, s.Label, on ? Semibold(12) : F(12), on ? TextColor : Ink(0.6), sr.X + sr.Width / 2, sr.Y + sr.Height / 2);
             var span = s.Span;
             hot.Add((sr, () => { model.Span = span; Invalidate(); }));
         }
@@ -523,16 +594,16 @@ sealed class OverlayForm : Form
         var label = live ? "Live" : "Now ⏭";
         var lw = Draw.Measure(g, label, Semibold(12)).Width + (live ? 34 : 24) * k;
         var lr = new RectangleF(pr.X - 10 * k - lw, mid - 14 * k, lw, 28 * k);
-        Draw.Fill(g, lr, lr.Height / 2, live ? Draw.White(0.08) : Accent);
+        Draw.Fill(g, lr, lr.Height / 2, live ? Ink(0.08) : Accent);
         if (live)
         {
             using var red = new SolidBrush(Color.FromArgb(255, 69, 58));
             g.FillEllipse(red, lr.X + 12 * k, mid - 3.5f * k, 7 * k, 7 * k);
-            Draw.Text(g, label, Semibold(12), Draw.White(0.6), lr.X + 24 * k, mid - 8 * k);
+            Draw.Text(g, label, Semibold(12), Ink(0.6), lr.X + 24 * k, mid - 8 * k);
         }
         else
         {
-            Draw.Text(g, label, Semibold(12), Color.White, lr.X + 12 * k, mid - 8 * k);
+            Draw.Text(g, label, Semibold(12), Color.White, lr.X + 12 * k, mid - 8 * k);  // on the accent color
             hot.Add((lr, model.JumpToNow));
         }
     }
@@ -558,7 +629,7 @@ sealed class OverlayForm : Form
         var end = axis.Date(v1);
         float px = X(model.Playhead);
 
-        Draw.Fill(g, new RectangleF(r.X, r.Y + 20 * k, r.Width, r.Height - 20 * k), 10 * k, Draw.White(0.06));
+        Draw.Fill(g, new RectangleF(r.X, r.Y + 20 * k, r.Width, r.Height - 20 * k), 10 * k, Ink(0.06));
         var state = g.Save();
         g.SetClip(new RectangleF(r.X, r.Y, r.Width, r.Height));
 
@@ -601,12 +672,12 @@ sealed class OverlayForm : Form
             float a = X(from), b = X(to);
             if (b < r.X || a > r.Right) continue;
             var nr = new RectangleF(a + 2 * k, r.Y + 26 * k, Math.Max(0, b - a - 4 * k), r.Height - 30 * k);
-            Draw.Fill(g, nr, 4 * k, Draw.Black(0.45));
-            using (var pen = new Pen(Draw.White(0.25), 1) { DashPattern = new[] { 3f, 3f } })
+            Draw.Fill(g, nr, 4 * k, Shade(0.45));
+            using (var pen = new Pen(Ink(0.25), 1) { DashPattern = new[] { 3f, 3f } })
                 g.DrawLine(pen, nr.X + nr.Width / 2, nr.Y + 4 * k, nr.X + nr.Width / 2, nr.Bottom - 16 * k);
             var label = TimelineAxis.BreakLabel(to - from);
             if (Draw.Measure(g, label, F(9)).Width < nr.Width + 30 * k)
-                Draw.TextCentered(g, label, F(9), Draw.White(0.6), nr.X + nr.Width / 2, nr.Bottom - 7 * k);
+                Draw.TextCentered(g, label, F(9), Ink(0.6), nr.X + nr.Width / 2, nr.Bottom - 7 * k);
         }
 
         // Clock labels at round times inside recorded stretches (never inside a break).
@@ -625,12 +696,12 @@ sealed class OverlayForm : Form
             while (t <= hi)
             {
                 float tx = X(t);
-                using (var b = new SolidBrush(Draw.White(0.35))) g.FillRectangle(b, tx - 0.5f, r.Y + TickY, 1, 4 * k);
+                using (var b = new SolidBrush(Ink(0.35))) g.FillRectangle(b, tx - 0.5f, r.Y + TickY, 1, 4 * k);
                 if (tx - lastLabelX > 60 * k)
                 {
                     var fmt = step >= 3600 ? "h tt" : "t";
                     var text = t.ToLocalTime().ToString(fmt, CultureInfo.CurrentCulture);
-                    Draw.TextCentered(g, text, F(10), Draw.White(0.6), tx, r.Y + TickY + 11 * k);
+                    Draw.TextCentered(g, text, F(10), Ink(0.6), tx, r.Y + TickY + 11 * k);
                     lastLabelX = tx;
                 }
                 t = t.AddSeconds(step);
@@ -650,7 +721,7 @@ sealed class OverlayForm : Form
         float nx = X(now);
         if (nx < r.Right - 1)
         {
-            using var shade = new SolidBrush(Draw.Black(0.3));
+            using var shade = new SolidBrush(Shade(0.3));
             g.FillRectangle(shade, nx, r.Y + 22 * k, r.Right - nx, r.Height - 22 * k);
             using var red = new SolidBrush(Color.FromArgb(178, 255, 59, 48));
             g.FillRectangle(red, nx - 0.5f, r.Y + 22 * k, 1, r.Height - 24 * k);
@@ -658,18 +729,18 @@ sealed class OverlayForm : Form
 
         // Hover line.
         if (hoverX is float hx && dragStartV == null && Math.Abs(hx - px) > 3 * k)
-            using (var b = new SolidBrush(Draw.White(0.45))) g.FillRectangle(b, hx - 0.5f, r.Y + 20 * k, 1, r.Height - 22 * k);
+            using (var b = new SolidBrush(Ink(0.45))) g.FillRectangle(b, hx - 0.5f, r.Y + 20 * k, 1, r.Height - 22 * k);
 
         // Playhead with its time in a small bubble that stays inside the bar.
-        using (var b = new SolidBrush(Color.White)) g.FillRectangle(b, px - 1 * k, r.Y + 16 * k, 2 * k, r.Height - 18 * k);
+        using (var b = new SolidBrush(Ink(1))) g.FillRectangle(b, px - 1 * k, r.Y + 16 * k, 2 * k, r.Height - 18 * k);
         var pt = model.Playhead.ToLocalTime().ToString("T", CultureInfo.CurrentCulture);
         var pf = Semibold(10);
         var ps = Draw.Measure(g, pt, pf);
         float bw = ps.Width + 12 * k;
         float bubbleX = Math.Min(Math.Max(r.X, px - bw / 2), r.Right - bw);
         var bubble = new RectangleF(bubbleX, r.Y + 1 * k, bw, 15 * k);
-        Draw.Fill(g, bubble, 7.5f * k, Color.White);
-        Draw.TextCentered(g, pt, pf, Color.Black, bubble.X + bubble.Width / 2, bubble.Y + bubble.Height / 2);
+        Draw.Fill(g, bubble, 7.5f * k, Ink(1));
+        Draw.TextCentered(g, pt, pf, dark ? Color.Black : Color.White, bubble.X + bubble.Width / 2, bubble.Y + bubble.Height / 2);
         g.Restore(state);
 
         // Hover preview card above the bar.
@@ -686,25 +757,25 @@ sealed class OverlayForm : Form
         float w = 240 * k, h = 178 * k;
         float x = Math.Min(Math.Max(barRect.X, hx - w / 2), barRect.Right - w);
         var card = new RectangleF(x, barRect.Y - h - 10 * k, w, h);
-        Draw.Fill(g, card, 10 * k, Color.FromArgb(33, 33, 35));
-        Draw.Stroke(g, card, 10 * k, Draw.White(0.15));
+        Draw.Fill(g, card, 10 * k, CardColor);
+        Draw.Stroke(g, card, 10 * k, Ink(0.15));
         var p = model.Preview(date);
         var ir = new RectangleF(card.X + 8 * k, card.Y + 8 * k, w - 16 * k, 128 * k);
-        Draw.Fill(g, ir, 6 * k, Draw.White(0.06));
+        Draw.Fill(g, ir, 6 * k, Ink(0.06));
         if (p?.Thumb is Image img)
         {
             float s = Math.Min(ir.Width / img.Width, ir.Height / img.Height);
             g.DrawImage(img, ir.X + (ir.Width - img.Width * s) / 2, ir.Y + (ir.Height - img.Height * s) / 2, img.Width * s, img.Height * s);
         }
-        else Draw.TextCentered(g, p == null ? "Nothing recorded" : "No picture", F(11), Draw.White(0.5), ir.X + ir.Width / 2, ir.Y + ir.Height / 2);
+        else Draw.TextCentered(g, p == null ? "Nothing recorded" : "No picture", F(11), Ink(0.5), ir.X + ir.Width / 2, ir.Y + ir.Height / 2);
         float ly = ir.Bottom + 12 * k;
         var time = date.ToLocalTime().ToString("T", CultureInfo.CurrentCulture);
         var ts = Draw.Measure(g, time, Semibold(11));
-        Draw.Text(g, time, Semibold(11), Draw.White(0.6), card.Right - 8 * k - ts.Width, ly);
+        Draw.Text(g, time, Semibold(11), Ink(0.6), card.Right - 8 * k - ts.Width, ly);
         if (p?.Frame is TimelineFrame f)
         {
             using (var b = new SolidBrush(TimelineModel.AppColor(f.AppName))) g.FillEllipse(b, card.X + 8 * k, ly + 4 * k, 7 * k, 7 * k);
-            Draw.Text(g, f.AppName.Length == 0 ? "Unknown app" : f.AppName, Semibold(11), Color.White, card.X + 20 * k, ly, w - 36 * k - ts.Width);
+            Draw.Text(g, f.AppName.Length == 0 ? "Unknown app" : f.AppName, Semibold(11), TextColor, card.X + 20 * k, ly, w - 36 * k - ts.Width);
         }
     }
 
@@ -714,11 +785,11 @@ sealed class OverlayForm : Form
     {
         var f = F(11);
         foreach (var (keys, what) in new[] { (new[] { "←", "→" }, "move"), (new[] { "space" }, "play audio"), (new[] { "/" }, "search"),
-                                              (new[] { "+", "−" }, "zoom"), (new[] { "O" }, "browser"), (new[] { "?" }, "all keys"), (new[] { "esc" }, "close") })
+                                              (new[] { "+", "−" }, "zoom"), (new[] { "O" }, "open"), (new[] { "?" }, "all keys"), (new[] { "esc" }, "close") })
         {
-            foreach (var key in keys) x += Draw.Keycap(g, key, F(10), x, mid, k) + 4 * k;
+            foreach (var key in keys) x += Draw.Keycap(g, Ink(1), key, F(10), x, mid, k) + 4 * k;
             var sz = Draw.Measure(g, what, f);
-            Draw.Text(g, what, f, Draw.White(0.42), x, mid - sz.Height / 2);
+            Draw.Text(g, what, f, Ink(0.42), x, mid - sz.Height / 2);
             x += sz.Width + 14 * k;
         }
     }
@@ -729,21 +800,21 @@ sealed class OverlayForm : Form
         var hits = model.Hits;
         float listH = hits.Count == 0 ? 52 * k : Math.Min(440 * k, headH + hits.Count * rowH + 12 * k);
         var box = new RectangleF(searchPill.X, shot.Y + 2 * k, w, listH);
-        Draw.Fill(g, box, 12 * k, Color.FromArgb(28, 28, 30));
-        Draw.Stroke(g, box, 12 * k, Draw.White(0.12));
+        Draw.Fill(g, box, 12 * k, CardColor);
+        Draw.Stroke(g, box, 12 * k, Ink(0.12));
         hot.Add((box, () => { }));  // clicks on the list do not fall through
         if (hits.Count == 0)
         {
-            Draw.Text(g, $"No matches for “{model.Query}”", F(14), Draw.White(0.6), box.X + 16 * k, box.Y + 16 * k);
+            Draw.Text(g, $"No matches for “{model.Query}”", F(14), Ink(0.6), box.X + 16 * k, box.Y + 16 * k);
             return;
         }
-        Draw.Text(g, $"{hits.Count} moment{(hits.Count == 1 ? "" : "s")}", F(11), Draw.White(0.42), box.X + 14 * k, box.Y + 9 * k);
+        Draw.Text(g, $"{hits.Count} moment{(hits.Count == 1 ? "" : "s")}", F(11), Ink(0.42), box.X + 14 * k, box.Y + 9 * k);
         float hx = box.Right - 14 * k;
         foreach (var part in new[] { "go", "⏎", "choose", "↓", "↑" })
         {
             bool key = part.Length == 1;
-            if (key) hx -= Draw.Keycap(g, part, F(10), hx - 18 * k, box.Y + headH / 2, k) + 4 * k;
-            else { var sz = Draw.Measure(g, part, F(11)); hx -= sz.Width + 6 * k; Draw.Text(g, part, F(11), Draw.White(0.42), hx, box.Y + 9 * k); }
+            if (key) hx -= Draw.Keycap(g, Ink(1), part, F(10), hx - 18 * k, box.Y + headH / 2, k) + 4 * k;
+            else { var sz = Draw.Measure(g, part, F(11)); hx -= sz.Width + 6 * k; Draw.Text(g, part, F(11), Ink(0.42), hx, box.Y + 9 * k); }
         }
         // Keep the selected row in view.
         int visible = (int)((box.Height - headH - 12 * k) / rowH);
@@ -758,11 +829,11 @@ sealed class OverlayForm : Form
             if (i == model.SelectedHit) Draw.Fill(g, rr, 8 * k, Draw.WithAlpha(Accent, 0.35));
             var icon = h.IsAudio ? null : AppIcons.Get(h.Title);
             if (icon != null) g.DrawImage(icon, rr.X + 10 * k, rr.Y + 8 * k, 18 * k, 18 * k);
-            else Draw.Text(g, h.IsAudio ? "∿" : "▭", Semibold(14), h.IsAudio ? Sys : Draw.White(0.6), rr.X + 11 * k, rr.Y + 5 * k);
+            else Draw.Text(g, h.IsAudio ? "∿" : "▭", Semibold(14), h.IsAudio ? Sys : Ink(0.6), rr.X + 11 * k, rr.Y + 5 * k);
             var when = h.Time.ToLocalTime().ToString("MMM d, T", CultureInfo.CurrentCulture);
             var ws = Draw.Measure(g, when, F(11));
-            Draw.Text(g, when, F(11), Draw.White(0.42), rr.Right - 10 * k - ws.Width, rr.Y + 7 * k);
-            Draw.Text(g, h.Title, Semibold(13), Color.White, rr.X + 40 * k, rr.Y + 6 * k, rr.Width - 60 * k - ws.Width);
+            Draw.Text(g, when, F(11), Ink(0.42), rr.Right - 10 * k - ws.Width, rr.Y + 7 * k);
+            Draw.Text(g, h.Title, Semibold(13), TextColor, rr.X + 40 * k, rr.Y + 6 * k, rr.Width - 60 * k - ws.Width);
             DrawHighlighted(g, h.Snippet, words, rr.X + 40 * k, rr.Y + 27 * k, rr.Right - 10 * k);
             int idx = i;
             hot.Add((rr, () => { model.SelectedHit = idx; model.OpenSelected(); ActiveControl = null; Focus(); }));
@@ -786,12 +857,12 @@ sealed class OverlayForm : Form
             var piece = best < 0 ? text[pos..] : text[pos..best];
             if (piece.Length > 0)
             {
-                Draw.Text(g, piece, plain, Draw.White(0.8), x, y, right - x);
+                Draw.Text(g, piece, plain, Ink(0.8), x, y, right - x);
                 x += Draw.Measure(g, piece, plain).Width;
             }
             if (best < 0 || x >= right) break;
             var match = text.Substring(best, len);
-            Draw.Text(g, match, bold, Yellow, x, y, right - x);
+            Draw.Text(g, match, bold, MatchColor, x, y, right - x);
             x += Draw.Measure(g, match, bold).Width;
             pos = best + len;
         }
@@ -804,42 +875,42 @@ sealed class OverlayForm : Form
         ("", new[] { new[] { "↑" }, new[] { "↓" } }, "Back / forward 10 minutes"),
         ("", new[] { new[] { "scroll" } }, "Scroll the wheel or touchpad"),
         ("", new[] { new[] { "N" } }, "Go to now"),
+        ("OPEN", new[] { new[] { "O" } }, "Open the tab or window from this moment"),
         ("AUDIO", new[] { new[] { "space" } }, "Play or pause audio from here"),
         ("SEARCH", new[] { new[] { "/" }, new[] { "Ctrl", "F" } }, "Search screen text and speech"),
         ("", new[] { new[] { "Ctrl", "G" }, new[] { "Shift", "Ctrl", "G" } }, "Older / newer match"),
-        ("", new[] { new[] { "O" } }, "Open the search page in the browser"),
         ("VIEW", new[] { new[] { "+" }, new[] { "−" } }, "Zoom the bar in / out"),
         ("", new[] { new[] { "esc" } }, "Close the list, then the overlay"),
     };
 
     void DrawHelp(Graphics g)
     {
-        using (var b = new SolidBrush(Draw.Black(0.45))) g.FillRectangle(b, ClientRectangle);
+        using (var b = new SolidBrush(Draw.Black(dark ? 0.45 : 0.2))) g.FillRectangle(b, ClientRectangle);
         hot.Clear();  // only the card is clickable now
         hot.Add((ClientRectangle, () => { model.ShowHelp = false; Invalidate(); }));
         float w = 600 * k, rowH = 28 * k, h = 24 * k * 2 + 30 * k + Shortcuts.Length * rowH + 30 * k;
         var card = new RectangleF(ClientSize.Width / 2f - w / 2, ClientSize.Height / 2f - h / 2, w, h);
-        Draw.Fill(g, card, 16 * k, Color.FromArgb(31, 31, 33));
-        Draw.Stroke(g, card, 16 * k, Draw.White(0.12));
+        Draw.Fill(g, card, 16 * k, CardColor);
+        Draw.Stroke(g, card, 16 * k, Ink(0.12));
         hot.Add((card, () => { }));
-        Draw.Text(g, "Keyboard shortcuts", Semibold(17), Color.White, card.X + 24 * k, card.Y + 22 * k);
+        Draw.Text(g, "Keyboard shortcuts", Semibold(17), TextColor, card.X + 24 * k, card.Y + 22 * k);
         RoundButton(g, new RectangleF(card.Right - 54 * k, card.Y + 18 * k, 30 * k, 30 * k), "✕", () => { model.ShowHelp = false; Invalidate(); });
         float y = card.Y + 66 * k;
         foreach (var (group, keys, what) in Shortcuts)
         {
             float mid = y + rowH / 2;
-            Draw.Text(g, group, Semibold(11), Draw.White(0.42), card.X + 24 * k, mid - 7 * k);
+            Draw.Text(g, group, Semibold(11), Ink(0.42), card.X + 24 * k, mid - 7 * k);
             float x = card.X + 100 * k;
             for (int i = 0; i < keys.Length; i++)
             {
-                if (i > 0) { Draw.Text(g, "/", F(12), Draw.White(0.42), x, mid - 8 * k); x += 12 * k; }
-                foreach (var key in keys[i]) x += Draw.Keycap(g, key, F(12), x, mid, k) + 3 * k;
+                if (i > 0) { Draw.Text(g, "/", F(12), Ink(0.42), x, mid - 8 * k); x += 12 * k; }
+                foreach (var key in keys[i]) x += Draw.Keycap(g, Ink(1), key, F(12), x, mid, k) + 3 * k;
                 x += 3 * k;
             }
-            Draw.Text(g, what, F(13), Draw.White(0.85), card.X + 300 * k, mid - 9 * k);
+            Draw.Text(g, what, F(13), Ink(0.85), card.X + 300 * k, mid - 9 * k);
             y += rowH;
         }
-        Draw.Text(g, "Drag or click the bar to move. Hover it to preview.", F(12), Draw.White(0.6), card.X + 24 * k, y + 6 * k);
+        Draw.Text(g, "Drag or click the bar to move. Hover it to preview.", F(12), Ink(0.6), card.X + 24 * k, y + 6 * k);
     }
 
     // MARK: input
@@ -854,12 +925,16 @@ sealed class OverlayForm : Form
 
     void LeaveSearch() { ActiveControl = null; Focus(); Invalidate(); }
 
-    /// Hand off to the browser search page (the tray app turns the local server on if needed).
-    void OpenInBrowser()
+    /// Go back to this moment: the browser tab, or the app window.
+    void OpenCurrent()
     {
-        if (model.OpenInBrowser is not Action open) return;
-        HideOverlay();
-        open();
+        if (model.CurrentTarget is not OpenTarget t || model.Current is not TimelineFrame f)
+        {
+            model.ShowNotice("Nothing to open for this moment");
+            return;
+        }
+        HideOverlay(restoreFocus: false);
+        if (!Reopen.Open(f, t)) Log.Write($"could not open {f.AppName}");
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
@@ -905,7 +980,7 @@ sealed class OverlayForm : Form
             case Keys.Down: model.Jump(model.Playhead.AddSeconds(600)); break;
             case Keys.Space: model.ToggleAudio(); break;
             case Keys.N: case Keys.End: model.JumpToNow(); break;
-            case Keys.O when !ctrl: OpenInBrowser(); break;
+            case Keys.O when !ctrl: OpenCurrent(); break;
             case Keys.Oemplus: case Keys.Add: model.Span = Math.Max(60, model.Span / 2); Invalidate(); break;
             case Keys.OemMinus: case Keys.Subtract: model.Span = Math.Min(12 * 3600, model.Span * 2); Invalidate(); break;
             default: return base.ProcessCmdKey(ref msg, keyData);
