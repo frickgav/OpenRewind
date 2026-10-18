@@ -7,7 +7,7 @@ namespace OpenRewind;
 
 static class ImageTools
 {
-    /// 64-bit difference hash (dHash). Close screens give close hashes (screenpipe uses simhash for this).
+    /// 64-bit difference hash (dHash). Close screens give close hashes.
     public static ulong DHash(Bitmap image)
     {
         const int w = 9, h = 8;

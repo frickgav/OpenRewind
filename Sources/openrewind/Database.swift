@@ -27,7 +27,7 @@ struct SearchQuery {
 
 enum DBError: Error { case open(String), prepare(String), step(String) }
 
-/// Thin SQLite wrapper. Mirrors screenpipe's `frames` + `frames_fts` design:
+/// Thin SQLite wrapper around the `frames` + `frames_fts` tables:
 /// one row per captured frame, FTS5 index over text, app and window.
 final class Database {
     var db: OpaquePointer?
