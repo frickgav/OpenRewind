@@ -5,3 +5,8 @@
 dist/
 windows/**/bin/
 windows/**/obj/
+signing/
+*.p12
+*.p12.b64
+*.pem
+password.txt

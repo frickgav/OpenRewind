@@ -7,18 +7,20 @@ on:
     paths: ["windows/**", "Sources/openrewind/WebUI.swift", "scripts/build-windows.ps1", "scripts/launch-check-windows.ps1", ".github/workflows/windows.yml"]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: windows-latest
     strategy:
       matrix:
         arch: [x64, arm64]
-    env:
-      # Signing runs only when the Azure Trusted Signing secrets are set (see windows/README.md).
-      CAN_SIGN: ${{ secrets.AZURE_CLIENT_ID != '' }}
+    # Unsigned: the Azure signing secrets live in the "release" environment, which only the
+    # Release workflow uses, so branch and PR builds never see them.
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: 8.0.x
       - name: Build, test and package
@@ -29,22 +31,7 @@ jobs:
         if: matrix.arch == 'x64'
         shell: pwsh
         run: scripts/launch-check-windows.ps1 -ExePath dist/win-x64/OpenRewind.exe
-      - name: Sign with Azure Trusted Signing
-        if: env.CAN_SIGN == 'true'
-        uses: azure/trusted-signing-action@v0.5.1
-        with:
-          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
-          files-folder: dist/win-${{ matrix.arch }}
-          files-folder-filter: exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: OpenRewind-win-${{ matrix.arch }}
           path: dist/win-${{ matrix.arch }}/
