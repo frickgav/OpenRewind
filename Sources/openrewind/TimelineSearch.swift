@@ -115,7 +115,7 @@ extension TimelineModel {
         highlights = []
         let work = DispatchWorkItem { [weak self] in
             DispatchQueue.global(qos: .userInitiated).async {
-                let found = ImageTools.load(URL(fileURLWithPath: f.path)).map { OCR.find(terms, in: $0) } ?? []
+                let found = FrameStore.image(f.path).map { OCR.find(terms, in: $0) } ?? []
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.highlightCache[key] = found

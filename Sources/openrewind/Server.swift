@@ -181,11 +181,14 @@ struct API {
             sq.limit = fetch; sq.offset = 0
             let (rows, n) = db.search(sq)
             total += n
-            items += rows.map { f in (f.timestamp, ["type": "OCR", "content": [
-                "frame_id": f.id, "text": clip(f.text), "timestamp": f.timestamp,
-                "app_name": f.appName, "window_name": f.windowName, "focused": f.focused,
-                "file_path": f.snapshotPath, "text_source": f.textSource, "offset_index": 0, "tags": [],
-            ] as [String: Any]]) }
+            items += rows.map { f in
+                let ref = FrameStore.split(f.snapshotPath)
+                return (f.timestamp, ["type": "OCR", "content": [
+                    "frame_id": f.id, "text": clip(f.text), "timestamp": f.timestamp,
+                    "app_name": f.appName, "window_name": f.windowName, "focused": f.focused,
+                    "file_path": ref.file, "text_source": f.textSource, "offset_index": ref.index ?? 0, "tags": [],
+                ] as [String: Any]])
+            }
         }
         if wantAudio {
             let (rows, n) = db.searchAudio(s, fetch: fetch)
@@ -215,18 +218,18 @@ struct API {
     private func frameImage(_ idStr: String) -> HTTPResponse {
         guard let id = Int64(idStr), let f = db.frame(id: id) else { return .error("frame not found", status: 404) }
         // Only serve files inside our own data dir.
-        let path = URL(fileURLWithPath: f.snapshotPath).standardizedFileURL.path
-        guard path.hasPrefix(config.dataDir.standardizedFileURL.path),
-              let data = FileManager.default.contents(atPath: path) else {
+        let (file, index) = FrameStore.split(f.snapshotPath)
+        let path = URL(fileURLWithPath: file).standardizedFileURL.path
+        guard path.hasPrefix(config.dataDir.standardizedFileURL.path), FileManager.default.fileExists(atPath: path) else {
             return .error("snapshot missing", status: 404)
         }
-        // Chrome and Firefox cannot show HEIC: send JPEG.
-        if path.hasSuffix(".heic") {
-            guard let img = ImageTools.load(URL(fileURLWithPath: path)), let jpg = ImageTools.jpegData(img) else {
-                return .error("cannot decode snapshot", status: 500)
-            }
-            return HTTPResponse(contentType: "image/jpeg", body: jpg)
+        if index == nil, path.hasSuffix(".jpg"), let data = FileManager.default.contents(atPath: path) {
+            return HTTPResponse(contentType: "image/jpeg", body: data)
         }
-        return HTTPResponse(contentType: "image/jpeg", body: data)
+        // HEIC (Chrome and Firefox cannot show it) or a frame of a video chunk: send JPEG.
+        guard let img = FrameStore.image(f.snapshotPath), let jpg = ImageTools.jpegData(img) else {
+            return .error("cannot decode snapshot", status: 500)
+        }
+        return HTTPResponse(contentType: "image/jpeg", body: jpg)
     }
 }
