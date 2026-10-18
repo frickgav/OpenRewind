@@ -11,7 +11,7 @@ struct Config {
     var useAccessibility = true
     var recordMic = true
     var recordSystemAudio = true
-    /// Length of each audio chunk sent to Whisper (screenpipe uses 30 s).
+    /// Length of each audio chunk sent to Whisper.
     var audioChunkSeconds: Double = 30
     var whisperModel: String?
     var whisperBinary: String?

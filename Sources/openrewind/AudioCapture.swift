@@ -34,7 +34,7 @@ final class Resampler {
 }
 
 /// Collects 16 kHz samples and cuts them into fixed-length WAV chunks.
-/// Silent chunks are dropped (screenpipe marks them `silent`).
+/// Silent chunks are dropped.
 final class ChunkWriter {
     let device: String
     let isInput: Bool

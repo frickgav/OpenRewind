@@ -35,7 +35,7 @@ sealed class Engine
         if (server != null) return;
         var api = new Api(Db, Config, () => new()
         {
-            // Windows has no screen-recording prompt; kept for screenpipe-shaped clients.
+            // Windows has no screen-recording prompt; kept so API clients see the same fields as on the Mac.
             ["screen_permission"] = true,
             ["accessibility_permission"] = Config.UseAccessibility,
             ["ocr_available"] = Ocr.Available,
