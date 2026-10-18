@@ -391,3 +391,6 @@ kbd {
   .nav-cta .btn { width: auto; }
   .foot-cols { gap: 40px; }
 }
+.alt-link { margin-top: 12px; font-size: 14px; color: var(--pewter); text-decoration: underline; text-underline-offset: 3px; }
+.alt-link:hover { color: var(--ink); }
+#download .fine a { text-decoration: underline; text-underline-offset: 3px; }
