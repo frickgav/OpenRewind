@@ -11,6 +11,7 @@ struct TimelineView: View {
             Color.black.opacity(0.9).ignoresSafeArea()
             VStack(spacing: 14) {
                 header
+                if let gap = staleGap { staleBanner(gap) }
                 searchBar
                 ZStack(alignment: .top) {
                     screenshot
@@ -23,6 +24,28 @@ struct TimelineView: View {
         }
         .foregroundColor(.white)
         .onChange(of: model.focusSearchToken) { _ in searchFocused = true }
+    }
+
+    // MARK: stale warning
+
+    /// Minutes since the newest screenshot, when that is long enough to look like a gap.
+    private var staleGap: Int? {
+        guard let last = model.frames.last else { return nil }
+        let mins = Int(Date().timeIntervalSince(last.time) / 60)
+        return mins >= 3 ? mins : nil
+    }
+
+    private func staleBanner(_ mins: Int) -> some View {
+        let ago = mins >= 60 ? "\(mins / 60) h \(mins % 60) min" : "\(mins) min"
+        let why = !Capture.hasScreenPermission
+            ? "Screen recording is blocked by macOS. Menu bar → Screen permission needed."
+            : "Screen recording may be off, or the screen has not changed."
+        return HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.yellow)
+            Text("Newest screenshot is from \(ago) ago. \(why)").font(.system(size: 13))
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.yellow.opacity(0.15)))
     }
 
     // MARK: search
