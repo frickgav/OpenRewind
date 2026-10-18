@@ -6,6 +6,7 @@ openscreen — record your screen, OCR it, search it locally.
 
 Usage:
   openscreen [record]        Record + serve API/UI (default)
+  openscreen app             Run the menu bar app (what OpenScreen.app runs)
   openscreen serve           Serve API/UI only, no recording
   openscreen once            Capture one frame and exit
   openscreen ingest <image> [--app NAME] [--window TITLE]
@@ -31,17 +32,21 @@ Env:
 """
 
 let args = Array(CommandLine.arguments.dropFirst())
-let command = args.first(where: { !$0.hasPrefix("-") }) ?? "record"
+/// Launched from Finder / Dock as OpenScreen.app with no command → run the menu bar app.
+let launchedAsApp = Bundle.main.bundleURL.pathExtension == "app" && !args.contains(where: { !$0.hasPrefix("-") })
+let command = launchedAsApp ? "app" : (args.first(where: { !$0.hasPrefix("-") }) ?? "record")
 if args.contains("-h") || args.contains("--help") || command == "help" {
     print(usage); exit(0)
 }
 
 let config = Config.load(arguments: args)
+if command == "app" { openLogFile(in: config.home) }
 let db: Database
 do { db = try Database(path: config.dbPath) } catch {
     log("cannot open database at \(config.dbPath.path): \(error)"); exit(1)
 }
-let recorder = Recorder(config: config, db: db)
+let engine = Engine(config: config, db: db)
+let recorder = engine.recorder
 
 func value(after flag: String) -> String? {
     guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
@@ -49,11 +54,7 @@ func value(after flag: String) -> String? {
 }
 
 func startServer() {
-    let api = API(db: db, config: config)
-    let server = Server(port: config.port, router: api.handle)
-    do { try server.start() } catch { log("cannot start server: \(error)"); exit(1) }
-    // Keep a strong ref for the life of the process.
-    objc_setAssociatedObject(NSApplication.shared, "server", server, .OBJC_ASSOCIATION_RETAIN)
+    do { try engine.startServer() } catch { log("cannot start server: \(error)"); exit(1) }
 }
 
 func requirePermissions() {
@@ -67,35 +68,19 @@ func requirePermissions() {
     }
 }
 
-/// Long-lived objects that must stay alive while recording.
-var keepAlive: [AnyObject] = []
-
-func startAudio() {
-    if config.recordMic {
-        let mic = MicCapture(writer: ChunkWriter(device: "microphone", isInput: true, seconds: config.audioChunkSeconds, config: config, db: db))
-        do { try mic.start(); keepAlive.append(mic); log("recording microphone") }
-        catch { log("microphone not available: \(error.localizedDescription)") }
-    }
-    if config.recordSystemAudio {
-        let sys = SystemAudioCapture(writer: ChunkWriter(device: "system audio", isInput: false, seconds: config.audioChunkSeconds, config: config, db: db))
-        keepAlive.append(sys)
-        Task.detached {
-            do { try await sys.start(); log("recording system audio") }
-            catch { log("system audio not available: \(error.localizedDescription)") }
-        }
-    }
-    if config.recordMic || config.recordSystemAudio, let tx = Transcriber(config: config, db: db) {
-        keepAlive.append(tx)
-        Task.detached { await tx.run() }
-    }
-}
-
 switch command {
+case "app":
+    let app = NSApplication.shared
+    let delegate = MenuBarApp(engine: engine)
+    app.delegate = delegate
+    app.setActivationPolicy(.accessory)  // menu bar only, no Dock icon
+    app.run()
+
 case "record":
     requirePermissions()
     startServer()
-    Task.detached { await recorder.run() }
-    startAudio()
+    engine.setScreen(true)
+    if config.recordMic || config.recordSystemAudio { engine.setAudio(true) }
     RunLoop.main.run()
 
 case "serve":

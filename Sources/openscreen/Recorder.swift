@@ -59,7 +59,15 @@ final class Recorder {
 
     func run() async {
         log("recording every \(config.interval)s → \(config.home.path)")
+        var warned = false
         while !Task.isCancelled {
+            // No permission yet: wait quietly instead of failing every 2 seconds.
+            if !Capture.hasScreenPermission {
+                if !warned { log("waiting for Screen Recording permission (System Settings → Privacy & Security)"); warned = true }
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                continue
+            }
+            if warned { log("screen permission granted"); warned = false }
             let started = Date()
             do { try await tick() } catch { log("capture error: \(error.localizedDescription)") }
             let wait = max(0.2, config.interval - Date().timeIntervalSince(started))

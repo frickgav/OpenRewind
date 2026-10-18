@@ -21,7 +21,45 @@ Built from a teardown of `/Applications/screenpipe.app` with
   whisper.cpp). Transcripts go into their own FTS5 index and show up in the
   same search as screen text.
 
-## Run
+## Mac app
+
+```bash
+scripts/build-app.sh
+```
+
+This makes `dist/OpenScreen.app` and `dist/openscreen-<version>.dmg`.
+Copy the app to `/Applications` and open it. It lives in the menu bar:
+
+- **Record Screen** and **Record Audio** switch on and off on their own (remembered).
+- **Open Timeline** (or **⌥⌘T** from anywhere) shows a full-screen overlay.
+  Scroll or use ← → to move through time, ⇧ for 1 minute, ↑ ↓ for 10 minutes,
+  drag or click the bar, **space** plays the audio at that moment (the picture
+  follows along), **+ / −** zoom, **N** jumps to now, **Esc** closes.
+- **Search…** opens the web search page. **Launch at Login** starts it with your Mac.
+- Log: `~/.openscreen/openscreen.log`.
+
+### Put it online for others
+
+Downloads open without a warning only when the app is signed with a
+**Developer ID Application** certificate and notarized by Apple:
+
+1. Create the certificate at developer.apple.com → Certificates (needs the paid program).
+2. Save notary login once:
+
+```bash
+xcrun notarytool store-credentials openscreen --apple-id YOU@EXAMPLE.COM --team-id TEAMID
+```
+
+3. Build, sign, notarize, staple:
+
+```bash
+NOTARY_PROFILE=openscreen scripts/build-app.sh
+```
+
+Upload the `.dmg` (GitHub Releases, your site, etc.).
+Without these steps the app still works, but other people must right-click → Open.
+
+## Run from the terminal
 
 ```bash
 swift build -c release

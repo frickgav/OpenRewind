@@ -49,7 +49,20 @@ struct Config {
     }
 }
 
+private var logFile: FileHandle?
+
+/// The app has no terminal, so it also writes its log to ~/.openscreen/openscreen.log.
+func openLogFile(in home: URL) {
+    try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+    let url = home.appendingPathComponent("openscreen.log")
+    if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
+    logFile = try? FileHandle(forWritingTo: url)
+    _ = try? logFile?.seekToEnd()
+}
+
 func log(_ msg: String) {
     let ts = ISO8601DateFormatter().string(from: Date())
-    FileHandle.standardError.write("[\(ts)] \(msg)\n".data(using: .utf8)!)
+    let line = "[\(ts)] \(msg)\n".data(using: .utf8)!
+    FileHandle.standardError.write(line)
+    logFile?.write(line)
 }
