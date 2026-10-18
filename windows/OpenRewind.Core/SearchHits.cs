@@ -6,10 +6,11 @@ public record SearchHit(string Id, bool IsAudio, DateTime Time, string Title, st
 public static class SearchHits
 {
     /// Screen and speech matches for the timeline's search box, newest first.
-    public static List<SearchHit> Find(Database db, string q)
+    /// With `app`, screen matches are only from that app (the timeline's app filter).
+    public static List<SearchHit> Find(Database db, string q, string? app = null)
     {
-        var s = new SearchQuery { Q = q, Limit = 200 };
-        var screen = db.Search(s).Rows.Select(f => Time.ParseIso(f.Timestamp) is DateTime t
+        var s = new SearchQuery { Q = q, Limit = 200, AppName = app };
+        var screen = db.Search(s).Rows.Where(f => app == null || f.AppName == app).Select(f => Time.ParseIso(f.Timestamp) is DateTime t
             ? new SearchHit($"f{f.Id}", false, t, f.AppName.Length == 0 ? "Screen" : f.AppName, Snippet(f.Text, q), null) : null);
         var spoken = db.SearchAudio(s, 200).Rows.Select(a => Time.ParseIso(a.Timestamp) is DateTime t
             ? new SearchHit($"a{a.Id}", true, t, a.IsInput ? "Microphone" : "System audio", a.Text, a.ChunkId) : null);

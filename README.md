@@ -102,6 +102,10 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
 - **O** (or the button at the bottom right of the screenshot) goes back to that moment:
   it reopens the browser tab (Safari, Chrome, Arc, Dia, Edge, Brave, Firefox), the document
   the app had open (Pages, Preview, Xcode…), or brings the app's window with that title to the front.
+- **App filter**: the **All apps** button next to the search box (or **A** for the app in the
+  shown screenshot) limits the timeline to the moments when one app was in front. Time spent in
+  other apps shrinks to breaks on the bar, ← → skip straight between that app's screenshots, and
+  search only finds that app's screen text (and speech heard while it was in front).
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
 - **Settings → Timeline Shortcut**: **Change Shortcut…** waits for the new key combination

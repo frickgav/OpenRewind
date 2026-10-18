@@ -30,6 +30,10 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   or brings the app's window with that title to the front, starting the app if it is closed.
   The tab's address is saved with each screenshot. Windows apps do not say which file a window
   shows, so documents come back as their app window (the Mac app reopens the file itself).
+- **App filter**: the **All apps** button next to the search box (or **A** for the app in the
+  shown screenshot) limits the timeline to the moments when one app was in front. Time spent in
+  other apps shrinks to breaks on the bar, ← → skip straight between that app's screenshots, and
+  search only finds that app's screen text (and speech heard while it was in front).
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
 - **Settings → Timeline Shortcut**: **Change Shortcut…** waits for the new key combination

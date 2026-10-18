@@ -143,6 +143,31 @@ public class CoreTests : IDisposable
     }
 
     [Fact]
+    public void AppFilterKeepsOnlyTimeTheAppWasInFront()
+    {
+        var t0 = new DateTime(2026, 10, 18, 9, 0, 0, DateTimeKind.Utc);
+        // Safari 0-20 s, Xcode 20-300 s, Safari again from 300 s, Xcode at 310 s.
+        var all = new[] { (0, "Safari"), (10, "Safari"), (20, "Xcode"), (200, "Xcode"), (300, "Safari"), (310, "Xcode") }
+            .Select((x, i) => new TimelineFrame(i, t0.AddSeconds(x.Item1), x.Item2, "", "")).ToList();
+        Assert.Equal(new[] { "Xcode", "Safari" }, AppFilter.Apps(all));
+        Assert.Same(all, AppFilter.Apply(all, null));
+
+        var safari = AppFilter.Apply(all, "Safari");
+        Assert.Equal(new long[] { 0, 1, 4 }, safari.Select(f => f.Id));
+        Assert.Equal(t0.AddSeconds(20), safari[1].End);
+        Assert.True(AppFilter.Covers(safari, t0.AddSeconds(15)));
+        Assert.False(AppFilter.Covers(safari, t0.AddSeconds(100)));  // Xcode was in front
+        Assert.True(AppFilter.Covers(safari, t0.AddSeconds(305)));
+        Assert.False(AppFilter.Covers(safari, t0.AddSeconds(310)));
+
+        // The Xcode stretch becomes a break between two Safari stretches.
+        var sessions = TimelineAxis.BuildSessions(safari, Array.Empty<TimelineAudio>(), t0.AddSeconds(310), AppFilter.GapThreshold);
+        Assert.Equal(2, sessions.Count);
+        Assert.Equal(t0.AddSeconds(20), sessions[0].End);
+        Assert.Equal(t0.AddSeconds(300), sessions[1].Start);
+    }
+
+    [Fact]
     public void ApiSearchMergesScreenAndAudio()
     {
         AddFrame(DateTime.UtcNow.AddMinutes(-1), "Notepad", "budget plan");

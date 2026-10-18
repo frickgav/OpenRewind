@@ -32,20 +32,23 @@ public sealed class TimelineAxis
 
     /// Group frames and audio into sessions. A short session is added at "now" when
     /// recording stopped a while ago, so the break up to now is shrunk too.
-    public static List<Session> BuildSessions(IEnumerable<TimelineFrame> frames, IEnumerable<TimelineAudio> audio, DateTime? nowUtc = null)
+    /// `gap` replaces GapThreshold (the app filter splits on shorter breaks).
+    public static List<Session> BuildSessions(IEnumerable<TimelineFrame> frames, IEnumerable<TimelineAudio> audio, DateTime? nowUtc = null, TimeSpan? gap = null)
     {
         var now = nowUtc ?? DateTime.UtcNow;
-        var spans = frames.Select(f => (f.Time, f.Time.AddSeconds(2))).Concat(audio.Select(a => (a.Start, a.End)))
+        var threshold = gap ?? GapThreshold;
+        var spans = frames.Select(f => (f.Time, f.End != null ? AppFilter.Until(f) : f.Time.AddSeconds(2)))
+                          .Concat(audio.Select(a => (a.Start, a.End)))
                           .OrderBy(s => s.Item1).ToList();
         var out_ = new List<Session>();
         foreach (var (a, b) in spans)
         {
-            if (out_.Count > 0 && a - out_[^1].End <= GapThreshold)
+            if (out_.Count > 0 && a - out_[^1].End <= threshold)
                 out_[^1] = out_[^1] with { End = b > out_[^1].End ? b : out_[^1].End };
             else
                 out_.Add(new Session(a, b));
         }
-        if (out_.Count > 0 && now - out_[^1].End > GapThreshold) out_.Add(new Session(now, now));
+        if (out_.Count > 0 && now - out_[^1].End > threshold) out_.Add(new Session(now, now));
         else if (out_.Count > 0 && now > out_[^1].End) out_[^1] = out_[^1] with { End = now };
         return out_;
     }

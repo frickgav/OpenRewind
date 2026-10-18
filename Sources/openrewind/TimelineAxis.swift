@@ -30,19 +30,21 @@ struct TimelineAxis {
 
     /// Group frames and audio into sessions. A short session is added at "now" when
     /// recording stopped a while ago, so the break up to now is shrunk too.
-    static func sessions(frames: [TimelineFrame], audio: [TimelineAudio], now: Date = Date()) -> [Session] {
-        var spans: [(Date, Date)] = frames.map { ($0.time, $0.time.addingTimeInterval(2)) }
+    /// `gap` replaces gapThreshold (the app filter splits on shorter breaks).
+    static func sessions(frames: [TimelineFrame], audio: [TimelineAudio], now: Date = Date(),
+                         gap: TimeInterval = gapThreshold) -> [Session] {
+        var spans: [(Date, Date)] = frames.map { ($0.time, $0.end == nil ? $0.time.addingTimeInterval(2) : AppFilter.until($0)) }
         spans += audio.map { ($0.start, $0.end) }
         spans.sort { $0.0 < $1.0 }
         var out: [Session] = []
         for (a, b) in spans {
-            if let last = out.last, a.timeIntervalSince(last.end) <= gapThreshold {
+            if let last = out.last, a.timeIntervalSince(last.end) <= gap {
                 out[out.count - 1].end = max(last.end, b)
             } else {
                 out.append(Session(start: a, end: b))
             }
         }
-        if let last = out.last, now.timeIntervalSince(last.end) > gapThreshold {
+        if let last = out.last, now.timeIntervalSince(last.end) > gap {
             out.append(Session(start: now, end: now))
         } else if let last = out.last, now > last.end {
             out[out.count - 1].end = now
