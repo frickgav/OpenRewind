@@ -54,6 +54,20 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // ⌥⌘T opens the timeline from anywhere.
         hotKey = HotKey(keyCode: kVK_ANSI_T, modifiers: optionKey | cmdKey) { [weak self] in self?.overlay.toggle() }
         updateIcon()
+        if !BlocklistStore.shared.onboardingDone { showSetup() }
+    }
+
+    /// The first-run setup; ends in the guided tour if the user asks for it.
+    @objc private func showSetup() {
+        Onboarding.show { [weak self] tour in if tour { self?.overlay.showTutorial() } }
+    }
+
+    @objc private func showTutorial() { overlay.showTutorial() }
+
+    @objc private func showBlockedApps() {
+        SetupWindows.shared.show("blocked", title: "Blocked Apps & Sites", size: NSSize(width: 600, height: 720), resizable: true) {
+            BlockedAppsView()
+        }
     }
 
     // Build the menu fresh each time it opens, so it always shows the live state.
@@ -104,6 +118,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func settingsMenu() -> NSMenu {
         let m = NSMenu()
+        m.addItem(action("Blocked Apps & Sites…", #selector(showBlockedApps)))
+        m.addItem(.separator())
         m.addItem(keepMenu("Keep Screen Recordings For", key: keepScreenKey))
         m.addItem(keepMenu("Keep Audio Recordings For", key: keepAudioKey))
         m.addItem(.separator())
@@ -130,6 +146,9 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let login = action("Launch at Login", #selector(toggleLogin))
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         m.addItem(login)
+        m.addItem(.separator())
+        m.addItem(action("Show Tutorial", #selector(showTutorial)))
+        m.addItem(action("Run Setup Again…", #selector(showSetup)))
         return m
     }
 

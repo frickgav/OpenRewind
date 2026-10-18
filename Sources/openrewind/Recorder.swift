@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import CoreGraphics
 
@@ -51,11 +52,9 @@ final class Recorder {
     init(config: Config, db: Database) {
         self.config = config
         self.db = db
-        let env = Config.env("EXCLUDE")
-        let list = env?.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-            ?? ["1password", "keychain access", "bitwarden", "passwords"]
-        // Never record the lock screen or screen saver, whatever the user list says.
-        excluded = Set(list + ["loginwindow", "screensaverengine"])
+        // Never recorded at all: the lock screen and screen saver. Apps the user blocks are
+        // blurred instead (see Blocklist and Redaction).
+        excluded = ["loginwindow", "screensaverengine"]
     }
 
     func run() async {
@@ -79,8 +78,19 @@ final class Recorder {
     func tick() async throws {
         let win = Capture.activeWindow()
         if excluded.contains(win.appName.lowercased()) { return }
-        let image = try await Capture.screenshot()
-        _ = try ingest(image: image, window: win, pid: win.pid)
+        let list = BlocklistStore.shared.current
+        let windows = Redaction.windows(list)
+        let shot = try await Capture.capture(excluding: Set(windows.filter(\.blocked).map(\.id)))
+        guard let image = Redaction.apply(shot.image, bounds: shot.bounds, windows: windows) else {
+            log("could not blur blocked apps; skipping this frame"); return
+        }
+        // A blocked window in front: keep the app name for the timeline, but not its title or its text.
+        let bundle = NSRunningApplication(processIdentifier: win.pid)?.bundleIdentifier
+        if list.blocksWindow(bundleID: bundle, appName: win.appName, title: win.windowName) {
+            _ = try ingest(image: image, window: ActiveWindow(appName: win.appName, windowName: "", pid: win.pid), pid: nil)
+        } else {
+            _ = try ingest(image: image, window: win, pid: win.pid)
+        }
     }
 
     /// Dedup, extract text, store snapshot, insert row. Returns the new frame id, or nil if skipped.

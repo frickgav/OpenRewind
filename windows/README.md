@@ -33,8 +33,11 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   `record` and `serve` always start it.
 - **Settings → Launch at Login** starts it when you sign in.
 - The lock screen and screen saver are never recorded. Password fields are never read.
-  Password managers (1Password, Bitwarden, KeePass, Dashlane, LastPass) are skipped;
-  set `OPENREWIND_EXCLUDE` to your own comma list to change that.
+- **Settings → Blocked Apps & Sites**: blocked apps are blurred in every screenshot, wherever
+  they are on screen, and their text is never saved. First launch asks what to block (password
+  managers, money apps, private browsing windows and bank sites are ticked). Words in the list
+  hide any window whose title has them. `OPENREWIND_EXCLUDE` adds more app names.
+- **Settings → Show Tutorial** walks through the timeline again; **Run Setup Again…** reopens setup.
 - Log: `%USERPROFILE%\.openrewind\openrewind.log`.
 
 ## How it works on Windows

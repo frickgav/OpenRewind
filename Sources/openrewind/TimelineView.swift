@@ -36,6 +36,7 @@ struct TimelineView: View {
             .padding(.top, 22)
             .padding(.bottom, 16)
             if model.showHelp { helpCard }
+            if model.tutorialStep != nil { TutorialCoach(model: model) { model.tutorialStep = nil } }
         }
         .foregroundColor(.white)
         .onChange(of: model.focusSearchToken) { _ in searchFocused = true }

@@ -32,6 +32,8 @@ final class TimelineModel: ObservableObject {
     var leaveSearchBox: (() -> Void)?
     /// True while the keyboard shortcut card is open.
     @Published var showHelp = false
+    /// The guided tour's step while it runs (see Tutorial.swift).
+    @Published var tutorialStep: Int?
     /// Where the searched words are on the shown screenshot, as fractions of its size (top-left origin).
     @Published var highlights: [CGRect] = []
     var highlightWork: DispatchWorkItem?
