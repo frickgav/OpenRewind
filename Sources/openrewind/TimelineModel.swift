@@ -30,6 +30,8 @@ final class TimelineModel: ObservableObject {
     var searchWork: DispatchWorkItem?
     /// Set by the overlay: gives the keyboard back to the timeline (so space plays audio again).
     var leaveSearchBox: (() -> Void)?
+    /// Set by the menu bar app: opens the browser search page, for the current query if there is one.
+    var openInBrowser: (() -> Void)?
     /// True while the keyboard shortcut card is open.
     @Published var showHelp = false
     /// The guided tour's step while it runs (see Tutorial.swift).

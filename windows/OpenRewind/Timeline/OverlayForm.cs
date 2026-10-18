@@ -15,6 +15,8 @@ sealed class OverlayForm : Form
     readonly System.Windows.Forms.Timer searchDebounce = new() { Interval = 200 };
     readonly System.Windows.Forms.Timer clock = new() { Interval = 1000 };
     Bitmap? backdrop;
+    /// The window that was in front before the timeline opened; it gets the keyboard back on close.
+    IntPtr previousWindow;
     float k = 1;  // DPI scale
 
     // Layout, recomputed on every paint.
@@ -26,6 +28,9 @@ sealed class OverlayForm : Form
     int resultsScroll;
 
     static readonly Color Mic = Color.FromArgb(255, 159, 10), Sys = Color.FromArgb(48, 209, 88), Accent = Color.FromArgb(10, 132, 255);
+    /// Shows the "new version" banner; set by the tray app.
+    public Updater? Updater { get; set; }
+
     static readonly Color Yellow = Color.FromArgb(255, 214, 10);
 
     public OverlayForm(TimelineModel model)
@@ -72,12 +77,14 @@ sealed class OverlayForm : Form
 
     public void ShowOverlay()
     {
+        if (!Visible) previousWindow = Native.GetForegroundWindow();
         var screen = Screen.FromPoint(Cursor.Position);
         backdrop?.Dispose();
         backdrop = BlurredDesktop(screen.Bounds);
         Bounds = screen.Bounds;
         k = DeviceDpi / 96f;
         model.Reload();
+        Updater?.CheckIfStale();
         Show();
         Activate();
         Native.SetForegroundWindow(Handle);
@@ -99,6 +106,8 @@ sealed class OverlayForm : Form
         model.StopAudio();
         clock.Stop();
         Hide();
+        if (previousWindow != IntPtr.Zero) Native.SetForegroundWindow(previousWindow);
+        previousWindow = IntPtr.Zero;
     }
 
     protected override void OnDpiChanged(DpiChangedEventArgs e) { base.OnDpiChanged(e); k = DeviceDpi / 96f; Invalidate(); }
@@ -175,6 +184,11 @@ sealed class OverlayForm : Form
         if (StaleMinutes() is int mins)
         {
             DrawStaleBanner(g, padX, y, w, mins);
+            y += 34 * k + gap;
+        }
+        if (Updater is { ShowBanner: true } u && u.Available is ReleaseInfo release)
+        {
+            DrawUpdateBanner(g, padX, y, w, u, release);
             y += 34 * k + gap;
         }
         float hintsH = 18 * k, barH = 102 * k, controlsH = 36 * k;
@@ -258,6 +272,9 @@ sealed class OverlayForm : Form
         float bx = r.Right - 30 * k;
         RoundButton(g, new RectangleF(bx, r.Y + 7 * k, 30 * k, 30 * k), "✕", HideOverlay);
         RoundButton(g, new RectangleF(bx - 40 * k, r.Y + 7 * k, 30 * k, 30 * k), "?", () => { model.ShowHelp = !model.ShowHelp; Invalidate(); });
+        var web = new RectangleF(bx - 80 * k, r.Y + 7 * k, 30 * k, 30 * k);
+        RoundButton(g, web, "", OpenInBrowser);
+        DrawOpenIcon(g, web);
     }
 
     float HotIcon(Graphics g, string glyph, float right, float mid, Action act)
@@ -288,6 +305,18 @@ sealed class OverlayForm : Form
         hot.Add((r, act));
     }
 
+    /// "Open outside": a box with an arrow leaving its top-right corner, drawn so no font is needed.
+    void DrawOpenIcon(Graphics g, RectangleF r)
+    {
+        float cx = r.X + r.Width / 2, cy = r.Y + r.Height / 2, h = 5.5f * k;
+        using var pen = new Pen(Color.White, 1.6f * k) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        g.DrawLines(pen, new[] { new PointF(cx - 0.5f * k, cy - h), new PointF(cx - h, cy - h), new PointF(cx - h, cy + h),
+                                  new PointF(cx + h, cy + h), new PointF(cx + h, cy + 0.5f * k) });
+        g.DrawLine(pen, cx - 0.5f * k, cy + 0.5f * k, cx + h + 1.5f * k, cy - h - 1.5f * k);
+        g.DrawLines(pen, new[] { new PointF(cx + 1.5f * k, cy - h - 1.5f * k), new PointF(cx + h + 1.5f * k, cy - h - 1.5f * k),
+                                  new PointF(cx + h + 1.5f * k, cy - 1.5f * k) });
+    }
+
     static string Relative(DateTime utc)
     {
         var s = (DateTime.UtcNow - utc).TotalSeconds;
@@ -300,10 +329,11 @@ sealed class OverlayForm : Form
     // MARK: stale warning
 
     /// Minutes since the newest screenshot, when that is long enough to look like a gap.
+    /// Counted to when the timeline opened, so the banner does not pop in while you look.
     int? StaleMinutes()
     {
         if (model.Frames.Count == 0) return null;
-        var mins = (int)((DateTime.UtcNow - model.Frames[^1].Time).TotalMinutes);
+        var mins = (int)((model.LoadedAt - model.Frames[^1].Time).TotalMinutes);
         return mins >= 3 ? mins : null;
     }
 
@@ -315,6 +345,55 @@ sealed class OverlayForm : Form
         var r = new RectangleF(x + w / 2 - (sz.Width + 28 * k) / 2, y, sz.Width + 28 * k, 34 * k);
         Draw.Fill(g, r, 8 * k, Draw.WithAlpha(Yellow, 0.15));
         Draw.Text(g, text, F(13), Color.White, r.X + 14 * k, r.Y + (r.Height - sz.Height) / 2);
+    }
+
+    // MARK: update banner
+
+    /// "A new version is out", with buttons. Closing it hides it until the next version.
+    void DrawUpdateBanner(Graphics g, float x, float y, float w, Updater u, ReleaseInfo r)
+    {
+        var text = u.State switch
+        {
+            Updater.Phase.Downloading => $"Downloading OpenRewind {r.Version}… {(int)(u.Progress * 100)}%",
+            Updater.Phase.Ready => $"OpenRewind {r.Version} is downloaded and ready.",
+            Updater.Phase.Installing => $"Installing OpenRewind {r.Version}…",
+            Updater.Phase.Failed => $"Could not update to {r.Version}: {u.Error}.",
+            _ => $"OpenRewind {r.Version} is out. You have {Updater.Current}.",
+        };
+        var notes = ("What's New", (Action)(() => Updater.Open(r.Page)));
+        (string Label, Action Act)[] buttons = u.State switch
+        {
+            Updater.Phase.Downloading or Updater.Phase.Installing => Array.Empty<(string, Action)>(),
+            Updater.Phase.Ready => new[] { ("Restart to Update", (Action)u.Update), notes },
+            Updater.Phase.Failed => new[] { ("Try Again", (Action)u.Update), ("Download", () => Updater.Open(r.AssetUrl)) },
+            _ => new[] { (Updater.CanInstall ? "Update" : "Download", (Action)u.Update), notes },
+        };
+
+        var font = F(13);
+        var bf = Semibold(12);
+        float pad = 14 * k, space = 10 * k, bpad = 10 * k, close = 20 * k;
+        var ts = Draw.Measure(g, text, font);
+        var widths = buttons.Select(b => Draw.Measure(g, b.Label, bf).Width + 2 * bpad).ToArray();
+        float total = pad + ts.Width + widths.Sum(bw => space + bw) + space + close + pad;
+        var r0 = new RectangleF(x + w / 2 - total / 2, y, total, 34 * k);
+        Draw.Fill(g, r0, 8 * k, Draw.WithAlpha(Accent, 0.22));
+        float mid = r0.Y + r0.Height / 2, cx = r0.X + pad;
+        Draw.Text(g, text, font, Color.White, cx, mid - ts.Height / 2);
+        cx += ts.Width;
+        var mouse = PointToClient(Cursor.Position);
+        for (int i = 0; i < buttons.Length; i++)
+        {
+            cx += space;
+            var br = new RectangleF(cx, mid - 11 * k, widths[i], 22 * k);
+            Draw.Fill(g, br, br.Height / 2, Draw.White(br.Contains(mouse) ? 0.26 : 0.16));
+            Draw.TextCentered(g, buttons[i].Label, bf, Color.White, br.X + br.Width / 2, mid);
+            hot.Add((br, buttons[i].Act));
+            cx += widths[i];
+        }
+        cx += space;
+        var xr = new RectangleF(cx, mid - close / 2, close, close);
+        Draw.TextCentered(g, "✕", F(11), Draw.White(xr.Contains(mouse) ? 0.9 : 0.6), xr.X + xr.Width / 2, mid);
+        hot.Add((xr, u.Dismiss));
     }
 
     // MARK: screenshot
@@ -467,12 +546,12 @@ sealed class OverlayForm : Form
 
     /// Bar-seconds at the left edge. Keeps the playhead in the middle, but never shows more than a little space after now.
     double V0(TimelineAxis axis) =>
-        Math.Min(axis.V(model.Playhead) - model.Span / 2, axis.V(DateTime.UtcNow) + model.Span * 0.03 - model.Span);
+        Math.Min(axis.V(model.Playhead) - model.Span / 2, axis.V(model.LoadedAt) + model.Span * 0.03 - model.Span);
 
     void DrawBar(Graphics g, RectangleF r)
     {
         var axis = model.Axis;
-        var now = DateTime.UtcNow;
+        var now = model.LoadedAt;
         double v0 = V0(axis), v1 = v0 + model.Span;
         float X(DateTime d) => r.X + (float)((axis.V(d) - v0) / model.Span) * r.Width;
         var start = axis.Date(v0);
@@ -635,7 +714,7 @@ sealed class OverlayForm : Form
     {
         var f = F(11);
         foreach (var (keys, what) in new[] { (new[] { "←", "→" }, "move"), (new[] { "space" }, "play audio"), (new[] { "/" }, "search"),
-                                              (new[] { "+", "−" }, "zoom"), (new[] { "?" }, "all keys"), (new[] { "esc" }, "close") })
+                                              (new[] { "+", "−" }, "zoom"), (new[] { "O" }, "browser"), (new[] { "?" }, "all keys"), (new[] { "esc" }, "close") })
         {
             foreach (var key in keys) x += Draw.Keycap(g, key, F(10), x, mid, k) + 4 * k;
             var sz = Draw.Measure(g, what, f);
@@ -728,6 +807,7 @@ sealed class OverlayForm : Form
         ("AUDIO", new[] { new[] { "space" } }, "Play or pause audio from here"),
         ("SEARCH", new[] { new[] { "/" }, new[] { "Ctrl", "F" } }, "Search screen text and speech"),
         ("", new[] { new[] { "Ctrl", "G" }, new[] { "Shift", "Ctrl", "G" } }, "Older / newer match"),
+        ("", new[] { new[] { "O" } }, "Open the search page in the browser"),
         ("VIEW", new[] { new[] { "+" }, new[] { "−" } }, "Zoom the bar in / out"),
         ("", new[] { new[] { "esc" } }, "Close the list, then the overlay"),
     };
@@ -774,6 +854,14 @@ sealed class OverlayForm : Form
 
     void LeaveSearch() { ActiveControl = null; Focus(); Invalidate(); }
 
+    /// Hand off to the browser search page (the tray app turns the local server on if needed).
+    void OpenInBrowser()
+    {
+        if (model.OpenInBrowser is not Action open) return;
+        HideOverlay();
+        open();
+    }
+
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
         var key = keyData & Keys.KeyCode;
@@ -817,6 +905,7 @@ sealed class OverlayForm : Form
             case Keys.Down: model.Jump(model.Playhead.AddSeconds(600)); break;
             case Keys.Space: model.ToggleAudio(); break;
             case Keys.N: case Keys.End: model.JumpToNow(); break;
+            case Keys.O when !ctrl: OpenInBrowser(); break;
             case Keys.Oemplus: case Keys.Add: model.Span = Math.Max(60, model.Span / 2); Invalidate(); break;
             case Keys.OemMinus: case Keys.Subtract: model.Span = Math.Min(12 * 3600, model.Span * 2); Invalidate(); break;
             default: return base.ProcessCmdKey(ref msg, keyData);

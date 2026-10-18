@@ -15,6 +15,7 @@ sealed class TrayApp : ApplicationContext
     readonly TimelineModel timeline;
     readonly HotKey hotKey;
     readonly RetentionJob retention;
+    readonly Updater updater;
     /// Last measured size of the data folder; measured in the background when the menu opens.
     long? dataSize;
     bool measuring;
@@ -25,15 +26,22 @@ sealed class TrayApp : ApplicationContext
         settings = Settings.Load(engine.Config.Home);
         Blocklist.Current = settings.ToBlocklist();
         timeline = new TimelineModel(engine.Db);
+        timeline.OpenInBrowser = () => OpenBrowserSearch(timeline.Query.Trim());
         overlay = new OverlayForm(timeline);
         _ = overlay.Handle;  // create it on the UI thread now
 
         if (settings.LocalSearchServer) StartServer();
         engine.StartTranscriber();
+        engine.Recorder.MinorChangeGap = settings.TypingFrameGap;
         engine.SetScreen(settings.RecordScreen);
         engine.SetAudio(settings.RecordAudio);
         retention = new RetentionJob(engine.Db, settings.Screen, settings.Audio);
         retention.Start();
+
+        updater = new Updater(settings) { QuitApp = Quit };
+        updater.Changed += () => { if (overlay.Visible) overlay.Invalidate(); };
+        overlay.Updater = updater;
+        updater.Start();
 
         // Ctrl+Alt+T opens the timeline from anywhere (Option+Command+T on the Mac).
         hotKey = new HotKey(Native.MOD_CONTROL | Native.MOD_ALT, Keys.T, overlay.Toggle);
@@ -62,6 +70,7 @@ sealed class TrayApp : ApplicationContext
     {
         menu.Items.Clear();
         menu.Items.Add(new ToolStripMenuItem(StatusLine()) { Enabled = false });
+        if (UpdateItem() is ToolStripMenuItem update) menu.Items.Add(update);
         menu.Items.Add(new ToolStripSeparator());
 
         menu.Items.Add(Toggle("Record Screen", engine.ScreenOn, ToggleScreen));
@@ -85,6 +94,7 @@ sealed class TrayApp : ApplicationContext
         s.DropDownItems.Add(new ToolStripSeparator());
         s.DropDownItems.Add(KeepMenu("Keep Screen Recordings For", screen: true));
         s.DropDownItems.Add(KeepMenu("Keep Audio Recordings For", screen: false));
+        s.DropDownItems.Add(TypingGapMenu());
         s.DropDownItems.Add(new ToolStripSeparator());
         var del = new ToolStripMenuItem("Delete Recordings");
         del.DropDownItems.Add(Item("Last 15 Minutes", () => DeleteRecent("last 15 minutes", DateTime.UtcNow.AddMinutes(-15))));
@@ -100,6 +110,11 @@ sealed class TrayApp : ApplicationContext
         server.ToolTipText = "Search in the browser and let local scripts read your history through the API. Only this PC can connect.";
         s.DropDownItems.Add(server);
         s.DropDownItems.Add(new ToolStripSeparator());
+        var auto = Toggle("Download Updates Automatically", updater.AutoDownload, () => updater.AutoDownload = !updater.AutoDownload);
+        auto.ToolTipText = "Download new versions in the background. They are installed only when you click Update.";
+        s.DropDownItems.Add(auto);
+        s.DropDownItems.Add(Item($"Check for Updates… (version {Updater.Current})", CheckForUpdates));
+        s.DropDownItems.Add(new ToolStripSeparator());
         s.DropDownItems.Add(Toggle("Launch at Login", Settings.LaunchAtLogin, () =>
         {
             try { Settings.LaunchAtLogin = !Settings.LaunchAtLogin; } catch (Exception e) { Log.Write($"launch at login failed: {e.Message}"); }
@@ -114,6 +129,23 @@ sealed class TrayApp : ApplicationContext
     static ToolStripMenuItem Item(string title, Action act) => new(title, null, (_, _) => act());
 
     static ToolStripMenuItem Toggle(string title, bool on, Action act) => new(title, null, (_, _) => act()) { Checked = on };
+
+    /// Fewer saved frames while typing means less disk space; the screen you stop on is always saved.
+    ToolStripMenuItem TypingGapMenu()
+    {
+        var item = new ToolStripMenuItem("Save Frames While Typing")
+        {
+            ToolTipText = "While only a few words on screen change, save a frame this often. Longer uses less disk space; the screen you stop on is still saved."
+        };
+        foreach (var secs in FrameDedup.GapChoices)
+            item.DropDownItems.Add(Toggle($"Every {secs} Seconds" + (secs == 2 ? " (Default)" : ""), secs == settings.TypingFrameGap, () =>
+            {
+                settings.TypingFrameGap = secs;
+                engine.Recorder.MinorChangeGap = secs;
+                settings.Save();
+            }));
+        return item;
+    }
 
     ToolStripMenuItem KeepMenu(string title, bool screen)
     {
@@ -168,6 +200,39 @@ sealed class TrayApp : ApplicationContext
 
     static bool Confirm(string title, string text) =>
         MessageBox.Show(text, title, MessageBoxButtons.OKCancel, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) == DialogResult.OK;
+
+    // MARK: updates
+
+    /// A row under the status line while a newer version is out.
+    ToolStripMenuItem? UpdateItem()
+    {
+        if (updater.Available is not ReleaseInfo r) return null;
+        return updater.State switch
+        {
+            Updater.Phase.Downloading => new ToolStripMenuItem($"Downloading OpenRewind {r.Version}… {(int)(updater.Progress * 100)}%") { Enabled = false },
+            Updater.Phase.Installing => new ToolStripMenuItem($"Installing OpenRewind {r.Version}…") { Enabled = false },
+            Updater.Phase.Ready => Item($"Restart to Update to OpenRewind {r.Version}", updater.Update),
+            _ => Item(Updater.CanInstall ? $"Update to OpenRewind {r.Version}…" : $"Download OpenRewind {r.Version}…", updater.Update),
+        };
+    }
+
+    void CheckForUpdates()
+    {
+        updater.Check(error =>
+        {
+            const string title = "Check for Updates";
+            if (error != null)
+                MessageBox.Show($"Could not check for updates: {error}", title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            else if (updater.Available is ReleaseInfo r)
+            {
+                var verb = Updater.CanInstall ? "Update" : "Download";
+                if (MessageBox.Show($"OpenRewind {r.Version} is out. You have {Updater.Current}.\n\n{verb} now?", title,
+                                    MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes) updater.Update();
+            }
+            else
+                MessageBox.Show($"You have the latest version, {Updater.Current}.", title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        });
+    }
 
     // MARK: storage
 
@@ -237,6 +302,21 @@ sealed class TrayApp : ApplicationContext
         settings.Save();
     }
 
+    /// The browser search page, with the timeline's query filled in. It needs the local server,
+    /// so pressing O turns the server on (and remembers that, like the Settings switch).
+    void OpenBrowserSearch(string query)
+    {
+        if (!engine.ServerOn)
+        {
+            StartServer();
+            settings.LocalSearchServer = engine.ServerOn;
+            settings.Save();
+        }
+        if (!engine.ServerOn) return;
+        var url = $"http://127.0.0.1:{engine.Config.Port}/";
+        Open(query.Length > 0 ? url + "?q=" + Uri.EscapeDataString(query) : url);
+    }
+
     void StartServer()
     {
         try { engine.StartServer(); }
@@ -273,6 +353,7 @@ sealed class TrayApp : ApplicationContext
         overlay.HideOverlay();
         hotKey.Dispose();
         retention.Dispose();
+        updater.Dispose();
         engine.Shutdown();
         ExitThread();
     }
