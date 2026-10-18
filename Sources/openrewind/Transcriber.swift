@@ -79,7 +79,7 @@ final class Transcriber {
     }
 
     private func whisper(_ path: String) throws -> [(start: Double, end: Double, text: String)] {
-        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("openscreen-\(UUID().uuidString)")
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("openrewind-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: tmp.appendingPathExtension("json")) }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binary)
@@ -93,7 +93,7 @@ final class Transcriber {
         p.waitUntilExit()
         guard p.terminationStatus == 0 else {
             let msg = String(decoding: errData.suffix(400), as: UTF8.self)
-            throw NSError(domain: "openscreen", code: 30, userInfo: [NSLocalizedDescriptionKey: "whisper-cli exit \(p.terminationStatus): \(msg)"])
+            throw NSError(domain: "openrewind", code: 30, userInfo: [NSLocalizedDescriptionKey: "whisper-cli exit \(p.terminationStatus): \(msg)"])
         }
         let data = try Data(contentsOf: tmp.appendingPathExtension("json"))
         return Transcriber.parse(data)

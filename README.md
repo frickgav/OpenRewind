@@ -1,8 +1,12 @@
-# openscreen
+# OpenRewind
 
-**Rewind your Mac.** openscreen records your screen and audio, pulls the text
+**Rewind your Mac or PC.** OpenRewind records your screen and audio, pulls the text
 out, and lets you search or scroll back through everything you saw and heard.
-100% local. One small Swift binary. Open source.
+100% local. Open source. A small Swift app on the Mac, a native .NET app on
+[Windows](windows/README.md).
+
+OpenRewind was called openscreen until October 2026. Your data folder is still
+`~/.openscreen`, so nothing moves when you update.
 
 ## The story
 
@@ -38,7 +42,7 @@ The team moved to Meta's wearables group. The Rewind Mac app was shut off:
 Users in the EU, UK, and some other countries had two weeks to export their
 data before it was deleted.
 
-### Now: openscreen
+### Now: OpenRewind
 
 A tool that remembers your whole digital life should not be able to vanish
 when a company is sold. So we built it again, in the open:
@@ -49,7 +53,7 @@ when a company is sold. So we built it again, in the open:
 
 ### How it was built
 
-openscreen is new code. It does not contain any Rewind code.
+OpenRewind is new code. It does not contain any Rewind code.
 
 - **The idea and the timeline** come from Rewind. The full-screen timeline
   (⌥⌘T) is modeled on Rewind's.
@@ -58,7 +62,7 @@ openscreen is new code. It does not contain any Rewind code.
   The database layout and the local API copy screenpipe's shape.
   See [docs/re/FINDINGS.md](docs/re/FINDINGS.md).
 
-openscreen is not made by or connected to Rewind AI, Limitless, Meta, or screenpipe.
+OpenRewind is not made by or connected to Rewind AI, Limitless, Meta, or screenpipe.
 
 ## What it does (v0.1)
 
@@ -81,7 +85,7 @@ openscreen is not made by or connected to Rewind AI, Limitless, Meta, or screenp
 scripts/build-app.sh
 ```
 
-This makes `dist/OpenScreen.app` and `dist/openscreen-<version>.dmg`.
+This makes `dist/OpenRewind.app` and `dist/openrewind-<version>.dmg`.
 Copy the app to `/Applications` and open it. It lives in the menu bar:
 
 - **Record Screen** and **Record Audio** switch on and off on their own (remembered).
@@ -97,7 +101,7 @@ Copy the app to `/Applications` and open it. It lives in the menu bar:
   screen, all audio, or everything (asks first).
 - **Settings → Launch at Login** starts it with your Mac.
 - The lock screen and screen saver are never recorded.
-- Log: `~/.openscreen/openscreen.log`.
+- Log: `~/.openscreen/openrewind.log`.
 
 ### Put it online for others
 
@@ -108,17 +112,27 @@ Downloads open without a warning only when the app is signed with a
 2. Save notary login once:
 
 ```bash
-xcrun notarytool store-credentials openscreen --apple-id YOU@EXAMPLE.COM --team-id TEAMID
+xcrun notarytool store-credentials openrewind --apple-id YOU@EXAMPLE.COM --team-id TEAMID
 ```
 
 3. Build, sign, notarize, staple:
 
 ```bash
-NOTARY_PROFILE=openscreen scripts/build-app.sh
+NOTARY_PROFILE=openrewind scripts/build-app.sh
 ```
 
 Upload the `.dmg` (GitHub Releases, your site, etc.).
 Without these steps the app still works, but other people must right-click → Open.
+
+## Windows app
+
+Windows 10 (2004+) and 11, x64 and ARM64. Same timeline, search page, API and data
+format as the Mac app; the timeline opens with **Ctrl+Alt+T**. Download, setup and
+build steps are in [windows/README.md](windows/README.md):
+
+```powershell
+scripts\build-windows.ps1
+```
 
 ## Run from the terminal
 
@@ -127,11 +141,11 @@ swift build -c release
 ```
 
 ```bash
-.build/release/openscreen doctor
+.build/release/openrewind doctor
 ```
 
 ```bash
-.build/release/openscreen
+.build/release/openrewind
 ```
 
 Then open http://127.0.0.1:3031.
@@ -139,7 +153,7 @@ Then open http://127.0.0.1:3031.
 ### Whisper
 
 Needs `whisper-cli` (`brew install whisper-cpp`) and a ggml model.
-openscreen looks for a model in this order:
+OpenRewind looks for a model in this order:
 
 1. `--whisper-model PATH` or `$OPENSCREEN_WHISPER_MODEL`
 2. `~/.openscreen/models/ggml-*.bin`
@@ -148,7 +162,7 @@ openscreen looks for a model in this order:
 Test it without a mic:
 
 ```bash
-.build/release/openscreen ingest-audio /opt/homebrew/share/whisper-cpp/jfk.wav
+.build/release/openrewind ingest-audio /opt/homebrew/share/whisper-cpp/jfk.wav
 ```
 
 macOS asks for **Screen Recording** (screen + system audio) and
@@ -177,7 +191,7 @@ Response: `{"data":[{"type":"OCR","content":{"frame_id","text","timestamp","app_
 Delete the folder to wipe everything, or from the terminal:
 
 ```bash
-.build/release/openscreen delete older:week
+.build/release/openrewind delete older:week
 ```
 
 (`15m`, `1h`, `today`, `all`, `older:day|week|month|year`; add `--screen-only` or `--audio-only`.)

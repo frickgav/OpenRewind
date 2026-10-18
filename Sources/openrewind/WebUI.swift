@@ -5,7 +5,7 @@ enum WebUI {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>openscreen</title>
+<title>OpenRewind</title>
 <style>
 :root {
   --bg: #f6f5f2; --panel: #ffffff; --ink: #1b1b1a; --muted: #6d6b66; --line: #e3e1db;
@@ -63,7 +63,7 @@ dialog::backdrop { background: rgba(0,0,0,.55); }
 </head>
 <body>
 <header>
-  <h1>open<span>screen</span></h1>
+  <h1>Open<span>Rewind</span></h1>
   <input id="q" type="search" placeholder="Search everything you saw and heard…" autofocus>
   <select id="range">
     <option value="30m ago">Last 30 min</option>
@@ -146,7 +146,7 @@ async function load(reset) {
   rows = rows.concat(r.data.map(d => Object.assign({ kind: d.type }, d.content)));
   offset = rows.length;
   $('meta').textContent = total + ' result' + (total === 1 ? '' : 's');
-  if (!rows.length) { $('grid').innerHTML = '<div class="empty">Nothing here yet. Keep openscreen running and come back.</div>'; }
+  if (!rows.length) { $('grid').innerHTML = '<div class="empty">Nothing here yet. Keep OpenRewind running and come back.</div>'; }
   rows.slice(start).forEach((c, i) => {
     const el = document.createElement('div');
     el.className = 'card';

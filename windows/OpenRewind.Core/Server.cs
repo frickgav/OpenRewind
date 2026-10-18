@@ -241,7 +241,7 @@ public sealed class Api
     }
 }
 
-/// The search page, shared with the Mac app: it is read out of Sources/openscreen/WebUI.swift at build time.
+/// The search page, shared with the Mac app: it is read out of Sources/openrewind/WebUI.swift at build time.
 public static class WebUI
 {
     public static readonly string Html = Load();
