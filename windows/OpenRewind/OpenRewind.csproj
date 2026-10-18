@@ -31,6 +31,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Also inside the exe as a resource: the tray and windows load the size they need from it. -->
+    <EmbeddedResource Include="OpenRewind.ico" LogicalName="OpenRewind.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\OpenRewind.Core\OpenRewind.Core.csproj" />
   </ItemGroup>
 

@@ -228,6 +228,9 @@ document.addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft') $('prev').click();
   if (e.key === 'ArrowRight') $('next').click();
 });
+// The timeline's O key opens this page with its search filled in (?q=...).
+const q0 = new URLSearchParams(location.search).get('q');
+if (q0) $('q').value = q0;
 loadApps(); load(true); health(); setInterval(health, 10000);
 </script>
 </body>

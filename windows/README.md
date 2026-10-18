@@ -20,7 +20,7 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
 - **Open Timeline**, a left-click on the tray icon, or **Ctrl+Alt+T** from anywhere shows a
   full-screen overlay. Scroll or use ← → to move through time, Shift for 1 minute, ↑ ↓ for
   10 minutes, drag or click the bar, **space** plays the audio at that moment (the picture
-  follows along), **+ / −** zoom, **N** jumps to now, **/** or **Ctrl+F** searches,
+  follows along), **+ / −** zoom, **N** jumps to now, **O** opens the search page in the browser (and turns the local search server on), **/** or **Ctrl+F** searches,
   **?** lists every key, **Esc** closes.
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
