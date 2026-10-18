@@ -16,11 +16,21 @@ final class TimelineModel: ObservableObject {
     /// The exact time the playhead is on. Follows audio while it plays.
     @Published private(set) var playhead = Date()
 
+    // Search (see TimelineSearch.swift).
+    @Published var query = ""
+    @Published var hits: [SearchHit] = []
+    @Published var selectedHit = 0
+    /// True while the result list is open under the search box.
+    @Published var showResults = false
+    /// Bumped to ask the view to focus the search box.
+    @Published var focusSearchToken = 0
+    var searchWork: DispatchWorkItem?
+
     private var player: AVAudioPlayer?
     private var playTimer: Timer?
     private var imageCache: [Int64: NSImage] = [:]
     private var cacheOrder: [Int64] = []
-    private var loadedSince = Date()
+    var loadedSince = Date()
 
     init(db: Database) { self.db = db }
 
