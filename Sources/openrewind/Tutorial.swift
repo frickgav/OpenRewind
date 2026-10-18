@@ -35,6 +35,8 @@ struct DemoView: View {
                     }
                 }
                 Canvas { g, size in draw(&g, size, scene: scene, t: st) }
+                    .aspectRatio(16 / 10, contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: 380)
                     .background(Color(red: 0.09, green: 0.1, blue: 0.125))
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                     .overlay(RoundedRectangle(cornerRadius: 14).stroke(SetupTheme.stroke))
@@ -140,16 +142,18 @@ struct DemoView: View {
     private func keycaps(_ g: inout GraphicsContext, _ s: CGRect, down: Bool, alpha: Double, lift: CGFloat) {
         guard alpha > 0 else { return }
         let size: CGFloat = 46, gap: CGFloat = 8
-        let total = CGFloat(hotkey.count) * size + CGFloat(hotkey.count - 1) * gap
+        // Wider caps for named keys like Space or F5.
+        func width(_ k: String) -> CGFloat { size + CGFloat(max(k.count - 1, 0)) * 10 }
+        let total = hotkey.map(width).reduce(0, +) + CGFloat(hotkey.count - 1) * gap
         var x = (s.width - total) / 2
         let y = s.midY - size / 2 + lift + (down ? 3 : 0)
         g.opacity = alpha
         for key in hotkey {
-            let r = CGRect(x: x, y: y, width: size, height: size)
+            let r = CGRect(x: x, y: y, width: width(key), height: size)
             if !down { g.fill(Path(roundedRect: r.offsetBy(dx: 0, dy: 4), cornerRadius: 9), with: .color(.black.opacity(0.6))) }
             g.fill(Path(roundedRect: r, cornerRadius: 9), with: .color(down ? SetupTheme.accent : Color(white: 0.25)))
             g.draw(Text(key).font(.system(size: 18, weight: .semibold)).foregroundColor(.white), at: CGPoint(x: r.midX, y: r.midY))
-            x += size + gap
+            x += r.width + gap
         }
         g.opacity = 1
     }
