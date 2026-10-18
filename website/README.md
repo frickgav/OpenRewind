@@ -14,9 +14,9 @@ Then open http://localhost:8080.
 ## Files
 
 - `index.html`: the whole page
-- `styles.css`: design tokens and layout (light slate canvas, violet accent, Figtree from Google Fonts)
+- `styles.css`: design tokens and layout (light slate canvas, blue accent, Figtree from Google Fonts)
 - `main.js`: scroll reveals, OS-aware download buttons, and the animated timeline demo
-- `assets/mark.svg`: the OpenRewind mark
+- `assets/`: logo, favicons, and app icon, made from `branding/logo.png` by `scripts/make-icons.py`
 - `screenshots/`: reference screenshots of the page
 
 ## Downloads
