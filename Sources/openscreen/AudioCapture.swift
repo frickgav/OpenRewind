@@ -50,8 +50,12 @@ final class ChunkWriter {
         self.config = config; self.db = db
     }
 
+    /// When the last samples arrived. The engine's watchdog restarts a stream that went quiet.
+    private(set) var lastAppend = Date()
+
     func append(_ s: [Float]) {
         lock.lock()
+        lastAppend = Date()
         if samples.isEmpty { startedAt = Date() }
         samples.append(contentsOf: s)
         let full = Double(samples.count) >= seconds * whisperFormat.sampleRate
@@ -134,9 +138,28 @@ final class MicCapture {
             self.writer.append(self.resampler.convert(buf))
         }
         try engine.start()
+        watchConfigChanges()
     }
 
-    func stop() { engine.stop(); engine.inputNode.removeTap(onBus: 0); writer.flushRemaining() }
+    func stop() {
+        if let o = configObserver { NotificationCenter.default.removeObserver(o); configObserver = nil }
+        engine.stop(); engine.inputNode.removeTap(onBus: 0); writer.flushRemaining()
+    }
+
+    private var configObserver: NSObjectProtocol?
+
+    /// The input device changed (headset plugged in, lid closed, new default mic): restart on it.
+    private func watchConfigChanges() {
+        guard configObserver == nil else { return }
+        configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange,
+                                                                object: engine, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            log("microphone device changed, restarting")
+            self.engine.stop()
+            self.engine.inputNode.removeTap(onBus: 0)
+            do { try self.start() } catch { log("microphone restart failed: \(error.localizedDescription)") }
+        }
+    }
 }
 
 /// System audio (what you hear) via ScreenCaptureKit. Needs Screen Recording permission.
