@@ -130,6 +130,17 @@ NOTARY_PROFILE=openrewind scripts/build-app.sh
 Upload the `.dmg` (GitHub Releases, your site, etc.).
 Without these steps the app still works, but other people must right-click → Open.
 
+### Updates
+
+Both apps ask GitHub for the latest release every 6 hours and when you open the timeline. A newer
+version shows a banner at the top of the timeline (✕ hides it until the next version) and a row in
+the menu. **Settings → Download Updates Automatically** (on by default) fetches it in the background;
+nothing is installed until you click **Update** / **Restart to Update**, which swaps the app in place
+and reopens it. **Settings → Check for Updates…** checks right away.
+Releases come from the Release workflow (`git tag v0.3.0 && git push origin v0.3.0`); the check needs
+the repository to be public. Until the Mac app has a Developer ID signature, macOS may ask for the
+Screen Recording permission again after an update.
+
 ## Windows app
 
 Windows 10 (2004+) and 11, x64 and ARM64. Same timeline, search page, API and data

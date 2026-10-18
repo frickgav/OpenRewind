@@ -35,6 +35,11 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   http://127.0.0.1:3031. Off by default. Only this PC can connect. The terminal commands
   `record` and `serve` always start it.
 - **Settings → Launch at Login** starts it when you sign in.
+- **Updates**: a newer release shows a banner at the top of the timeline (✕ hides it until the
+  next version) and a row in the tray menu. **Settings → Download Updates Automatically** (on by
+  default) downloads it in the background; **Update** / **Restart to Update** swaps `OpenRewind.exe`
+  in place and restarts. Keep the app in a folder you can write to (not Program Files), or the button
+  opens the download in the browser instead.
 - The lock screen and screen saver are never recorded. Password fields are never read.
   Password managers (1Password, Bitwarden, KeePass, Dashlane, LastPass) are skipped;
   set `OPENREWIND_EXCLUDE` to your own comma list to change that.

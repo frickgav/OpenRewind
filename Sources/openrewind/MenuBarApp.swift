@@ -62,6 +62,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // ⌥⌘T opens the timeline from anywhere.
         hotKey = HotKey(keyCode: kVK_ANSI_T, modifiers: optionKey | cmdKey) { [weak self] in self?.overlay.toggle() }
+        Updater.shared.start()
         updateIcon()
     }
 
@@ -71,6 +72,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let status = NSMenuItem(title: statusLine(), action: nil, keyEquivalent: "")
         status.isEnabled = false
         menu.addItem(status)
+        if let update = updateItem() { menu.addItem(update) }
         menu.addItem(.separator())
 
         menu.addItem(toggleItem("Record Screen", on: engine.screenOn, action: #selector(toggleScreen), symbol: "display"))
@@ -136,6 +138,13 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         server.state = engine.serverOn ? .on : .off
         server.toolTip = "Search in the browser and let local scripts read your history through the API. Only this Mac can connect."
         m.addItem(server)
+        m.addItem(.separator())
+
+        let auto = action("Download Updates Automatically", #selector(toggleAutoDownload))
+        auto.state = Updater.shared.autoDownload ? .on : .off
+        auto.toolTip = "Download new versions in the background. They are installed only when you click Update."
+        m.addItem(auto)
+        m.addItem(action("Check for Updates… (version \(Updater.shared.current))", #selector(checkForUpdates)))
         m.addItem(.separator())
 
         let login = action("Launch at Login", #selector(toggleLogin))
@@ -263,6 +272,59 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         a.addButton(withTitle: "Cancel")
         a.buttons.first?.hasDestructiveAction = true
         return a.runModal() == .alertFirstButtonReturn
+    }
+
+    // MARK: updates
+
+    /// A row under the status line while a newer version is out.
+    private func updateItem() -> NSMenuItem? {
+        let u = Updater.shared
+        guard let r = u.available else { return nil }
+        switch u.state {
+        case .downloading(let p):
+            let i = NSMenuItem(title: "Downloading OpenRewind \(r.version)… \(Int(p * 100))%", action: nil, keyEquivalent: "")
+            i.isEnabled = false
+            return i
+        case .installing:
+            let i = NSMenuItem(title: "Installing OpenRewind \(r.version)…", action: nil, keyEquivalent: "")
+            i.isEnabled = false
+            return i
+        case .ready: return updateRow("Restart to Update to OpenRewind \(r.version)")
+        case .idle, .failed: return updateRow(u.canInstall ? "Update to OpenRewind \(r.version)…" : "Download OpenRewind \(r.version)…")
+        }
+    }
+
+    private func updateRow(_ title: String) -> NSMenuItem {
+        let i = action(title, #selector(updateNow))
+        i.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: nil)
+        return i
+    }
+
+    @objc private func updateNow() { Updater.shared.update() }
+
+    @objc private func toggleAutoDownload() { Updater.shared.autoDownload.toggle() }
+
+    @objc private func checkForUpdates() {
+        let u = Updater.shared
+        u.check { error in
+            NSApp.activate(ignoringOtherApps: true)
+            let a = NSAlert()
+            if let error {
+                a.messageText = "Could not check for updates"
+                a.informativeText = error
+            } else if let r = u.available {
+                a.messageText = "OpenRewind \(r.version) is out"
+                a.informativeText = "You have \(u.current)."
+                a.addButton(withTitle: u.canInstall ? "Update" : "Download")
+                a.addButton(withTitle: "Later")
+                if a.runModal() == .alertFirstButtonReturn { u.update() }
+                return
+            } else {
+                a.messageText = "OpenRewind is up to date"
+                a.informativeText = "You have the latest version, \(u.current)."
+            }
+            a.runModal()
+        }
     }
 
     // MARK: storage
