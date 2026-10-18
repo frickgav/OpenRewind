@@ -306,6 +306,8 @@ sealed class OverlayForm : Form
         var box = new Rectangle((int)(searchPill.X + 36 * k), (int)(mid - search.PreferredHeight / 2f), (int)Math.Max(40 * k, right - searchPill.X - 44 * k), search.PreferredHeight);
         if (search.Bounds != box) search.Bounds = box;
 
+        DrawAppFilter(g, new RectangleF(searchPill.Right + 10 * k, searchPill.Y, 0, searchPill.Height));
+
         // Center: time and how long ago.
         var local = model.Playhead.ToLocalTime();
         var time = local.ToString("T", CultureInfo.CurrentCulture);
@@ -320,6 +322,55 @@ sealed class OverlayForm : Form
         float bx = r.Right - 30 * k;
         RoundButton(g, new RectangleF(bx, r.Y + 7 * k, 30 * k, 30 * k), "✕", () => HideOverlay());
         RoundButton(g, new RectangleF(bx - 40 * k, r.Y + 7 * k, 30 * k, 30 * k), "?", () => { model.ShowHelp = !model.ShowHelp; Invalidate(); });
+    }
+
+    /// Pill next to search: "All apps", or the app the timeline is filtered to. Click to choose.
+    void DrawAppFilter(Graphics g, RectangleF r)
+    {
+        var app = model.AppFilterName;
+        var label = app ?? "All apps";
+        var f = Semibold(13);
+        var sz = Draw.Measure(g, label, f);
+        float icon = 18 * k, pad = 14 * k, mid = r.Y + r.Height / 2;
+        var arrowW = Draw.Measure(g, "▾", F(11)).Width;
+        // Leave the middle of the bar free for the clock.
+        float maxW = ClientSize.Width / 2f - 130 * k - r.X;
+        r.Width = Math.Min(maxW, pad + (app != null ? icon + 8 * k : 0) + sz.Width + 6 * k + arrowW + (app != null ? 26 * k : 0) + pad);
+        if (r.Width < 80 * k) return;
+        bool hover = r.Contains(PointToClient(Cursor.Position));
+        Draw.Fill(g, r, r.Height / 2, app != null ? Draw.WithAlpha(Accent, dark ? 0.35 : 0.2) : PillColor(hover));
+        Draw.Stroke(g, r, r.Height / 2, Ink(app != null ? 0.25 : 0.12));
+        hot.Add((r, () => ShowAppMenu(r)));
+        float x = r.X + pad;
+        if (app != null)
+        {
+            if (AppIcons.Get(app) is Image img) g.DrawImage(img, x, mid - icon / 2, icon, icon);
+            else Draw.Fill(g, new RectangleF(x + 3 * k, mid - 6 * k, 12 * k, 12 * k), 3 * k, TimelineModel.AppColor(app));
+            x += icon + 8 * k;
+        }
+        float textRight = r.Right - pad - arrowW - 6 * k - (app != null ? 26 * k : 0);
+        Draw.Text(g, label, f, TextColor, x, mid - sz.Height / 2, textRight - x);
+        Draw.Text(g, "▾", F(11), Ink(0.6), textRight + 6 * k, mid - Draw.Measure(g, "▾", F(11)).Height / 2);
+        if (app != null) HotIcon(g, "✕", r.Right - 10 * k, mid, () => model.SetAppFilter(null));
+    }
+
+    ContextMenuStrip? appMenu;
+
+    void ShowAppMenu(RectangleF at)
+    {
+        appMenu?.Dispose();
+        appMenu = new ContextMenuStrip { ShowCheckMargin = false, ShowImageMargin = true };
+        var all = new ToolStripMenuItem("All apps") { Checked = model.AppFilterName == null };
+        all.Click += (_, _) => { model.SetAppFilter(null); Invalidate(); };
+        appMenu.Items.Add(all);
+        appMenu.Items.Add(new ToolStripSeparator());
+        foreach (var app in model.Apps)
+        {
+            var item = new ToolStripMenuItem(app, AppIcons.Get(app)) { Checked = app == model.AppFilterName };
+            item.Click += (_, _) => { model.SetAppFilter(app); Invalidate(); };
+            appMenu.Items.Add(item);
+        }
+        appMenu.Show(this, new Point((int)at.X, (int)(at.Bottom + 4 * k)));
     }
 
     float HotIcon(Graphics g, string glyph, float right, float mid, Action act)
@@ -377,8 +428,8 @@ sealed class OverlayForm : Form
     /// Counted to when the timeline opened, so the banner does not pop in while you look.
     int? StaleMinutes()
     {
-        if (model.Frames.Count == 0) return null;
-        var mins = (int)((model.LoadedAt - model.Frames[^1].Time).TotalMinutes);
+        if (model.Newest is not TimelineFrame newest) return null;
+        var mins = (int)((model.LoadedAt - newest.Time).TotalMinutes);
         return mins >= 3 ? mins : null;
     }
 
@@ -634,6 +685,7 @@ sealed class OverlayForm : Form
         g.SetClip(new RectangleF(r.X, r.Y, r.Width, r.Height));
 
         // Solid blocks: one per run of frames from the same app (a frame lasts until the next, max 60 s).
+        // While filtering by app, a frame lasts until the next screenshot of any app (its End).
         var frames = model.Frames;
         if (frames.Count > 0)
         {
@@ -648,10 +700,11 @@ sealed class OverlayForm : Form
                 {
                     var f = frames[j];
                     if (f.AppName != app) break;
-                    var next = j + 1 < frames.Count ? frames[j + 1].Time : f.Time.AddSeconds(2);
+                    var next = f.End ?? (j + 1 < frames.Count ? frames[j + 1].Time : f.Time.AddSeconds(2));
                     runEnd = next < f.Time.AddSeconds(60) ? next : f.Time.AddSeconds(60);
                     j++;
                     if ((next - f.Time).TotalSeconds > 60) break;  // idle: end the block here
+                    if (j < frames.Count && frames[j].Time > next) break;  // another app was in front in between
                 }
                 float a = X(runStart), b = X(runEnd);
                 if (b > r.X && a < r.Right) Draw.Fill(g, new RectangleF(a, r.Y + AppY, Math.Max(2 * k, b - a - 1), AppH), 3 * k, TimelineModel.AppColor(app));
@@ -876,6 +929,7 @@ sealed class OverlayForm : Form
         ("", new[] { new[] { "scroll" } }, "Scroll the wheel or touchpad"),
         ("", new[] { new[] { "N" } }, "Go to now"),
         ("OPEN", new[] { new[] { "O" } }, "Open the tab or window from this moment"),
+        ("FILTER", new[] { new[] { "A" } }, "Only this app / all apps again"),
         ("AUDIO", new[] { new[] { "space" } }, "Play or pause audio from here"),
         ("SEARCH", new[] { new[] { "/" }, new[] { "Ctrl", "F" } }, "Search screen text and speech"),
         ("", new[] { new[] { "Ctrl", "G" }, new[] { "Shift", "Ctrl", "G" } }, "Older / newer match"),
@@ -914,6 +968,17 @@ sealed class OverlayForm : Form
     }
 
     // MARK: input
+
+    /// A: show only the app in this screenshot, or every app again.
+    void ToggleAppFilter()
+    {
+        if (model.AppFilterName != null) model.SetAppFilter(null);
+        else if (model.Current is TimelineFrame f && f.AppName.Length > 0)
+        {
+            model.SetAppFilter(f.AppName);
+            model.ShowNotice($"Only showing {f.AppName}. Press A for all apps.");
+        }
+    }
 
     void FocusSearch()
     {
@@ -981,6 +1046,7 @@ sealed class OverlayForm : Form
             case Keys.Space: model.ToggleAudio(); break;
             case Keys.N: case Keys.End: model.JumpToNow(); break;
             case Keys.O when !ctrl: OpenCurrent(); break;
+            case Keys.A when !ctrl: ToggleAppFilter(); break;
             case Keys.Oemplus: case Keys.Add: model.Span = Math.Max(60, model.Span / 2); Invalidate(); break;
             case Keys.OemMinus: case Keys.Subtract: model.Span = Math.Min(12 * 3600, model.Span * 2); Invalidate(); break;
             default: return base.ProcessCmdKey(ref msg, keyData);

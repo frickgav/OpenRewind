@@ -6,7 +6,12 @@ import ImageIO
 /// State behind the timeline overlay: which moment is shown, its screenshot, and audio at that moment.
 final class TimelineModel: ObservableObject {
     let db: Database
+    /// The screenshots shown: all of them, or only those of the filtered app.
     @Published private(set) var frames: [TimelineFrame] = []
+    /// Every screenshot loaded, whatever the app filter.
+    private var allFrames: [TimelineFrame] = []
+    /// Only show moments when this app was in front (nil = all apps).
+    @Published private(set) var appFilter: String?
     @Published private(set) var audio: [TimelineAudio] = []
     /// Recorded stretches, with long breaks between them (see TimelineAxis).
     private(set) var sessions: [TimelineAxis.Session] = []
@@ -67,7 +72,7 @@ final class TimelineModel: ObservableObject {
     func preview(at date: Date) -> (frame: TimelineFrame, image: NSImage?)? {
         guard !frames.isEmpty, date >= frames[0].time else { return nil }
         let f = frames[frameIndex(at: date)]
-        guard date.timeIntervalSince(f.time) <= 60 else { return nil }
+        guard date <= (f.end == nil ? f.time.addingTimeInterval(60) : AppFilter.until(f)) else { return nil }
         if let img = thumbCache[f.id] { return (f, img) }
         let opts = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 480,
                      kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary
@@ -157,18 +162,55 @@ final class TimelineModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
     }
 
+    /// Apps in the loaded history, the one in front longest first (for the app filter menu).
+    private(set) var apps: [String] = []
+
+    /// The newest screenshot of any app.
+    var newest: TimelineFrame? { allFrames.last }
+
+    /// Show only the moments when `app` was in front, or every app (nil). Stays near the same time.
+    func setAppFilter(_ app: String?) {
+        guard app != appFilter else { return }
+        let at = playhead
+        stopAudio()
+        appFilter = app
+        applyFilter()
+        show(frameIndex(at: at))
+        if !query.trimmingCharacters(in: .whitespaces).isEmpty { runSearch(query.trimmingCharacters(in: .whitespaces)) }
+    }
+
+    /// A: show only the app in this screenshot, or every app again.
+    func toggleAppFilter() {
+        if appFilter != nil { setAppFilter(nil); return }
+        guard let app = current?.appName, !app.isEmpty else { return }
+        setAppFilter(app)
+        show(notice: "Only showing \(app). Press A for all apps.")
+    }
+
+    /// Frames and the bar's stretches for the current app filter. While filtering, time in
+    /// other apps becomes breaks, and audio does not keep those stretches open.
+    private func applyFilter() {
+        frames = AppFilter.apply(allFrames, app: appFilter)
+        sessions = appFilter == nil
+            ? TimelineAxis.sessions(frames: frames, audio: audio, now: now)
+            : TimelineAxis.sessions(frames: frames, audio: [], now: now, gap: AppFilter.gapThreshold)
+    }
+
     /// Audio chunks that cover the playhead (mic and system audio can overlap).
     var audioHere: [TimelineAudio] {
         audio.filter { $0.start <= playhead && playhead < $0.end }
     }
 
-    func reload(hours: Double = 24) {
+    /// `keepApp`: keep the app filter (opening an older search result); a fresh open shows every app.
+    func reload(hours: Double = 24, keepApp: Bool = false) {
         stopAudio()
         now = Date()
         loadedSince = now.addingTimeInterval(-hours * 3600)
-        frames = db.timelineFrames(since: loadedSince)
+        allFrames = db.timelineFrames(since: loadedSince)
+        apps = AppFilter.apps(allFrames)
         audio = db.timelineAudio(since: loadedSince)
-        sessions = TimelineAxis.sessions(frames: frames, audio: audio, now: now)
+        if !keepApp || !allFrames.contains(where: { $0.appName == appFilter }) { appFilter = nil }
+        applyFilter()
         show(frames.count - 1)
     }
 
@@ -179,9 +221,10 @@ final class TimelineModel: ObservableObject {
         guard !older.isEmpty else { return }
         let keepId = current?.id
         loadedSince = since
-        frames = older + frames
+        allFrames = older + allFrames
+        apps = AppFilter.apps(allFrames)
         audio = db.timelineAudio(since: since)
-        sessions = TimelineAxis.sessions(frames: frames, audio: audio, now: now)
+        applyFilter()
         if let keepId, let i = frames.firstIndex(where: { $0.id == keepId }) { index = i }
     }
 

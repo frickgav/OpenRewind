@@ -91,6 +91,7 @@ struct TimelineView: View {
         ZStack {
             HStack(spacing: 10) {
                 searchBar.frame(maxWidth: 460)
+                AppFilterMenu(model: model)
                 Spacer(minLength: 220)
                 IconButton(symbol: "questionmark", help: "Keyboard shortcuts (?)") { model.showHelp.toggle() }
                 IconButton(symbol: "xmark", help: "Close (esc)", action: close)
@@ -108,7 +109,7 @@ struct TimelineView: View {
 
     /// Minutes since the newest screenshot, when that is long enough to look like a gap.
     private var staleGap: Int? {
-        guard let last = model.frames.last else { return nil }
+        guard let last = model.newest else { return nil }
         let mins = Int(Date().timeIntervalSince(last.time) / 60)
         return mins >= 3 ? mins : nil
     }
@@ -493,6 +494,7 @@ struct TimelineView: View {
         ("", [["scroll"]], "Scroll the trackpad or wheel"),
         ("", [["N"]], "Go to now"),
         ("Open", [["O"]], "Open the tab, document or window from this moment"),
+        ("Filter", [["A"]], "Only this app / all apps again"),
         ("Audio", [["space"]], "Play or pause audio from here"),
         ("Search", [["/"], ["⌘", "F"]], "Search screen text and speech"),
         ("", [["⌘", "G"], ["⇧", "⌘", "G"]], "Older / newer match"),
@@ -566,6 +568,53 @@ struct Keycap: View {
 }
 
 /// Round icon button for the top bar.
+/// Pill next to search: "All apps", or the app the timeline is filtered to. Click to choose.
+struct AppFilterMenu: View {
+    @Environment(\.colorScheme) private var scheme
+    private var theme: Theme { Theme(scheme) }
+    @ObservedObject var model: TimelineModel
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Menu {
+                Button { model.setAppFilter(nil) } label: {
+                    Label("All apps", systemImage: model.appFilter == nil ? "checkmark" : "square.grid.2x2")
+                }
+                Divider()
+                ForEach(model.apps, id: \.self) { app in
+                    Button { model.setAppFilter(app) } label: {
+                        if let icon = AppIcons.small(for: app) {
+                            Label { Text(app) } icon: { Image(nsImage: icon) }
+                        } else {
+                            Text(app)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    if let app = model.appFilter, let icon = AppIcons.icon(for: app) {
+                        Image(nsImage: icon).resizable().frame(width: 18, height: 18)
+                    } else if model.appFilter == nil {
+                        Image(systemName: "square.grid.2x2").foregroundColor(theme.dim)
+                    }
+                    Text(model.appFilter ?? "All apps").font(.system(size: 13, weight: .medium)).lineLimit(1)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Only show moments when one app was in front (A)")
+            if model.appFilter != nil {
+                Button { model.setAppFilter(nil) } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.plain).foregroundColor(theme.faint).help("Show all apps")
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 9)
+        .background(Capsule().fill(model.appFilter != nil ? Color.accentColor.opacity(0.3) : theme.surface))
+        .overlay(Capsule().stroke(theme.stroke))
+        .frame(maxWidth: 240)
+    }
+}
+
 struct IconButton: View {
     @Environment(\.colorScheme) private var scheme
     private var theme: Theme { Theme(scheme) }
@@ -620,6 +669,13 @@ enum AppIcons {
             }
         }
         cache[name] = img
+        return img
+    }
+
+    /// A 16 pt copy for menus (app icons are huge otherwise).
+    static func small(for name: String) -> NSImage? {
+        guard let img = icon(for: name)?.copy() as? NSImage else { return nil }
+        img.size = NSSize(width: 16, height: 16)
         return img
     }
 }
@@ -731,6 +787,7 @@ struct TimelineBar: View {
     }
 
     /// Solid blocks: one per run of frames from the same app (a frame lasts until the next, max 60 s).
+    /// While filtering by app, a frame lasts until the next screenshot of any app (its `end`).
     private func drawApps(_ ctx: GraphicsContext, size: CGSize, from: Date, to: Date, x: (Date) -> CGFloat) {
         let frames = model.frames
         guard !frames.isEmpty else { return }
@@ -744,10 +801,11 @@ struct TimelineBar: View {
             while j <= last {
                 let f = frames[j]
                 guard f.appName == app else { break }
-                let next = j + 1 < frames.count ? frames[j + 1].time : f.time.addingTimeInterval(2)
+                let next = f.end ?? (j + 1 < frames.count ? frames[j + 1].time : f.time.addingTimeInterval(2))
                 runEnd = min(next, f.time.addingTimeInterval(60))
                 j += 1
                 if next.timeIntervalSince(f.time) > 60 { break }  // idle: end the block here
+                if j < frames.count && frames[j].time > next { break }  // another app was in front in between
             }
             let a = x(runStart), b = x(runEnd)
             if b > 0 && a < size.width {

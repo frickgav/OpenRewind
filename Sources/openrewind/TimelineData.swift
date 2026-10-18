@@ -9,6 +9,8 @@ struct TimelineFrame {
     var path: String
     /// Browser tab address or document file URL of this frame, or "".
     var url: String = ""
+    /// Set only while the timeline shows one app: when the next screenshot (of any app) was taken.
+    var end: Date? = nil
 }
 
 struct TimelineAudio {
