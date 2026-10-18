@@ -145,8 +145,8 @@ final class FramePacker {
         timer = t
     }
 
-    func packOld() {
-        let cutoff = Time.iso.string(from: Date().addingTimeInterval(-Self.minAge))
+    func packOld(minAge: TimeInterval = FramePacker.minAge) {
+        let cutoff = Time.iso.string(from: Date().addingTimeInterval(-minAge))
         let rows = db.idsAndPaths("SELECT id, snapshot_path FROM frames WHERE timestamp < ? AND snapshot_path != '' AND instr(snapshot_path, '#') = 0 ORDER BY timestamp ASC",
                                   [.text(cutoff)])
             .filter { FileManager.default.fileExists(atPath: $0.path) }
