@@ -21,6 +21,8 @@ sealed class Settings
     public bool AutoDownloadUpdates { get; set; } = true;
     /// The version whose timeline banner was closed; a newer version shows it again.
     public string? DismissedUpdateVersion { get; set; }
+    /// The version that ran last time. A different one means a new exe sits at the same path (see Program.RefreshIconIfNew).
+    public string? LastRunVersion { get; set; }
     /// Pause Recording: when screen and audio come back on (UTC); DateTime.MaxValue = until resumed. Null when not paused.
     public DateTime? PausedUntil { get; set; }
     /// Timeline hotkey (see HotkeyShortcut). Null = Ctrl+Alt+T.
