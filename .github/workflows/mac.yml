@@ -2,9 +2,9 @@ name: Mac app
 
 on:
   push:
-    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icon.swift", ".github/workflows/mac.yml"]
+    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", ".github/workflows/mac.yml"]
   pull_request:
-    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icon.swift", ".github/workflows/mac.yml"]
+    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", ".github/workflows/mac.yml"]
   workflow_dispatch:
 
 jobs:
