@@ -106,8 +106,25 @@ The code:
 - The search page is not copied: the build reads it straight out of
   `Sources/openrewind/WebUI.swift`, so a change there shows up on both.
 
+## Code signing
+
+Unsigned downloads get the SmartScreen "Windows protected your PC" warning. The GitHub
+Actions build signs `OpenRewind.exe` with [Azure Trusted Signing](https://learn.microsoft.com/azure/trusted-signing/)
+once these repository secrets are set (Settings → Secrets and variables → Actions):
+
+| Secret | What it is |
+| --- | --- |
+| `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | An app registration that has the *Trusted Signing Certificate Profile Signer* role on the signing account |
+| `AZURE_SIGNING_ENDPOINT` | The account's region endpoint, e.g. `https://eus.codesigning.azure.net/` |
+| `AZURE_SIGNING_ACCOUNT` | The Trusted Signing account name |
+| `AZURE_SIGNING_PROFILE` | The certificate profile name (Public Trust) |
+
+Without them the build still works and the exe is unsigned. To sign a local build with a
+certificate file instead: `$env:SIGN_CERT = "cert.pfx"; $env:SIGN_PASSWORD = "..."` before
+running `scripts\build-windows.ps1`.
+
 ## Not yet on Windows
 
-- Code signing (SmartScreen warning on first run) and an installer
+- An installer
 - Screens with protected video (some streaming apps) come out black, as in other screen recorders
 - Only the monitor under the mouse is recorded (same as the Mac app)
