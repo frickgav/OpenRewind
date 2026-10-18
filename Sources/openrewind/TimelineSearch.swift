@@ -16,6 +16,7 @@ extension TimelineModel {
     func queryChanged() {
         searchWork?.cancel()
         let q = query.trimmingCharacters(in: .whitespaces)
+        refreshHighlights()
         guard !q.isEmpty else { hits = []; showResults = false; return }
         let work = DispatchWorkItem { [weak self] in self?.runSearch(q) }
         searchWork = work
@@ -90,6 +91,43 @@ extension TimelineModel {
 
     func clearSearch() {
         query = ""; hits = []; showResults = false
+        refreshHighlights()
+    }
+
+    /// The words of a search, lowercased, for marking them on a screenshot.
+    static func terms(_ q: String) -> [String] {
+        var out: [String] = []
+        for w in q.split(whereSeparator: { $0.isWhitespace }) {
+            let t = w.replacingOccurrences(of: "\"", with: "").lowercased()
+            if !t.isEmpty && !out.contains(t) { out.append(t) }
+        }
+        return out
+    }
+
+    /// Mark the searched words on the shown screenshot. Uses what is cached, otherwise reads it
+    /// once scrolling settles, since reading the words off a screenshot takes a moment.
+    func refreshHighlights() {
+        highlightWork?.cancel()
+        let terms = Self.terms(query)
+        guard !terms.isEmpty, let f = current, image != nil else { highlights = []; return }
+        let key = "\(f.id) \(terms.joined(separator: " "))"
+        if let cached = highlightCache[key] { highlights = cached; return }
+        highlights = []
+        let work = DispatchWorkItem { [weak self] in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let found = ImageTools.load(URL(fileURLWithPath: f.path)).map { OCR.find(terms, in: $0) } ?? []
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.highlightCache[key] = found
+                    self.highlightOrder.append(key)
+                    if self.highlightOrder.count > 64 { self.highlightCache.removeValue(forKey: self.highlightOrder.removeFirst()) }
+                    guard self.current?.id == f.id, Self.terms(self.query) == terms else { return }
+                    self.highlights = found
+                }
+            }
+        }
+        highlightWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
 
     static func snippet(_ text: String, around q: String) -> String {

@@ -91,4 +91,31 @@ enum OCR {
         }
         return obs.compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
     }
+
+    /// Where the search terms appear in the image, as fractions of its width and height (0–1, top-left origin).
+    static func find(_ terms: [String], in image: CGImage) -> [CGRect] {
+        guard !terms.isEmpty else { return [] }
+        let req = VNRecognizeTextRequest()
+        req.recognitionLevel = .accurate
+        req.usesLanguageCorrection = true
+        do { try VNImageRequestHandler(cgImage: image, options: [:]).perform([req]) } catch {
+            log("ocr failed: \(error)")
+            return []
+        }
+        var found: [CGRect] = []
+        for obs in req.results ?? [] {
+            guard let text = obs.topCandidates(1).first else { continue }
+            let s = text.string
+            for t in terms {
+                var from = s.startIndex
+                while let r = s.range(of: t, options: .caseInsensitive, range: from..<s.endIndex) {
+                    from = r.upperBound
+                    guard let box = try? text.boundingBox(for: r)?.boundingBox else { continue }
+                    // Vision uses bottom-left origin.
+                    found.append(CGRect(x: box.minX, y: 1 - box.maxY, width: box.width, height: box.height))
+                }
+            }
+        }
+        return found
+    }
 }

@@ -46,6 +46,15 @@ public static class SearchHits
         return (start > 0 ? "…" : "") + flat[start..end] + (end < flat.Length ? "…" : "");
     }
 
+    /// The words of a search, lowercased, for marking them on a screenshot.
+    public static List<string> Terms(string q) =>
+        q.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+         .Select(w => w.Replace("\"", "").ToLowerInvariant()).Where(w => w.Length > 0).Distinct().ToList();
+
+    /// True when a word read off the screen contains one of the search terms ("Invoice:" matches "invoice").
+    public static bool Matches(string word, IReadOnlyList<string> terms) =>
+        terms.Any(t => word.Contains(t, StringComparison.OrdinalIgnoreCase));
+
     /// Stable color per app (hue 0–359), so the timeline bar shows app switches at a glance. Same hash as the Mac app.
     public static int AppHue(string app)
     {
