@@ -71,14 +71,11 @@ final class Recorder {
     private var lastWrite = Date.distantPast
     /// Seconds between stored frames while only a few words change. At or below the capture interval: every capture.
     var minorChangeGap: TimeInterval = 2
-    /// Saved screenshot size compared with the screen (Settings → Screenshot Resolution).
-    var snapshotScale: CGFloat
     private let excluded: Set<String>
 
     init(config: Config, db: Database) {
         self.config = config
         self.db = db
-        snapshotScale = config.snapshotScale
         let env = Config.env("EXCLUDE")
         let list = env?.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
             ?? ["1password", "keychain access", "bitwarden", "passwords"]
@@ -143,7 +140,7 @@ final class Recorder {
         let ts = Time.now()
         let dayDir = config.dataDir.appendingPathComponent(String(ts.prefix(10)))
         try FileManager.default.createDirectory(at: dayDir, withIntermediateDirectories: true)
-        let file = try ImageTools.writeSnapshot(ImageTools.scaled(image, by: snapshotScale),
+        let file = try ImageTools.writeSnapshot(ImageTools.scaled(image, by: config.snapshotScale),
                                                 to: dayDir.appendingPathComponent(ts.replacingOccurrences(of: ":", with: "-")))
 
         let id = try db.insert(Frame(id: 0, timestamp: ts, appName: window.appName, windowName: window.windowName,
