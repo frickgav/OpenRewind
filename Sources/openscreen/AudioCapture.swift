@@ -73,7 +73,10 @@ final class ChunkWriter {
 
     private func flush(_ s: [Float], startedAt: Date) {
         let rms = sqrt(s.reduce(0) { $0 + $1 * $1 } / Float(max(s.count, 1)))
-        if rms < 0.002 { return }  // basically silence: do not store or transcribe
+        if rms < 0.002 {  // basically silence: do not store or transcribe
+            log("audio \(device): skipped silent \(Int(Double(s.count) / whisperFormat.sampleRate))s clip (level \(String(format: "%.4f", rms)))")
+            return
+        }
         let ts = Time.iso.string(from: startedAt)
         let dir = config.dataDir.appendingPathComponent("audio").appendingPathComponent(String(ts.prefix(10)))
         do {

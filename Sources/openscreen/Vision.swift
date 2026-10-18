@@ -26,6 +26,25 @@ enum ImageTools {
 
     static func distance(_ a: UInt64, _ b: UInt64) -> Int { (a ^ b).nonzeroBitCount }
 
+    /// Small grayscale thumbnail for change detection. 9x8 is too coarse to see
+    /// a new line of text, so this keeps enough detail (192x120) to notice it.
+    static func thumbnail(_ image: CGImage, width: Int = 192, height: Int = 120) -> [UInt8] {
+        var px = [UInt8](repeating: 0, count: width * height)
+        let ctx = CGContext(data: &px, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width,
+                            space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)!
+        ctx.interpolationQuality = .low
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return px
+    }
+
+    /// Number of thumbnail pixels that changed by more than `tolerance` gray levels.
+    static func changedPixels(_ a: [UInt8], _ b: [UInt8], tolerance: Int = 8) -> Int {
+        guard a.count == b.count else { return Int.max }
+        var n = 0
+        for i in 0..<a.count where abs(Int(a[i]) - Int(b[i])) > tolerance { n += 1 }
+        return n
+    }
+
     static func scaled(_ image: CGImage, by scale: CGFloat) -> CGImage {
         guard scale < 1 else { return image }
         let w = Int(CGFloat(image.width) * scale), h = Int(CGFloat(image.height) * scale)

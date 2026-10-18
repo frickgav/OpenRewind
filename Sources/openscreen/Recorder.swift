@@ -42,7 +42,8 @@ enum Time {
 final class Recorder {
     let config: Config
     let db: Database
-    private var lastHash: UInt64?
+    private var lastThumb: [UInt8]?
+    private var lastText = ""
     private var lastKey = ""
     private var lastWrite = Date.distantPast
     private let excluded: Set<String>
@@ -76,10 +77,11 @@ final class Recorder {
     /// Dedup, extract text, store snapshot, insert row. Returns the new frame id, or nil if skipped.
     func ingest(image: CGImage, window: ActiveWindow, pid: pid_t?) throws -> Int64? {
         let hash = ImageTools.dHash(image)
+        let thumb = ImageTools.thumbnail(image)
         let key = window.appName + "\u{1F}" + window.windowName
-        // Same window and nearly same pixels: skip. Still store one frame per minute as a heartbeat.
-        if key == lastKey, let lh = lastHash, ImageTools.distance(lh, hash) <= config.dedupThreshold,
-           Date().timeIntervalSince(lastWrite) < 60 {
+        let heartbeatDue = Date().timeIntervalSince(lastWrite) >= 60
+        // Same window and (almost) no pixels changed: skip. Still store one frame per minute as a heartbeat.
+        if key == lastKey, let lt = lastThumb, ImageTools.changedPixels(lt, thumb) < config.minChangedPixels, !heartbeatDue {
             return nil
         }
 
@@ -89,6 +91,11 @@ final class Recorder {
             text = ax; source = "accessibility"
         }
         if text.isEmpty { text = OCR.recognize(image) }
+        // Pixels moved (cursor blink, animation) but the text is the same: nothing new to search.
+        if key == lastKey, text == lastText, !heartbeatDue {
+            lastThumb = thumb
+            return nil
+        }
 
         let ts = Time.now()
         let dayDir = config.dataDir.appendingPathComponent(String(ts.prefix(10)))
@@ -99,7 +106,7 @@ final class Recorder {
         let id = try db.insert(Frame(id: 0, timestamp: ts, appName: window.appName, windowName: window.windowName,
                                      focused: true, snapshotPath: file.path, text: text, textSource: source,
                                      hash: Int64(bitPattern: hash)))
-        lastHash = hash; lastKey = key; lastWrite = Date()
+        lastThumb = thumb; lastText = text; lastKey = key; lastWrite = Date()
         log("frame \(id) \(window.appName) — \(text.count) chars via \(source)")
         return id
     }
