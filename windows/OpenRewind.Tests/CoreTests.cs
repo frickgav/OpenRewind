@@ -228,4 +228,14 @@ public class CoreTests : IDisposable
         Assert.False(FrameDedup.IsMinorChange(page, string.Join(" ", Enumerable.Range(0, 300).Select(i => "other" + i))));
         Assert.False(FrameDedup.IsMinorChange("", "a whole new screen of text here"));
     }
+
+    [Fact]
+    public void ScreenshotResolutionChoices()
+    {
+        Assert.Equal(1.0, ScreenshotSizes.Scale(100));
+        Assert.Equal(0.25, ScreenshotSizes.Scale(25));
+        Assert.Equal(0.5, ScreenshotSizes.Scale(ScreenshotSizes.Default));
+        Assert.Equal(0.5, ScreenshotSizes.Scale(33));  // hand-edited value: back to the default
+        Assert.Equal("Half (50%, Default)", ScreenshotSizes.Title(50));
+    }
 }

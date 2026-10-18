@@ -13,6 +13,8 @@ sealed class Settings
     public string KeepAudio { get; set; } = "forever";
     /// Seconds between saved frames while only a few words change (2 = every capture).
     public int TypingFrameGap { get; set; } = 2;
+    /// Saved screenshot size as a percent of the screen (see ScreenshotSizes.Choices).
+    public int ScreenshotPercent { get; set; } = ScreenshotSizes.Default;
     /// The local HTTP API + browser search page. Off unless the user turns it on.
     public bool LocalSearchServer { get; set; } = false;
     /// Download new versions in the background; they are installed only on a click.
