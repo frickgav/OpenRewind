@@ -28,7 +28,14 @@ if ($LASTEXITCODE -ne 0) { throw "publish failed" }
 #   $env:SIGN_CERT = "path\to\cert.pfx"; $env:SIGN_PASSWORD = "..."
 if ($env:SIGN_CERT) {
   Write-Host "→ signing"
-  signtool sign /f $env:SIGN_CERT /p $env:SIGN_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "$Out\OpenRewind.exe"
+  $signtool = (Get-Command signtool -ErrorAction SilentlyContinue).Source
+  if (-not $signtool) {
+    $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
+      Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+  }
+  if (-not $signtool) { throw "signtool not found: install the Windows SDK" }
+  & $signtool sign /f $env:SIGN_CERT /p $env:SIGN_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "$Out\OpenRewind.exe"
+  if ($LASTEXITCODE -ne 0) { throw "signing failed" }
 }
 
 Write-Host "→ zipping $Zip"
