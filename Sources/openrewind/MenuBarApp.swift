@@ -13,6 +13,9 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let keepScreenKey = "keepScreen", keepAudioKey = "keepAudio"
     /// Seconds between saved frames while only a few words change (2 = every capture).
     private let typingGapKey = "typingFrameGap"
+    /// Saved screenshot size as a percent of the screen.
+    private let screenshotKey = "screenshotPercent"
+    private static let screenshotChoices = [100, 75, 50, 25]
     /// The local HTTP API + browser search page. Off unless the user turns it on in Settings.
     private let serverKey = "localSearchServer"
     private var retention: RetentionJob!
@@ -26,7 +29,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         copyOldSettings()
         defaults.register(defaults: [screenKey: true, audioKey: true, serverKey: false,
                                      keepScreenKey: KeepFor.forever.rawValue, keepAudioKey: KeepFor.forever.rawValue,
-                                     typingGapKey: 2])
+                                     typingGapKey: 2, screenshotKey: 50])
     }
 
     /// The app used to be OpenScreen (bundle id ai.agilityresources.openscreen). Bring its menu
@@ -51,6 +54,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if defaults.bool(forKey: serverKey) { startServer() }
         engine.startTranscriber()
         engine.recorder.minorChangeGap = TimeInterval(defaults.integer(forKey: typingGapKey))
+        engine.recorder.snapshotScale = screenshotScale(defaults.integer(forKey: screenshotKey))
         engine.setScreen(defaults.bool(forKey: screenKey))
         engine.setAudio(defaults.bool(forKey: audioKey))
         retention = RetentionJob(db: engine.db, screen: keep(keepScreenKey), audio: keep(keepAudioKey))
@@ -112,6 +116,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         m.addItem(keepMenu("Keep Screen Recordings For", key: keepScreenKey))
         m.addItem(keepMenu("Keep Audio Recordings For", key: keepAudioKey))
         m.addItem(typingGapMenu())
+        m.addItem(screenshotMenu())
         m.addItem(.separator())
 
         let del = NSMenuItem(title: "Delete Recordings", action: nil, keyEquivalent: "")
@@ -158,6 +163,33 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func setTypingGap(_ sender: NSMenuItem) {
         defaults.set(sender.tag, forKey: typingGapKey)
         engine.recorder.minorChangeGap = TimeInterval(sender.tag)
+    }
+
+    /// Bigger screenshots are sharper to read back in the timeline and use more disk space.
+    private func screenshotMenu() -> NSMenuItem {
+        let item = NSMenuItem(title: "Screenshot Resolution", action: nil, keyEquivalent: "")
+        item.toolTip = "How big each saved screenshot is compared with your screen. Higher is sharper in the timeline but uses more disk space. Applies to new screenshots."
+        let sub = NSMenu()
+        let current = defaults.integer(forKey: screenshotKey)
+        for pct in Self.screenshotChoices {
+            let title = pct == 100 ? "Full (100%)" : pct == 50 ? "Half (50%, Default)" : pct == 25 ? "Quarter (25%)" : "\(pct)%"
+            let i = action(title, #selector(setScreenshotSize(_:)))
+            i.tag = pct
+            i.state = pct == current ? .on : .off
+            sub.addItem(i)
+        }
+        item.submenu = sub
+        return item
+    }
+
+    @objc private func setScreenshotSize(_ sender: NSMenuItem) {
+        defaults.set(sender.tag, forKey: screenshotKey)
+        engine.recorder.snapshotScale = screenshotScale(sender.tag)
+    }
+
+    /// An unknown value falls back to half size, the default.
+    private func screenshotScale(_ pct: Int) -> CGFloat {
+        CGFloat(Self.screenshotChoices.contains(pct) ? pct : 50) / 100
     }
 
     private func keepMenu(_ title: String, key: String) -> NSMenuItem {
