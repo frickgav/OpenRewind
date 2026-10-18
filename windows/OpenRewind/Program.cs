@@ -31,11 +31,12 @@ static class Program
       --whisper-model PATH   ggml Whisper model (default: auto-detect)
       --whisper-bin PATH     whisper-cli.exe (default: auto-detect)
       --language L    Whisper language code, or auto (default auto)
-      --home DIR      Data folder (default %USERPROFILE%\.openscreen, or %OPENSCREEN_HOME%)
+      --home DIR      Data folder (default %USERPROFILE%\.openrewind, or %OPENREWIND_HOME%)
 
     Env:
-      OPENSCREEN_EXCLUDE         Comma list of app names to never record
-      OPENSCREEN_WHISPER_MODEL   Path to a ggml Whisper model
+      OPENREWIND_EXCLUDE         Comma list of app names to never record
+      OPENREWIND_WHISPER_MODEL   Path to a ggml Whisper model
+      (The old OPENSCREEN_ names still work.)
     """;
 
     public static Icon AppIcon { get; private set; } = SystemIcons.Application;

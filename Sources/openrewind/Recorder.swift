@@ -51,7 +51,7 @@ final class Recorder {
     init(config: Config, db: Database) {
         self.config = config
         self.db = db
-        let env = ProcessInfo.processInfo.environment["OPENSCREEN_EXCLUDE"]
+        let env = Config.env("EXCLUDE")
         let list = env?.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
             ?? ["1password", "keychain access", "bitwarden", "passwords"]
         // Never record the lock screen or screen saver, whatever the user list says.

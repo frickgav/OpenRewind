@@ -6,7 +6,7 @@
     <key>CFBundleDisplayName</key><string>OpenRewind</string>
     <key>CFBundleName</key><string>OpenRewind</string>
     <key>CFBundleExecutable</key><string>OpenRewind</string>
-    <key>CFBundleIdentifier</key><string>ai.agilityresources.openscreen</string>
+    <key>CFBundleIdentifier</key><string>ai.agilityresources.openrewind</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>

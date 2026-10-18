@@ -21,11 +21,9 @@ struct Config {
     var dataDir: URL { home.appendingPathComponent("data") }
 
     static func load(arguments: [String]) -> Config {
-        let env = ProcessInfo.processInfo.environment
-        let homeDir = env["OPENSCREEN_HOME"].map { URL(fileURLWithPath: $0) }
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".openscreen")
+        let homeDir = Config.env("HOME").map { URL(fileURLWithPath: $0) } ?? defaultHome()
         var c = Config(home: homeDir)
-        c.whisperModel = env["OPENSCREEN_WHISPER_MODEL"]
+        c.whisperModel = Config.env("WHISPER_MODEL")
         var it = arguments.makeIterator()
         while let a = it.next() {
             switch a {
@@ -47,11 +45,39 @@ struct Config {
         try? FileManager.default.createDirectory(at: c.dataDir, withIntermediateDirectories: true)
         return c
     }
+
+    /// OPENREWIND_<name>, or the old OPENSCREEN_<name> so existing setups keep working.
+    static func env(_ name: String) -> String? {
+        let e = ProcessInfo.processInfo.environment
+        return e["OPENREWIND_" + name] ?? e["OPENSCREEN_" + name]
+    }
+
+    /// ~/.openrewind. The app was called openscreen and kept its data in ~/.openscreen: move that
+    /// folder over once. The database still holds the old file paths, so leave a note for
+    /// Database to rewrite them (see `Database.finishHomeMove`).
+    static func defaultHome() -> URL {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser
+        let new = home.appendingPathComponent(".openrewind"), old = home.appendingPathComponent(".openscreen")
+        guard !fm.fileExists(atPath: new.path), fm.fileExists(atPath: old.path) else { return new }
+        do {
+            try fm.moveItem(at: old, to: new)
+            try (old.path + "/").write(to: new.appendingPathComponent(movedFromFile), atomically: true, encoding: .utf8)
+            log("moved your recordings from \(old.path) to \(new.path)")
+            return new
+        } catch {
+            log("could not move \(old.path) to \(new.path) (\(error.localizedDescription)); using the old folder")
+            return old
+        }
+    }
+
+    /// Written into the new data folder after a move; holds the old folder path.
+    static let movedFromFile = ".moved-from"
 }
 
 private var logFile: FileHandle?
 
-/// The app has no terminal, so it also writes its log to ~/.openscreen/openrewind.log.
+/// The app has no terminal, so it also writes its log to ~/.openrewind/openrewind.log.
 func openLogFile(in home: URL) {
     try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
     let url = home.appendingPathComponent("openrewind.log")

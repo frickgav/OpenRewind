@@ -5,8 +5,10 @@ out, and lets you search or scroll back through everything you saw and heard.
 100% local. Open source. A small Swift app on the Mac, a native .NET app on
 [Windows](windows/README.md).
 
-OpenRewind was called openscreen until October 2026. Your data folder is still
-`~/.openscreen`, so nothing moves when you update.
+OpenRewind was called openscreen until October 2026. On first launch it moves
+`~/.openscreen` to `~/.openrewind` and keeps every recording and your menu settings.
+macOS treats it as a new app, so it asks for Screen Recording, Microphone and
+Accessibility again; you can then delete the old OpenScreen.app (and its Login Item).
 
 ## The story
 
@@ -47,7 +49,7 @@ data before it was deleted.
 A tool that remembers your whole digital life should not be able to vanish
 when a company is sold. So we built it again, in the open:
 
-- **Local only.** Your data stays in `~/.openscreen`. No account. No cloud.
+- **Local only.** Your data stays in `~/.openrewind`. No account. No cloud.
 - **Open source ([MIT](LICENSE)).** Read the code. Change it. Nobody can switch it off.
 - **Plain files.** SQLite and JPEGs. Your history is yours to keep or move.
 
@@ -72,7 +74,7 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, Meta, or screenp
   **Apple Vision OCR**. Never reads password fields.
 - Saves a JPEG and a row in SQLite with an **FTS5** index.
 - Can serve a local API + search page at `http://127.0.0.1:3031` (off in the app until you turn it on).
-- Skips password managers by default (`OPENSCREEN_EXCLUDE` to change).
+- Skips password managers by default (`OPENREWIND_EXCLUDE` to change).
 - Records **microphone** (AVAudioEngine) and **system audio** (ScreenCaptureKit)
   in 30 s chunks, 16 kHz mono WAV. Silent chunks are dropped.
 - Transcribes each chunk with **local Whisper** (`whisper-cli` from
@@ -105,7 +107,7 @@ Copy the app to `/Applications` and open it. It lives in the menu bar:
   commands `record` and `serve` always start it.
 - **Settings → Launch at Login** starts it with your Mac.
 - The lock screen and screen saver are never recorded.
-- Log: `~/.openscreen/openrewind.log`.
+- Log: `~/.openrewind/openrewind.log`.
 
 ### Put it online for others
 
@@ -159,8 +161,8 @@ Then open http://127.0.0.1:3031.
 Needs `whisper-cli` (`brew install whisper-cpp`) and a ggml model.
 OpenRewind looks for a model in this order:
 
-1. `--whisper-model PATH` or `$OPENSCREEN_WHISPER_MODEL`
-2. `~/.openscreen/models/ggml-*.bin`
+1. `--whisper-model PATH` or `$OPENREWIND_WHISPER_MODEL`
+2. `~/.openrewind/models/ggml-*.bin`
 3. VoiceInk's models folder (already on this Mac: `ggml-large-v3-turbo-q5_0.bin`)
 
 Test it without a mic:
@@ -192,8 +194,8 @@ Response: `{"data":[{"type":"OCR","content":{"frame_id","text","timestamp","app_
 
 ## Data
 
-`~/.openscreen/db.sqlite`, `~/.openscreen/data/<date>/*.jpg`, and
-`~/.openscreen/data/audio/<date>/*.wav`.
+`~/.openrewind/db.sqlite`, `~/.openrewind/data/<date>/*.jpg`, and
+`~/.openrewind/data/audio/<date>/*.wav`.
 Delete the folder to wipe everything, or from the terminal:
 
 ```bash

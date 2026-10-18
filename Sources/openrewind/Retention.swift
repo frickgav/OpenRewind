@@ -74,7 +74,7 @@ extension Database {
         return out
     }
 
-    private func run(_ sql: String, _ args: [Arg]) {
+    func run(_ sql: String, _ args: [Arg]) {
         lock.lock(); defer { lock.unlock() }
         var st: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); return }

@@ -28,7 +28,7 @@ sealed class Recorder
     {
         this.config = config;
         this.db = db;
-        var env = Environment.GetEnvironmentVariable("OPENSCREEN_EXCLUDE");
+        var env = Config.Env("EXCLUDE");
         var list = env?.Split(',').Select(s => s.Trim().ToLowerInvariant())
             ?? new[] { "1password", "bitwarden", "keepass", "keepassxc", "dashlane", "lastpass", "passwords" };
         // Whatever the user list says: the lock screen and the sign-in screen.

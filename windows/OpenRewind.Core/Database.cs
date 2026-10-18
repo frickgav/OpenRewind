@@ -39,6 +39,32 @@ public sealed partial class Database : IDisposable
         Exec("PRAGMA journal_mode=WAL;");
         Exec("PRAGMA busy_timeout=5000;");
         Migrate();
+        FinishHomeMove(Path.GetDirectoryName(Path.GetFullPath(path))!);
+    }
+
+    /// After the data folder moved from ~/.openscreen (see Config), point the stored screenshot
+    /// and audio paths at the new folder. Runs again next launch if it is cut short.
+    void FinishHomeMove(string home)
+    {
+        var marker = Path.Combine(home, Config.MovedFromFile);
+        if (!File.Exists(marker)) return;
+        var old = File.ReadAllText(marker);
+        if (old.Length == 0) return;
+        var fresh = home.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        lock (gate)
+        {
+            using var tx = conn.BeginTransaction();
+            foreach (var (table, col) in new[] { ("frames", "snapshot_path"), ("audio_chunks", "file_path") })
+            {
+                using var cmd = Cmd($"UPDATE {table} SET {col} = ? || substr({col}, ?) WHERE substr({col}, 1, ?) = ?",
+                                    fresh, old.EnumerateRunes().Count() + 1, old.EnumerateRunes().Count(), old);
+                cmd.Transaction = tx;
+                cmd.ExecuteNonQuery();
+            }
+            tx.Commit();
+        }
+        File.Delete(marker);
+        Log.Write("updated recording paths for the new data folder");
     }
 
     public void Dispose() => conn.Dispose();
