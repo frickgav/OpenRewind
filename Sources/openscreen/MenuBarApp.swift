@@ -42,6 +42,10 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
 
         menu.addItem(toggleItem("Record Screen", on: engine.screenOn, action: #selector(toggleScreen), symbol: "display"))
+        if (engine.screenOn || engine.audioOn) && !Capture.hasScreenPermission {
+            let fix = action("  ⚠︎ Screen permission needed — Open Settings…", #selector(openScreenSettings))
+            menu.addItem(fix)
+        }
         menu.addItem(toggleItem("Record Audio", on: engine.audioOn, action: #selector(toggleAudio), symbol: "waveform"))
         if engine.audioOn, engine.transcriber == nil {
             let warn = NSMenuItem(title: "  Transcription off: install whisper-cpp", action: nil, keyEquivalent: "")
@@ -61,7 +65,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let login = action("Launch at Login", #selector(toggleLogin))
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(login)
-        menu.addItem(action("Quit openscreen", #selector(quit), key: "q"))
+        menu.addItem(action("Quit OpenScreen", #selector(quit), key: "q"))
     }
 
     private func statusLine() -> String {
@@ -97,7 +101,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let img = NSImage(systemSymbolName: name, accessibilityDescription: "openscreen")
         img?.isTemplate = true
         item.button?.image = img
-        item.button?.toolTip = "openscreen — \(statusLine())"
+        item.button?.toolTip = "OpenScreen — \(statusLine())"
     }
 
     @objc private func toggleScreen() {
@@ -114,6 +118,11 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Mic start can finish a moment later (permission prompt), so refresh again shortly.
         updateIcon()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.updateIcon() }
+    }
+
+    @objc private func openScreenSettings() {
+        Capture.requestScreenPermission()
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
     }
 
     @objc private func openTimeline() { overlay.show() }

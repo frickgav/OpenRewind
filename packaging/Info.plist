@@ -3,8 +3,8 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDevelopmentRegion</key><string>en</string>
-    <key>CFBundleDisplayName</key><string>openscreen</string>
-    <key>CFBundleName</key><string>openscreen</string>
+    <key>CFBundleDisplayName</key><string>OpenScreen</string>
+    <key>CFBundleName</key><string>OpenScreen</string>
     <key>CFBundleExecutable</key><string>OpenScreen</string>
     <key>CFBundleIdentifier</key><string>ai.agilityresources.openscreen</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
