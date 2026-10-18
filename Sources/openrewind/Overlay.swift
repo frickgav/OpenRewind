@@ -147,6 +147,7 @@ final class OverlayController {
         case kVK_Space: model.toggleAudio()
         case kVK_ANSI_N, kVK_End: model.jumpToNow()
         case kVK_ANSI_O where !cmd: model.openCurrent()
+        case kVK_ANSI_A where !cmd: model.toggleAppFilter()
         case kVK_ANSI_Equal, kVK_ANSI_KeypadPlus: model.span = max(60, model.span / 2)
         case kVK_ANSI_Minus, kVK_ANSI_KeypadMinus: model.span = min(12 * 3600, model.span * 2)
         default: return false
