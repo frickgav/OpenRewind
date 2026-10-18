@@ -11,6 +11,8 @@ sealed class Settings
     public bool RecordAudio { get; set; } = true;
     public string KeepScreen { get; set; } = "forever";
     public string KeepAudio { get; set; } = "forever";
+    /// Seconds between saved frames while only a few words change (2 = every capture).
+    public int TypingFrameGap { get; set; } = 2;
     /// The local HTTP API + browser search page. Off unless the user turns it on.
     public bool LocalSearchServer { get; set; } = false;
     /// Apps that are blurred in screenshots and never have their text stored.
@@ -21,6 +23,10 @@ sealed class Settings
     public bool BlockPrivateWindows { get; set; } = true;
     /// The first-run setup has been finished (or skipped).
     public bool OnboardingDone { get; set; } = false;
+    /// Download new versions in the background; they are installed only on a click.
+    public bool AutoDownloadUpdates { get; set; } = true;
+    /// The version whose timeline banner was closed; a newer version shows it again.
+    public string? DismissedUpdateVersion { get; set; }
 
     string path = "";
 

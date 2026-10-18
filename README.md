@@ -51,7 +51,7 @@ when a company is sold. So we built it again, in the open:
 
 - **Local only.** Your data stays in `~/.openrewind`. No account. No cloud.
 - **Open source ([MIT](LICENSE)).** Read the code. Change it. Nobody can switch it off.
-- **Plain files.** SQLite and JPEGs. Your history is yours to keep or move.
+- **Plain files.** SQLite and images. Your history is yours to keep or move.
 
 ### How it was built
 
@@ -63,10 +63,13 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
 ## What it does (v0.1)
 
 - Takes a screenshot every 2 s (ScreenCaptureKit).
-- Skips frames that did not change (64-bit dHash).
+- Skips frames that did not change. **Settings → Save Frames While Typing** can
+  save fewer frames (every 5, 10 or 30 s) while only a few words change; the
+  default is every 2 s, and the screen you stop on is always saved.
 - Reads text from the focused window's **accessibility tree**. Falls back to
   **Apple Vision OCR**. Never reads password fields.
-- Saves a JPEG and a row in SQLite with an **FTS5** index.
+- Saves a HEIC (about half the size of a JPEG; JPEG on Macs that cannot encode
+  HEIC) and a row in SQLite with an **FTS5** index.
 - Can serve a local API + search page at `http://127.0.0.1:3031` (off in the app until you turn it on).
 - **Blocked apps** are blurred in every screenshot, wherever they are on screen, and their text
   is never saved. First launch asks what to block (password managers, money apps, private
@@ -91,7 +94,7 @@ Copy the app to `/Applications` and open it. It lives in the menu bar:
 - **Open Timeline** (or **⌥⌘T** from anywhere) shows a full-screen overlay.
   Scroll or use ← → to move through time, ⇧ for 1 minute, ↑ ↓ for 10 minutes,
   drag or click the bar, **space** plays the audio at that moment (the picture
-  follows along), **+ / −** zoom, **N** jumps to now, **Esc** closes.
+  follows along), **+ / −** zoom, **N** jumps to now, **O** opens the search page in the browser, **Esc** closes.
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
 - **Settings → Keep Screen / Audio Recordings For**: 1 Day, 1 Week, 1 Month,
@@ -132,6 +135,17 @@ NOTARY_PROFILE=openrewind scripts/build-app.sh
 
 Upload the `.dmg` (GitHub Releases, your site, etc.).
 Without these steps the app still works, but other people must right-click → Open.
+
+### Updates
+
+Both apps ask GitHub for the latest release every 6 hours and when you open the timeline. A newer
+version shows a banner at the top of the timeline (✕ hides it until the next version) and a row in
+the menu. **Settings → Download Updates Automatically** (on by default) fetches it in the background;
+nothing is installed until you click **Update** / **Restart to Update**, which swaps the app in place
+and reopens it. **Settings → Check for Updates…** checks right away.
+Releases come from the Release workflow (`git tag v0.3.0 && git push origin v0.3.0`); the check needs
+the repository to be public. Until the Mac app has a Developer ID signature, macOS may ask for the
+Screen Recording permission again after an update.
 
 ## Windows app
 
@@ -187,7 +201,7 @@ On when you run `record` or `serve` from the terminal, or after **Settings → L
 |-------|------|
 | `GET /health` | Status, frame count, permissions |
 | `GET /search?q=&app_name=&window_name=&start_time=&end_time=&limit=&offset=&max_content_length=` | Full-text search. Times: ISO, `2h ago`, `today`, `yesterday`, `YYYY-MM-DD` |
-| `GET /frames/{id}` | Snapshot JPEG |
+| `GET /frames/{id}` | Snapshot as JPEG |
 | `GET /apps?start_time=` | Apps with frame counts |
 | `GET /audio/{chunk_id}` | Audio chunk WAV |
 
@@ -197,7 +211,7 @@ Response: `{"data":[{"type":"OCR","content":{"frame_id","text","timestamp","app_
 
 ## Data
 
-`~/.openrewind/db.sqlite`, `~/.openrewind/data/<date>/*.jpg`, and
+`~/.openrewind/db.sqlite`, `~/.openrewind/data/<date>/*.heic` (`*.jpg` on Windows and older recordings), and
 `~/.openrewind/data/audio/<date>/*.wav`.
 Delete the folder to wipe everything, or from the terminal:
 

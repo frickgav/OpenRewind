@@ -24,6 +24,7 @@ struct TimelineView: View {
             VStack(spacing: 14) {
                 topBar
                 if let gap = staleGap { staleBanner(gap) }
+                UpdateBanner()
                 ZStack(alignment: .topLeading) {
                     screenshot
                     if model.showResults { results.padding(.top, 2) }
@@ -50,6 +51,7 @@ struct TimelineView: View {
             HStack(spacing: 10) {
                 searchBar.frame(maxWidth: 460)
                 Spacer(minLength: 220)
+                IconButton(symbol: "arrow.up.forward.square", help: "Open the search page in the browser (O)") { model.openInBrowser?() }
                 IconButton(symbol: "questionmark", help: "Keyboard shortcuts (?)") { model.showHelp.toggle() }
                 IconButton(symbol: "xmark", help: "Close (esc)", action: close)
             }
@@ -389,6 +391,7 @@ struct TimelineView: View {
             hint(["space"], "play audio")
             hint(["/"], "search")
             hint(["+", "−"], "zoom")
+            hint(["O"], "browser")
             hint(["?"], "all keys")
             hint(["esc"], "close")
         }
@@ -411,6 +414,7 @@ struct TimelineView: View {
         ("Audio", [["space"]], "Play or pause audio from here"),
         ("Search", [["/"], ["⌘", "F"]], "Search screen text and speech"),
         ("", [["⌘", "G"], ["⇧", "⌘", "G"]], "Older / newer match"),
+        ("", [["O"]], "Open the search page in the browser"),
         ("View", [["+"], ["−"]], "Zoom the bar in / out"),
         ("", [["esc"]], "Close the list, then the overlay"),
     ]
