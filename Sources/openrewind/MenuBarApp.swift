@@ -20,8 +20,20 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     init(engine: Engine) {
         self.engine = engine
+        copyOldSettings()
         defaults.register(defaults: [screenKey: true, audioKey: true, serverKey: false,
                                      keepScreenKey: KeepFor.forever.rawValue, keepAudioKey: KeepFor.forever.rawValue])
+    }
+
+    /// The app used to be OpenScreen (bundle id ai.agilityresources.openscreen). Bring its menu
+    /// settings over once. macOS permissions cannot be carried over: they are asked for again.
+    private func copyOldSettings() {
+        let done = "copiedOpenScreenSettings"
+        guard !defaults.bool(forKey: done), let old = UserDefaults(suiteName: "ai.agilityresources.openscreen") else { return }
+        for key in [screenKey, audioKey, keepScreenKey, keepAudioKey, serverKey] {
+            if defaults.object(forKey: key) == nil, let v = old.object(forKey: key) { defaults.set(v, forKey: key) }
+        }
+        defaults.set(true, forKey: done)
     }
 
     func applicationDidFinishLaunching(_ note: Notification) {

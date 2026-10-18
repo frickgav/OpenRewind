@@ -34,8 +34,8 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
 - **Settings → Launch at Login** starts it when you sign in.
 - The lock screen and screen saver are never recorded. Password fields are never read.
   Password managers (1Password, Bitwarden, KeePass, Dashlane, LastPass) are skipped;
-  set `OPENSCREEN_EXCLUDE` to your own comma list to change that.
-- Log: `%USERPROFILE%\.openscreen\openrewind.log`.
+  set `OPENREWIND_EXCLUDE` to your own comma list to change that.
+- Log: `%USERPROFILE%\.openrewind\openrewind.log`.
 
 ## How it works on Windows
 
@@ -62,15 +62,15 @@ Speech is turned into text by [whisper.cpp](https://github.com/ggml-org/whisper.
 on your PC. OpenRewind records audio without it; the clips are transcribed once it is set up:
 
 1. From the [whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases), download
-   `whisper-bin-x64.zip` and unzip it into `%USERPROFILE%\.openscreen\whisper`
+   `whisper-bin-x64.zip` and unzip it into `%USERPROFILE%\.openrewind\whisper`
    (so that `whisper-cli.exe` is in that folder or in `whisper\Release`).
 2. Download a model, for example
    [`ggml-large-v3-turbo-q5_0.bin`](https://huggingface.co/ggerganov/whisper.cpp/tree/main)
    (good, ~550 MB) or `ggml-base.en.bin` (fast, English only, ~150 MB), into
-   `%USERPROFILE%\.openscreen\models`.
+   `%USERPROFILE%\.openrewind\models`.
 3. Quit and reopen OpenRewind. `OpenRewind.exe doctor` shows what it found.
 
-`--whisper-bin` and `--whisper-model` (or `OPENSCREEN_WHISPER_MODEL`) point at other places.
+`--whisper-bin` and `--whisper-model` (or `OPENREWIND_WHISPER_MODEL`) point at other places.
 
 ## Run from the terminal
 

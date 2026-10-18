@@ -34,7 +34,7 @@ public sealed class Transcriber
 
     static string ExeName => OperatingSystem.IsWindows() ? "whisper-cli.exe" : "whisper-cli";
 
-    /// --whisper-bin, then next to the app, then ~/.openscreen/whisper, then the usual install spots and PATH.
+    /// --whisper-bin, then next to the app, then ~/.openrewind/whisper, then the usual install spots and PATH.
     public static string? FindBinary(string? overridePath, string? home = null)
     {
         home ??= Config.DefaultHome();

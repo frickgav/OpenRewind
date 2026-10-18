@@ -4,7 +4,7 @@ using Microsoft.Win32;
 namespace OpenRewind;
 
 /// What the tray menu remembers (the Mac app keeps the same things in UserDefaults).
-/// Saved as ~/.openscreen/settings.json.
+/// Saved as ~/.openrewind/settings.json.
 sealed class Settings
 {
     public bool RecordScreen { get; set; } = true;

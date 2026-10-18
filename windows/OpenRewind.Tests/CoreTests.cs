@@ -178,6 +178,25 @@ public class CoreTests : IDisposable
     }
 
     [Fact]
+    public void MovedDataFolderGetsItsPathsRewritten()
+    {
+        var sep = Path.DirectorySeparatorChar;
+        var old = Path.Combine(Path.GetTempPath(), "old-home-ü") + sep;
+        db.Insert(new Frame(0, Time.Now(), "A", "", true, old + "data" + sep + "x.jpg", "t", "ocr", 0));
+        db.InsertChunk(old + "data" + sep + "audio" + sep + "y.wav", Time.Now(), "microphone", true);
+        db.InsertChunk("/elsewhere/z.wav", Time.Now(), "microphone", true);
+        File.WriteAllText(Path.Combine(home, Config.MovedFromFile), old);
+        using (var reopened = new Database(config.DbPath))
+        {
+            var fresh = Path.GetFullPath(home).TrimEnd(sep) + sep;
+            Assert.Equal(fresh + "data" + sep + "x.jpg", reopened.Search(new SearchQuery()).Rows[0].SnapshotPath);
+            Assert.Equal(fresh + "data" + sep + "audio" + sep + "y.wav", reopened.ChunkById(1)!.FilePath);
+            Assert.Equal("/elsewhere/z.wav", reopened.ChunkById(2)!.FilePath);
+        }
+        Assert.False(File.Exists(Path.Combine(home, Config.MovedFromFile)));
+    }
+
+    [Fact]
     public void SnippetCentersOnTheMatch()
     {
         var text = new string('a', 300) + " needle " + new string('b', 300);

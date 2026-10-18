@@ -41,6 +41,28 @@ final class Database {
         try exec("PRAGMA busy_timeout=5000;")
         try migrate()
         try migrateAudio()
+        finishHomeMove(home: path.deletingLastPathComponent())
+    }
+
+    /// After the data folder moved from ~/.openscreen (see `Config.defaultHome`), point the stored
+    /// screenshot and audio paths at the new folder. Runs again next launch if it is cut short.
+    private func finishHomeMove(home: URL) {
+        let marker = home.appendingPathComponent(Config.movedFromFile)
+        guard let old = try? String(contentsOf: marker, encoding: .utf8), !old.isEmpty else { return }
+        let new = home.path + "/"
+        do {
+            try exec("BEGIN")
+            for (table, col) in [("frames", "snapshot_path"), ("audio_chunks", "file_path")] {
+                run("UPDATE \(table) SET \(col) = ? || substr(\(col), ?) WHERE substr(\(col), 1, ?) = ?",
+                    [.text(new), .int(Int64(old.unicodeScalars.count + 1)), .int(Int64(old.unicodeScalars.count)), .text(old)])
+            }
+            try exec("COMMIT")
+            try? FileManager.default.removeItem(at: marker)
+            log("updated recording paths for the new data folder")
+        } catch {
+            try? exec("ROLLBACK")
+            log("could not update recording paths: \(error)")
+        }
     }
 
     deinit { sqlite3_close(db) }
