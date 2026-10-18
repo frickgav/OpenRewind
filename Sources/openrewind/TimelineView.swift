@@ -1,18 +1,46 @@
 import AppKit
 import SwiftUI
 
-/// Shared look for the overlay.
-private enum Theme {
-    static let surface = Color.white.opacity(0.08)
-    static let surfaceHi = Color.white.opacity(0.14)
-    static let stroke = Color.white.opacity(0.12)
-    static let dim = Color.white.opacity(0.6)
-    static let faint = Color.white.opacity(0.42)
-    static let mic = Color.orange
-    static let system = Color.green
+/// Shared look for the overlay, in a dark and a light version.
+/// The window appearance picks one (menu bar → Settings → Timeline Look).
+private struct Theme {
+    let dark: Bool
+    init(_ scheme: ColorScheme) { dark = scheme == .dark }
+
+    /// Black or white, the color that stands out on this background.
+    private var ink: Color { dark ? .white : .black }
+    var text: Color { dark ? .white : Color(white: 0.1) }
+    var soft: Color { ink.opacity(0.8) }
+    var dim: Color { ink.opacity(0.6) }
+    var faint: Color { ink.opacity(dark ? 0.42 : 0.48) }
+    var surface: Color { ink.opacity(dark ? 0.08 : 0.06) }
+    var surfaceHi: Color { ink.opacity(dark ? 0.14 : 0.1) }
+    var selected: Color { ink.opacity(dark ? 0.22 : 0.14) }
+    var stroke: Color { ink.opacity(0.12) }
+    var strokeHi: Color { ink.opacity(dark ? 0.35 : 0.3) }
+    /// Tint over the blurred backdrop.
+    var scrim: Color { dark ? .black.opacity(0.55) : .white.opacity(0.5) }
+    /// Solid cards: results list, help, notices, hover preview.
+    var card: Color { dark ? Color(white: 0.12) : Color(white: 0.97) }
+    var shadow: Color { .black.opacity(dark ? 0.5 : 0.2) }
+    /// Thin ring around the app color dot.
+    var ring: Color { dark ? .black.opacity(0.6) : .white.opacity(0.9) }
+    /// Search words inside snippets. Plain yellow is hard to read on white.
+    var match: Color { dark ? .yellow : Color(red: 0.72, green: 0.42, blue: 0) }
+    /// The playhead line and its time bubble.
+    var playhead: Color { dark ? .white : .black }
+    var playheadText: Color { dark ? .black : .white }
+    /// Shrunk breaks and the area after now on the bar.
+    var shade: Color { .black.opacity(dark ? 0.4 : 0.08) }
+    /// Warning icon. Plain yellow is hard to see on a light background.
+    var warn: Color { dark ? .yellow : .orange }
+    let mic = Color.orange
+    let system = Color.green
 }
 
 struct TimelineView: View {
+    @Environment(\.colorScheme) private var scheme
+    private var theme: Theme { Theme(scheme) }
     @ObservedObject var model: TimelineModel
     var close: () -> Void
     @FocusState private var searchFocused: Bool
@@ -20,7 +48,7 @@ struct TimelineView: View {
     var body: some View {
         ZStack {
             Backdrop().ignoresSafeArea()
-            Color.black.opacity(0.55).ignoresSafeArea()
+            theme.scrim.ignoresSafeArea()
             VStack(spacing: 14) {
                 topBar
                 if let gap = staleGap { staleBanner(gap) }
@@ -36,9 +64,22 @@ struct TimelineView: View {
             .padding(.horizontal, 28)
             .padding(.top, 22)
             .padding(.bottom, 16)
+            if let n = model.notice {
+                VStack {
+                    Label(n, systemImage: "info.circle")
+                        .font(.system(size: 13, weight: .medium))
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(Capsule().fill(theme.card))
+                        .overlay(Capsule().stroke(theme.stroke))
+                        .shadow(color: theme.shadow, radius: 10)
+                        .padding(.top, 74)
+                    Spacer()
+                }
+                .allowsHitTesting(false)
+            }
             if model.showHelp { helpCard }
         }
-        .foregroundColor(.white)
+        .foregroundColor(theme.text)
         .onChange(of: model.focusSearchToken) { _ in searchFocused = true }
     }
 
@@ -50,14 +91,13 @@ struct TimelineView: View {
             HStack(spacing: 10) {
                 searchBar.frame(maxWidth: 460)
                 Spacer(minLength: 220)
-                IconButton(symbol: "arrow.up.forward.square", help: "Open the search page in the browser (O)") { model.openInBrowser?() }
                 IconButton(symbol: "questionmark", help: "Keyboard shortcuts (?)") { model.showHelp.toggle() }
                 IconButton(symbol: "xmark", help: "Close (esc)", action: close)
             }
             VStack(spacing: 1) {
                 Text(model.playhead, format: .dateTime.hour().minute().second())
                     .font(.system(size: 28, weight: .semibold, design: .rounded)).monospacedDigit()
-                Text(relative(model.playhead)).font(.system(size: 12)).foregroundColor(Theme.dim)
+                Text(relative(model.playhead)).font(.system(size: 12)).foregroundColor(theme.dim)
             }
             .allowsHitTesting(false)
         }
@@ -78,7 +118,7 @@ struct TimelineView: View {
             ? "Screen recording is blocked by macOS. Menu bar → Screen permission needed."
             : "Screen recording may be off, or the screen has not changed."
         return HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.yellow)
+            Image(systemName: "exclamationmark.triangle.fill").foregroundColor(theme.warn)
             Text("Newest screenshot is from \(ago) ago. \(why)").font(.system(size: 13))
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
@@ -89,7 +129,7 @@ struct TimelineView: View {
 
     private var searchBar: some View {
         HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass").foregroundColor(Theme.dim)
+            Image(systemName: "magnifyingglass").foregroundColor(theme.dim)
             TextField("Search what you saw or heard", text: $model.query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 15))
@@ -101,7 +141,7 @@ struct TimelineView: View {
             } else {
                 if !model.hits.isEmpty && !model.showResults {
                     Text("\(model.selectedHit + 1) of \(model.hits.count)")
-                        .font(.system(size: 12)).foregroundColor(Theme.dim).monospacedDigit()
+                        .font(.system(size: 12)).foregroundColor(theme.dim).monospacedDigit()
                     Button { model.nextHit(older: false) } label: { Image(systemName: "chevron.up") }
                         .buttonStyle(.plain).help("Newer match (⇧⌘G)")
                     Button { model.nextHit(older: true) } label: { Image(systemName: "chevron.down") }
@@ -109,15 +149,15 @@ struct TimelineView: View {
                     Button("List") { model.showResults = true; searchFocused = true }
                         .buttonStyle(.plain).font(.system(size: 12, weight: .medium))
                 } else if model.hits.isEmpty && !model.showResults {
-                    Text("No matches").font(.system(size: 12)).foregroundColor(Theme.faint)
+                    Text("No matches").font(.system(size: 12)).foregroundColor(theme.faint)
                 }
                 Button { model.clearSearch() } label: { Image(systemName: "xmark.circle.fill") }
-                    .buttonStyle(.plain).foregroundColor(Theme.faint)
+                    .buttonStyle(.plain).foregroundColor(theme.faint)
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 9)
-        .background(Capsule().fill(searchFocused ? Theme.surfaceHi : Theme.surface))
-        .overlay(Capsule().stroke(Color.white.opacity(searchFocused ? 0.35 : 0.12)))
+        .background(Capsule().fill(searchFocused ? theme.surfaceHi : theme.surface))
+        .overlay(Capsule().stroke(searchFocused ? theme.strokeHi : theme.stroke))
         .contentShape(Capsule())
         .onTapGesture { searchFocused = true }
     }
@@ -125,7 +165,7 @@ struct TimelineView: View {
     private var results: some View {
         VStack(alignment: .leading, spacing: 0) {
             if model.hits.isEmpty {
-                Text("No matches for “\(model.query)”").foregroundColor(Theme.dim).padding(16)
+                Text("No matches for “\(model.query)”").foregroundColor(theme.dim).padding(16)
             } else {
                 HStack(spacing: 6) {
                     Text("\(model.hits.count) moment\(model.hits.count == 1 ? "" : "s")")
@@ -133,7 +173,7 @@ struct TimelineView: View {
                     Keycap("↑"); Keycap("↓"); Text("choose")
                     Keycap("return").padding(.leading, 6); Text("go")
                 }
-                .font(.system(size: 11)).foregroundColor(Theme.faint)
+                .font(.system(size: 11)).foregroundColor(theme.faint)
                 .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 4)
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -152,9 +192,9 @@ struct TimelineView: View {
         }
         .frame(maxWidth: 640, maxHeight: 440, alignment: .top)
         .fixedSize(horizontal: false, vertical: model.hits.count < 6)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(white: 0.11)))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.stroke))
-        .shadow(color: .black.opacity(0.5), radius: 20)
+        .background(RoundedRectangle(cornerRadius: 12).fill(theme.card))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(theme.stroke))
+        .shadow(color: theme.shadow, radius: 20)
     }
 
     private func hitRow(_ h: SearchHit, selected: Bool) -> some View {
@@ -164,7 +204,7 @@ struct TimelineView: View {
                     Image(nsImage: icon).resizable().frame(width: 18, height: 18)
                 } else {
                     Image(systemName: h.kind == .audio ? "waveform" : "display")
-                        .foregroundColor(h.kind == .audio ? Theme.system : Theme.dim)
+                        .foregroundColor(h.kind == .audio ? theme.system : theme.dim)
                 }
             }
             .frame(width: 20).padding(.top, 1)
@@ -173,9 +213,9 @@ struct TimelineView: View {
                     Text(h.title).font(.system(size: 13, weight: .semibold))
                     Spacer()
                     Text(h.time, format: .dateTime.month(.abbreviated).day().hour().minute().second())
-                        .font(.system(size: 11)).foregroundColor(Theme.faint).monospacedDigit()
+                        .font(.system(size: 11)).foregroundColor(theme.faint).monospacedDigit()
                 }
-                highlighted(h.snippet).font(.system(size: 12)).foregroundColor(.white.opacity(0.8)).lineLimit(2)
+                highlighted(h.snippet).font(.system(size: 12)).foregroundColor(theme.soft).lineLimit(2)
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
@@ -201,7 +241,7 @@ struct TimelineView: View {
             let len = lower.distance(from: r.lowerBound, to: r.upperBound)
             let a = rest.index(rest.startIndex, offsetBy: d)
             let b = rest.index(a, offsetBy: len)
-            out = out + Text(String(rest[..<a])) + Text(String(rest[a..<b])).bold().foregroundColor(.yellow)
+            out = out + Text(String(rest[..<a])) + Text(String(rest[a..<b])).bold().foregroundColor(theme.match)
             rest = rest[b...]
         }
         return out
@@ -220,17 +260,23 @@ struct TimelineView: View {
                         .aspectRatio(contentMode: .fit)
                         .overlay(highlightBoxes)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.stroke))
-                        .shadow(color: .black.opacity(0.6), radius: 24)
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(theme.stroke))
+                        .shadow(color: theme.shadow, radius: 24)
                         .frame(width: geo.size.width, height: geo.size.height)
                 } else {
                     emptyState.frame(width: geo.size.width, height: geo.size.height)
+                }
+                if let target = model.currentTarget, let f = model.current {
+                    openButton(target, f)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.trailing, 18).padding(.bottom, 18)
                 }
                 if let c = model.caption {
                     Text(c)
                         .font(.system(size: 17, weight: .medium))
                         .multilineTextAlignment(.center)
                         .lineLimit(3)
+                        .foregroundColor(.white)
                         .padding(.horizontal, 16).padding(.vertical, 9)
                         .background(RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.78)))
                         .frame(maxWidth: min(900, geo.size.width - 80))
@@ -259,14 +305,14 @@ struct TimelineView: View {
     private var emptyState: some View {
         VStack(spacing: 10) {
             Image(systemName: model.frames.isEmpty ? "record.circle" : "photo")
-                .font(.system(size: 36, weight: .light)).foregroundColor(Theme.faint)
+                .font(.system(size: 36, weight: .light)).foregroundColor(theme.faint)
             Text(model.frames.isEmpty ? "Nothing recorded yet" : "Screenshot not found")
                 .font(.system(size: 16, weight: .semibold))
             Text(model.frames.isEmpty ? "Turn on screen recording in the menu bar." : "The file for this moment was deleted or moved.")
-                .font(.system(size: 13)).foregroundColor(Theme.dim)
+                .font(.system(size: 13)).foregroundColor(theme.dim)
         }
         .padding(28)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Theme.surface))
+        .background(RoundedRectangle(cornerRadius: 14).fill(theme.surface))
     }
 
     // MARK: controls row
@@ -292,18 +338,18 @@ struct TimelineView: View {
                     if let icon = AppIcons.icon(for: f.appName) {
                         Image(nsImage: icon).resizable().frame(width: 28, height: 28)
                     } else {
-                        RoundedRectangle(cornerRadius: 7).fill(Theme.surfaceHi).frame(width: 28, height: 28)
-                            .overlay(Image(systemName: "app").foregroundColor(Theme.dim))
+                        RoundedRectangle(cornerRadius: 7).fill(theme.surfaceHi).frame(width: 28, height: 28)
+                            .overlay(Image(systemName: "app").foregroundColor(theme.dim))
                     }
                     // Same color as this app's blocks on the bar below.
                     Circle().fill(Color(TimelineModel.color(for: f.appName))).frame(width: 9, height: 9)
-                        .overlay(Circle().stroke(Color.black.opacity(0.6), lineWidth: 1.5))
+                        .overlay(Circle().stroke(theme.ring, lineWidth: 1.5))
                         .offset(x: 2, y: 2)
                 }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(f.appName.isEmpty ? "Unknown app" : f.appName).font(.system(size: 13, weight: .semibold))
                     if !f.windowName.isEmpty {
-                        Text(f.windowName).font(.system(size: 12)).foregroundColor(Theme.dim)
+                        Text(f.windowName).font(.system(size: 12)).foregroundColor(theme.dim)
                     }
                 }
                 .lineLimit(1)
@@ -315,7 +361,7 @@ struct TimelineView: View {
         HStack(spacing: 8) {
             if model.audioHere.isEmpty {
                 Label("No audio at this moment", systemImage: "speaker.slash")
-                    .font(.system(size: 12)).foregroundColor(Theme.faint)
+                    .font(.system(size: 12)).foregroundColor(theme.faint)
             }
             ForEach(model.audioHere, id: \.id) { a in
                 let on = model.playingChunk == a.id
@@ -324,17 +370,52 @@ struct TimelineView: View {
                         Image(systemName: on ? "pause.fill" : "play.fill").font(.system(size: 11))
                         Text(a.isInput ? "Microphone" : "System audio")
                         // Matches the audio lane color on the bar.
-                        Circle().fill(a.isInput ? Theme.mic : Theme.system).frame(width: 7, height: 7)
+                        Circle().fill(a.isInput ? theme.mic : theme.system).frame(width: 7, height: 7)
                     }
                     .font(.system(size: 12, weight: .medium))
                     .padding(.horizontal, 13).padding(.vertical, 7)
-                    .background(Capsule().fill(on ? Color.accentColor : Theme.surfaceHi))
+                    .background(Capsule().fill(on ? Color.accentColor : theme.surfaceHi))
+                    .foregroundColor(on ? .white : theme.text)
                     .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .help(on ? "Pause (space)" : "Play from here (space)")
             }
         }
+    }
+
+    /// Goes back to what was on screen at this moment: the browser tab, the document, or the app window.
+    private func openButton(_ target: TimelineModel.OpenTarget, _ f: TimelineFrame) -> some View {
+        let (title, detail, help): (String, String, String) = {
+            switch target {
+            case .web(let url):
+                return ("Open this tab in browser", url.host ?? url.lastPathComponent, "Open this tab again: \(url.absoluteString)")
+            case .file(let url):
+                return ("Open in \(f.appName)", url.lastPathComponent, "Open this file again: \(url.path)")
+            case .window:
+                return ("Go to \(f.appName)", f.windowName.isEmpty ? f.appName : f.windowName,
+                        "Open \(f.appName) and bring this window to the front if it is still open")
+            }
+        }()
+        return Button { model.openCurrent() } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.up.forward.app").font(.system(size: 14, weight: .semibold))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                    Text(detail).font(.system(size: 11))
+                        .opacity(0.75).lineLimit(1).truncationMode(.middle)
+                }
+                Keycap("O")
+            }
+            .padding(.horizontal, 16).padding(.vertical, 9)
+            .frame(maxWidth: 340)
+            .foregroundColor(.white)
+            .background(Capsule().fill(Color.accentColor))
+            .shadow(color: theme.shadow, radius: 10)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("\(help) (O)")
     }
 
     private var liveButton: some View {
@@ -350,8 +431,8 @@ struct TimelineView: View {
             }
             .font(.system(size: 12, weight: .semibold))
             .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(Capsule().fill(model.isLive ? Theme.surface : Color.accentColor))
-            .foregroundColor(model.isLive ? Theme.dim : .white)
+            .background(Capsule().fill(model.isLive ? theme.surface : Color.accentColor))
+            .foregroundColor(model.isLive ? theme.dim : .white)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -370,15 +451,15 @@ struct TimelineView: View {
                     Text(label)
                         .font(.system(size: 12, weight: on ? .semibold : .regular))
                         .frame(minWidth: 34).padding(.vertical, 5)
-                        .background(Capsule().fill(on ? Color.white.opacity(0.22) : Color.clear))
-                        .foregroundColor(on ? .white : Theme.dim)
+                        .background(Capsule().fill(on ? theme.selected : Color.clear))
+                        .foregroundColor(on ? theme.text : theme.dim)
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
             }
         }
         .padding(2)
-        .background(Capsule().fill(Theme.surface))
+        .background(Capsule().fill(theme.surface))
         .help("Time shown across the bar (+ and − also zoom)")
     }
 
@@ -390,11 +471,11 @@ struct TimelineView: View {
             hint(["space"], "play audio")
             hint(["/"], "search")
             hint(["+", "−"], "zoom")
-            hint(["O"], "browser")
+            hint(["O"], "open")
             hint(["?"], "all keys")
             hint(["esc"], "close")
         }
-        .font(.system(size: 11)).foregroundColor(Theme.faint)
+        .font(.system(size: 11)).foregroundColor(theme.faint)
     }
 
     private func hint(_ keys: [String], _ what: String) -> some View {
@@ -410,17 +491,17 @@ struct TimelineView: View {
         ("", [["↑"], ["↓"]], "Back / forward 10 minutes"),
         ("", [["scroll"]], "Scroll the trackpad or wheel"),
         ("", [["N"]], "Go to now"),
+        ("Open", [["O"]], "Open the tab, document or window from this moment"),
         ("Audio", [["space"]], "Play or pause audio from here"),
         ("Search", [["/"], ["⌘", "F"]], "Search screen text and speech"),
         ("", [["⌘", "G"], ["⇧", "⌘", "G"]], "Older / newer match"),
-        ("", [["O"]], "Open the search page in the browser"),
         ("View", [["+"], ["−"]], "Zoom the bar in / out"),
         ("", [["esc"]], "Close the list, then the overlay"),
     ]
 
     private var helpCard: some View {
         ZStack {
-            Color.black.opacity(0.45).ignoresSafeArea().onTapGesture { model.showHelp = false }
+            theme.scrim.ignoresSafeArea().onTapGesture { model.showHelp = false }
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     Text("Keyboard shortcuts").font(.system(size: 17, weight: .semibold))
@@ -430,26 +511,26 @@ struct TimelineView: View {
                 Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 9) {
                     ForEach(Array(Self.shortcuts.enumerated()), id: \.offset) { _, row in
                         GridRow {
-                            Text(row.0).font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.faint)
+                            Text(row.0).font(.system(size: 11, weight: .semibold)).foregroundColor(theme.faint)
                                 .textCase(.uppercase)
                             HStack(spacing: 6) {
                                 ForEach(Array(row.1.enumerated()), id: \.offset) { i, combo in
-                                    if i > 0 { Text("/").foregroundColor(Theme.faint) }
+                                    if i > 0 { Text("/").foregroundColor(theme.faint) }
                                     HStack(spacing: 3) { ForEach(combo, id: \.self) { Keycap($0, large: true) } }
                                 }
                             }
-                            Text(row.2).font(.system(size: 13)).foregroundColor(.white.opacity(0.85))
+                            Text(row.2).font(.system(size: 13)).foregroundColor(theme.soft)
                         }
                     }
                 }
                 Text("Drag or click the bar to move. Hover it to preview.")
-                    .font(.system(size: 12)).foregroundColor(Theme.dim)
+                    .font(.system(size: 12)).foregroundColor(theme.dim)
             }
             .padding(24)
             .frame(width: 560)
-            .background(RoundedRectangle(cornerRadius: 16).fill(Color(white: 0.12)))
-            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Theme.stroke))
-            .shadow(color: .black.opacity(0.6), radius: 30)
+            .background(RoundedRectangle(cornerRadius: 16).fill(theme.card))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(theme.stroke))
+            .shadow(color: theme.shadow, radius: 30)
         }
     }
 
@@ -466,6 +547,8 @@ struct TimelineView: View {
 
 /// A key drawn like a keyboard key.
 struct Keycap: View {
+    @Environment(\.colorScheme) private var scheme
+    private var theme: Theme { Theme(scheme) }
     let key: String
     var large = false
     init(_ key: String, large: Bool = false) { self.key = key; self.large = large }
@@ -473,16 +556,18 @@ struct Keycap: View {
     var body: some View {
         Text(key)
             .font(.system(size: large ? 12 : 10, weight: .medium, design: .rounded))
-            .foregroundColor(.white.opacity(0.85))
+            .foregroundColor(theme.soft)
             .padding(.horizontal, large ? 7 : 5).padding(.vertical, large ? 3 : 1.5)
             .frame(minWidth: large ? 24 : 18)
-            .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.12)))
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.white.opacity(0.18)))
+            .background(RoundedRectangle(cornerRadius: 4).fill(theme.surfaceHi))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(theme.stroke))
     }
 }
 
 /// Round icon button for the top bar.
 struct IconButton: View {
+    @Environment(\.colorScheme) private var scheme
+    private var theme: Theme { Theme(scheme) }
     let symbol: String
     let help: String
     let action: () -> Void
@@ -497,7 +582,7 @@ struct IconButton: View {
             Image(systemName: symbol)
                 .font(.system(size: 12, weight: .semibold))
                 .frame(width: 30, height: 30)
-                .background(Circle().fill(Color.white.opacity(hover ? 0.2 : 0.1)))
+                .background(Circle().fill(hover ? theme.selected : theme.surfaceHi))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -513,7 +598,6 @@ struct Backdrop: NSViewRepresentable {
         v.material = .hudWindow
         v.blendingMode = .behindWindow
         v.state = .active
-        v.appearance = NSAppearance(named: .darkAqua)
         return v
     }
     func updateNSView(_ v: NSVisualEffectView, context: Context) {}
@@ -543,6 +627,8 @@ enum AppIcons {
 /// one app is a solid colored block, audio sits on two thin lanes, and clock times run along the bottom.
 /// Near "now" the view stops at now instead of showing an empty future half.
 struct TimelineBar: View {
+    @Environment(\.colorScheme) private var scheme
+    private var theme: Theme { Theme(scheme) }
     @ObservedObject var model: TimelineModel
     @State private var dragStartV: TimeInterval?
     @State private var hoverX: CGFloat?
@@ -556,14 +642,14 @@ struct TimelineBar: View {
         GeometryReader { geo in
             let w = geo.size.width
             let axis = model.axis
-            let now = Date()
+            let now = model.now
             // Keep the playhead in the middle, but never show more than a little space after now.
             let v0 = min(axis.v(model.playhead) - model.span / 2, axis.v(now) + model.span * 0.03 - model.span)
             let v1 = v0 + model.span
             let x = { (d: Date) -> CGFloat in CGFloat((axis.v(d) - v0) / model.span) * w }
             let px = x(model.playhead)
             ZStack(alignment: .topLeading) {
-                RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.06)).padding(.top, 20)
+                RoundedRectangle(cornerRadius: 10).fill(theme.surface).padding(.top, 20)
                 Canvas { ctx, size in
                     let startDate = axis.date(v0), endDate = axis.date(v1)
                     drawApps(ctx, size: size, from: startDate, to: endDate, x: x)
@@ -572,30 +658,30 @@ struct TimelineBar: View {
                     drawTicks(ctx, axis: axis, size: size, from: startDate, to: endDate, x: x)
                     drawLaneLabels(ctx)
                     for h in model.hits where h.time >= startDate && h.time <= endDate {
-                        ctx.fill(Path(CGRect(x: x(h.time) - 1.5, y: 24, width: 3, height: 10)), with: .color(.yellow))
+                        ctx.fill(Path(CGRect(x: x(h.time) - 1.5, y: 24, width: 3, height: 10)), with: .color(theme.match))
                     }
                     // "Now" edge.
                     let nx = x(now)
                     if nx < size.width - 1 {
                         ctx.fill(Path(CGRect(x: nx, y: 22, width: size.width - nx, height: size.height - 22)),
-                                 with: .color(.black.opacity(0.3)))
+                                 with: .color(theme.shade))
                         ctx.fill(Path(CGRect(x: nx - 0.5, y: 22, width: 1, height: size.height - 24)),
                                  with: .color(.red.opacity(0.7)))
                     }
                     // Hover line.
                     if let hx = hoverX, dragStartV == nil, abs(hx - px) > 3 {
                         ctx.fill(Path(CGRect(x: hx - 0.5, y: 20, width: 1, height: size.height - 22)),
-                                 with: .color(.white.opacity(0.45)))
+                                 with: .color(theme.dim))
                     }
                     // Playhead with its time in a small bubble that stays inside the bar.
-                    ctx.fill(Path(CGRect(x: px - 1, y: 16, width: 2, height: size.height - 18)), with: .color(.white))
+                    ctx.fill(Path(CGRect(x: px - 1, y: 16, width: 2, height: size.height - 18)), with: .color(theme.playhead))
                     let label = ctx.resolve(Text(model.playhead, format: .dateTime.hour().minute().second())
-                        .font(.system(size: 10, weight: .semibold)).foregroundColor(.black))
+                        .font(.system(size: 10, weight: .semibold)).foregroundColor(theme.playheadText))
                     let ls = label.measure(in: size)
                     let bw = ls.width + 12
                     let bx = min(max(0, px - bw / 2), size.width - bw)
                     let bubble = CGRect(x: bx, y: 1, width: bw, height: 15)
-                    ctx.fill(Path(roundedRect: bubble, cornerRadius: 7.5), with: .color(.white))
+                    ctx.fill(Path(roundedRect: bubble, cornerRadius: 7.5), with: .color(theme.playhead))
                     ctx.draw(label, at: CGPoint(x: bubble.midX, y: bubble.midY))
                 }
                 if let hx = hoverX, dragStartV == nil, abs(hx - px) > 3 {
@@ -637,7 +723,7 @@ struct TimelineBar: View {
 
     /// Tiny "mic" / "sys" keys at the left end of the audio lanes.
     private func drawLaneLabels(_ ctx: GraphicsContext) {
-        for (text, y, color) in [("mic", micY, Color.orange), ("sys", sysY, Color.green)] {
+        for (text, y, color) in [("mic", micY, theme.mic), ("sys", sysY, theme.system)] {
             let t = ctx.resolve(Text(text).font(.system(size: 7, weight: .bold)).foregroundColor(color.opacity(0.9)))
             ctx.draw(t, at: CGPoint(x: 4, y: y + laneH / 2), anchor: .leading)
         }
@@ -675,7 +761,7 @@ struct TimelineBar: View {
         for a in model.audio where a.end > from && a.start < to {
             let ax = max(0, x(a.start)), bx = min(size.width, x(a.end))
             let r = CGRect(x: ax, y: a.isInput ? micY : sysY, width: max(2, bx - ax), height: laneH)
-            ctx.fill(Path(roundedRect: r, cornerRadius: 2), with: .color(a.isInput ? .orange : .green))
+            ctx.fill(Path(roundedRect: r, cornerRadius: 2), with: .color(a.isInput ? theme.mic : theme.system))
         }
     }
 
@@ -685,11 +771,11 @@ struct TimelineBar: View {
             let a = x(g.from), b = x(g.to)
             guard b > 0, a < size.width else { continue }
             let r = CGRect(x: a + 2, y: 26, width: max(0, b - a - 4), height: size.height - 30)
-            ctx.fill(Path(roundedRect: r, cornerRadius: 4), with: .color(.black.opacity(0.45)))
+            ctx.fill(Path(roundedRect: r, cornerRadius: 4), with: .color(theme.shade))
             var dash = Path(); dash.move(to: CGPoint(x: r.midX, y: r.minY + 4)); dash.addLine(to: CGPoint(x: r.midX, y: r.maxY - 16))
-            ctx.stroke(dash, with: .color(.white.opacity(0.25)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            ctx.stroke(dash, with: .color(theme.faint), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
             let label = ctx.resolve(Text(Self.duration(g.to.timeIntervalSince(g.from)))
-                .font(.system(size: 9, weight: .medium)).foregroundColor(.white.opacity(0.6)))
+                .font(.system(size: 9, weight: .medium)).foregroundColor(theme.dim))
             if label.measure(in: size).width < r.width + 30 {
                 ctx.draw(label, at: CGPoint(x: r.midX, y: r.maxY - 7))
             }
@@ -708,10 +794,10 @@ struct TimelineBar: View {
             var t = Date(timeIntervalSince1970: (lo.timeIntervalSince1970 / step).rounded(.up) * step)
             while t <= hi {
                 let tx = x(t)
-                ctx.fill(Path(CGRect(x: tx - 0.5, y: tickY, width: 1, height: 4)), with: .color(.white.opacity(0.35)))
+                ctx.fill(Path(CGRect(x: tx - 0.5, y: tickY, width: 1, height: 4)), with: .color(theme.faint))
                 if tx - lastLabelX > 60 {
                     let fmt: Date.FormatStyle = step >= 3600 ? .dateTime.hour() : .dateTime.hour().minute()
-                    let label = ctx.resolve(Text(t, format: fmt).font(.system(size: 10)).foregroundColor(.white.opacity(0.6)))
+                    let label = ctx.resolve(Text(t, format: fmt).font(.system(size: 10)).foregroundColor(theme.dim))
                     ctx.draw(label, at: CGPoint(x: tx, y: tickY + 11))
                     lastLabelX = tx
                 }
@@ -730,6 +816,8 @@ struct TimelineBar: View {
 
 /// Small card above the bar: the screenshot, app and time under the pointer.
 struct HoverPreview: View {
+    @Environment(\.colorScheme) private var scheme
+    private var theme: Theme { Theme(scheme) }
     static let width: CGFloat = 240, height: CGFloat = 178
     @ObservedObject var model: TimelineModel
     let date: Date
@@ -738,13 +826,13 @@ struct HoverPreview: View {
         let p = model.preview(at: date)
         VStack(alignment: .leading, spacing: 6) {
             ZStack {
-                RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.06))
+                RoundedRectangle(cornerRadius: 6).fill(theme.surface)
                 if let img = p?.image {
                     Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                 } else {
                     Text(p == nil ? "Nothing recorded" : "No picture")
-                        .font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
+                        .font(.system(size: 11)).foregroundColor(theme.faint)
                 }
             }
             .frame(height: 128)
@@ -754,15 +842,16 @@ struct HoverPreview: View {
                     Text(f.appName.isEmpty ? "Unknown app" : f.appName).lineLimit(1)
                 }
                 Spacer(minLength: 4)
-                Text(date, format: .dateTime.hour().minute().second()).monospacedDigit().foregroundColor(.white.opacity(0.6))
+                Text(date, format: .dateTime.hour().minute().second()).monospacedDigit().foregroundColor(theme.dim)
             }
             .font(.system(size: 11, weight: .medium))
         }
+        .foregroundColor(theme.text)
         .padding(8)
         .frame(width: Self.width, height: Self.height)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color(white: 0.13)))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.15)))
-        .shadow(color: .black.opacity(0.5), radius: 14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(theme.card))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.stroke))
+        .shadow(color: theme.shadow, radius: 14)
         .allowsHitTesting(false)
     }
 }

@@ -19,6 +19,7 @@ final class OverlayController {
     init(db: Database) {
         model = TimelineModel(db: db)
         model.leaveSearchBox = { [weak self] in self?.panel?.makeFirstResponder(nil) }
+        model.closeForOpen = { [weak self] in self?.hide(restoreFocus: false) }
     }
 
     var isVisible: Bool { panel?.isVisible == true }
@@ -40,6 +41,7 @@ final class OverlayController {
         Updater.shared.checkIfStale()
 
         let p = panel ?? makePanel()
+        p.appearance = OverlayLook.current.appearance
         p.setFrame(screen.frame, display: true)
         panel = p
         p.alphaValue = 0
@@ -59,14 +61,15 @@ final class OverlayController {
         installMonitor()
     }
 
-    func hide() {
+    /// `restoreFocus: false` when another app is about to come to the front (Open tab).
+    func hide(restoreFocus: Bool = true) {
         model.stopAudio()
         if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
         guard let p = panel else { return }
         NSAnimationContext.runAnimationGroup({ $0.duration = 0.12; p.animator().alphaValue = 0 }) {
             p.orderOut(nil)
         }
-        previousApp?.activate()
+        if restoreFocus { previousApp?.activate() }
     }
 
     private func makePanel() -> OverlayPanel {
@@ -136,7 +139,7 @@ final class OverlayController {
         case kVK_DownArrow: model.jump(to: model.playhead.addingTimeInterval(600))
         case kVK_Space: model.toggleAudio()
         case kVK_ANSI_N, kVK_End: model.jumpToNow()
-        case kVK_ANSI_O where !cmd: model.openInBrowser?()
+        case kVK_ANSI_O where !cmd: model.openCurrent()
         case kVK_ANSI_Equal, kVK_ANSI_KeypadPlus: model.span = max(60, model.span / 2)
         case kVK_ANSI_Minus, kVK_ANSI_KeypadMinus: model.span = min(12 * 3600, model.span * 2)
         default: return false
@@ -145,17 +148,48 @@ final class OverlayController {
     }
 }
 
+/// Light or dark look for the timeline overlay, saved in UserDefaults.
+enum OverlayLook: String, CaseIterable {
+    case system, light, dark
+    static let key = "overlayLook"
+
+    static var current: OverlayLook {
+        OverlayLook(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .system
+    }
+
+    var title: String {
+        switch self {
+        case .system: return "Match System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    /// Nil follows the macOS setting.
+    var appearance: NSAppearance? {
+        switch self {
+        case .system: return nil
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
 /// System-wide hotkey through Carbon. Needs no extra permission.
 final class HotKey {
     private var ref: EventHotKeyRef?
     private var handler: EventHandlerRef?
+    private var hk: UInt32 = 0
     private let action: () -> Void
+    /// False when macOS refused the key, usually because another app already uses it.
+    private(set) var registered = false
     private static var actions: [UInt32: () -> Void] = [:]
     private static var nextId: UInt32 = 1
 
     init(keyCode: Int, modifiers: Int, action: @escaping () -> Void) {
         self.action = action
         let id = HotKey.nextId
+        hk = id
         HotKey.nextId += 1
         HotKey.actions[id] = action
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
@@ -168,11 +202,85 @@ final class HotKey {
         }, 1, &spec, nil, &handler)
         let hkID = EventHotKeyID(signature: OSType(0x4F53_434E), id: id)  // "OSCN"
         let status = RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), hkID, GetApplicationEventTarget(), 0, &ref)
+        registered = status == noErr
         if status != noErr { log("hotkey registration failed (\(status)); another app may use it") }
     }
 
     deinit {
+        HotKey.actions[hk] = nil
         if let ref { UnregisterEventHotKey(ref) }
         if let handler { RemoveEventHandler(handler) }
+    }
+}
+
+/// A key combination for the timeline hotkey, saved in UserDefaults.
+struct Shortcut: Equatable {
+    var keyCode: Int
+    /// Carbon modifier flags (cmdKey, optionKey, controlKey, shiftKey).
+    var modifiers: Int
+    /// What the key shows, like "T" or "F5".
+    var key: String
+
+    static let standard = Shortcut(keyCode: kVK_ANSI_T, modifiers: optionKey | cmdKey, key: "T")
+
+    /// Text like "⌥⌘T", in the order macOS menus use.
+    var label: String {
+        var s = ""
+        if modifiers & controlKey != 0 { s += "⌃" }
+        if modifiers & optionKey != 0 { s += "⌥" }
+        if modifiers & shiftKey != 0 { s += "⇧" }
+        if modifiers & cmdKey != 0 { s += "⌘" }
+        return s + key
+    }
+
+    var menuModifiers: NSEvent.ModifierFlags {
+        var m: NSEvent.ModifierFlags = []
+        if modifiers & controlKey != 0 { m.insert(.control) }
+        if modifiers & optionKey != 0 { m.insert(.option) }
+        if modifiers & shiftKey != 0 { m.insert(.shift) }
+        if modifiers & cmdKey != 0 { m.insert(.command) }
+        return m
+    }
+
+    /// Nil when the key press is not a usable hotkey (it needs ⌘, ⌥ or ⌃, except for F-keys).
+    init?(event e: NSEvent) {
+        let f = e.modifierFlags
+        var m = 0
+        if f.contains(.command) { m |= cmdKey }
+        if f.contains(.option) { m |= optionKey }
+        if f.contains(.control) { m |= controlKey }
+        if f.contains(.shift) { m |= shiftKey }
+        let fkey = Shortcut.fKeys[Int(e.keyCode)]
+        guard m & (cmdKey | optionKey | controlKey) != 0 || fkey != nil else { return nil }
+        let name = fkey ?? Shortcut.special[Int(e.keyCode)]
+            ?? (e.charactersIgnoringModifiers ?? "").uppercased()
+        guard !name.isEmpty, !name.contains(where: { $0.isNewline }) else { return nil }
+        self.init(keyCode: Int(e.keyCode), modifiers: m, key: name)
+    }
+
+    init(keyCode: Int, modifiers: Int, key: String) {
+        self.keyCode = keyCode; self.modifiers = modifiers; self.key = key
+    }
+
+    private static let fKeys: [Int: String] = [
+        kVK_F1: "F1", kVK_F2: "F2", kVK_F3: "F3", kVK_F4: "F4", kVK_F5: "F5", kVK_F6: "F6",
+        kVK_F7: "F7", kVK_F8: "F8", kVK_F9: "F9", kVK_F10: "F10", kVK_F11: "F11", kVK_F12: "F12",
+        kVK_F13: "F13", kVK_F14: "F14", kVK_F15: "F15", kVK_F16: "F16", kVK_F17: "F17", kVK_F18: "F18", kVK_F19: "F19",
+    ]
+    private static let special: [Int: String] = [
+        kVK_Space: "Space", kVK_Return: "↩", kVK_Tab: "⇥", kVK_Delete: "⌫", kVK_ForwardDelete: "⌦",
+        kVK_LeftArrow: "←", kVK_RightArrow: "→", kVK_UpArrow: "↑", kVK_DownArrow: "↓",
+        kVK_Home: "↖", kVK_End: "↘", kVK_PageUp: "⇞", kVK_PageDown: "⇟",
+    ]
+
+    static func load(_ d: UserDefaults) -> Shortcut {
+        guard let key = d.string(forKey: "hotkeyKey"), d.object(forKey: "hotkeyCode") != nil else { return .standard }
+        return Shortcut(keyCode: d.integer(forKey: "hotkeyCode"), modifiers: d.integer(forKey: "hotkeyMods"), key: key)
+    }
+
+    func save(_ d: UserDefaults) {
+        d.set(keyCode, forKey: "hotkeyCode")
+        d.set(modifiers, forKey: "hotkeyMods")
+        d.set(key, forKey: "hotkeyKey")
     }
 }
