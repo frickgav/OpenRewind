@@ -121,13 +121,27 @@ final class TimelineModel: ObservableObject {
         case .window:
             guard let app else { return }
             let title = f.windowName
-            NSWorkspace.shared.openApplication(at: app, configuration: cfg) { running, _ in
-                guard let pid = running?.processIdentifier else { return }
-                // A freshly launched app needs a moment before its windows exist.
-                for delay in [0.0, 0.6, 1.5] {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                        Accessibility.raiseWindow(pid: pid, title: title)
-                    }
+            // A browser moment saved without its address (Accessibility was off): find the tab by its title.
+            // Wait until the timeline is gone, since macOS may ask first whether OpenRewind may control the browser.
+            if let bundleId = Bundle(url: app)?.bundleIdentifier, BrowserTabs.canSelect(bundleId) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                    if !BrowserTabs.select(title: title, bundleId: bundleId) { self?.openWindow(app: app, title: title) }
+                }
+                return
+            }
+            openWindow(app: app, title: title)
+        }
+    }
+
+    /// Open the app and bring its window with this title to the front (needs Accessibility).
+    private func openWindow(app: URL, title: String) {
+        if !Accessibility.isTrusted { log("Accessibility is off: opening \(app.lastPathComponent) without finding the window") }
+        NSWorkspace.shared.openApplication(at: app, configuration: NSWorkspace.OpenConfiguration()) { running, _ in
+            guard let pid = running?.processIdentifier else { return }
+            // A freshly launched app needs a moment before its windows exist.
+            for delay in [0.0, 0.6, 1.5] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    Accessibility.raiseWindow(pid: pid, title: title)
                 }
             }
         }

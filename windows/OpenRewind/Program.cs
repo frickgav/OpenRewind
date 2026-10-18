@@ -188,6 +188,24 @@ static class Program
         catch (Exception e) { Log.Write($"cannot load the app icon: {e.Message}"); }
     }
 
+    /// Explorer keeps an exe's icon in its cache by path, so a new OpenRewind.exe copied over an old one
+    /// (or swapped in by the updater) still shows the old logo on the file, the taskbar and Start pins.
+    /// Once per new version, tell the shell to read the icon again.
+    public static void RefreshIconIfNew(Settings settings)
+    {
+        if (settings.LastRunVersion == Updater.Current) return;
+        try
+        {
+            if (Environment.ProcessPath is string exe)
+                Native.SHChangeNotify(Native.SHCNE_UPDATEITEM, Native.SHCNF_PATHW | Native.SHCNF_FLUSHNOWAIT, exe, IntPtr.Zero);
+            Native.SHChangeNotify(Native.SHCNE_ASSOCCHANGED, Native.SHCNF_IDLIST | Native.SHCNF_FLUSHNOWAIT, null, IntPtr.Zero);
+            Log.Write($"asked Windows to refresh the app icon ({settings.LastRunVersion ?? "first run"} -> {Updater.Current})");
+        }
+        catch (Exception e) { Log.Write($"cannot refresh the app icon: {e.Message}"); }
+        settings.LastRunVersion = Updater.Current;
+        settings.Save();
+    }
+
     /// The tray icon goes gray while nothing is recording.
     static Icon Gray(Icon src)
     {
