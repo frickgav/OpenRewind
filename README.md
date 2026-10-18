@@ -171,11 +171,23 @@ is signed with one long-lived certificate:
 - **Make it once:** `scripts/make-signing-cert.sh` writes a self-signed "OpenRewind Code Signing"
   certificate to `signing/` (valid 20 years). Keep the `.p12` and password safe and don't commit
   them: anything signed with that key gets the permissions you gave OpenRewind.
-- **GitHub Actions:** add two repository secrets (Settings → Secrets and variables → Actions):
-  `MACOS_CERTIFICATE_P12` (the contents of `openrewind-signing.p12.b64`) and
-  `MACOS_CERTIFICATE_PASSWORD` (the contents of `password.txt`). The Release workflow refuses to
-  build the Mac app without them. The Mac app check signs with a throwaway certificate when they
-  are missing.
+- **GitHub Actions:** the real certificate is only for releases. It lives in a `release`
+  environment that only `main` and `v*` tags can use, so a pushed branch or a PR can't reach it
+  even by editing a workflow. Branch and PR builds sign with a throwaway certificate. Set it up once:
+  1. Settings → Environments → **New environment**, name it `release`.
+  2. Deployment branches and tags → **Selected branches and tags** → add the branch `main` and the
+     tag pattern `v*`. Optionally tick **Required reviewers** and add yourself, so each release waits
+     for your click.
+  3. In that environment, **Add environment secret**: `MACOS_CERTIFICATE_P12` (the contents of
+     `openrewind-signing.p12.b64`) and `MACOS_CERTIFICATE_PASSWORD` (the contents of `password.txt`).
+  4. Settings → Secrets and variables → Actions: **delete** any repository secrets with those names
+     (and the `AZURE_*` ones, after adding them to the environment). Repository secrets are open to
+     every branch.
+  5. Settings → Rules → Rulesets → **New tag ruleset** for `v*`, restricting creation to you, so
+     nobody else can push a tag that opens the environment.
+
+  CI imports the key as non-extractable and deletes the keychain after signing. The Release workflow
+  refuses to build the Mac app without the secrets.
 - **Your Mac:** double-click `openrewind-signing.p12` and enter the password. `scripts/build-app.sh`
   picks it up (after a Developer ID certificate, before Apple Development or ad-hoc); allow
   `codesign` to use the key when asked.

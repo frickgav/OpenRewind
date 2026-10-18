@@ -18,8 +18,11 @@ OUT="${OUT:-signing}"
 umask 077
 mkdir -p "$OUT"
 PASSWORD="${PASSWORD:-$(openssl rand -hex 24)}"
+export PASSWORD
 
 CONF="$OUT/cert.cnf"
+# The unencrypted key.pem must not outlive this script, even if a step below fails.
+trap 'rm -f "$OUT/key.pem" "$CONF"' EXIT
 cat > "$CONF" <<CNF
 [req]
 distinguished_name = dn
@@ -42,13 +45,12 @@ openssl req -x509 -newkey rsa:2048 -sha256 -days 7300 -nodes -config "$CONF" \
 LEGACY=""
 if openssl pkcs12 -help 2>&1 | grep -q -- -legacy; then LEGACY="-legacy"; fi
 openssl pkcs12 -export $LEGACY -name "$NAME" -inkey "$OUT/key.pem" -in "$OUT/cert.pem" \
-  -out "$OUT/openrewind-signing.p12" -passout "pass:$PASSWORD"
+  -out "$OUT/openrewind-signing.p12" -passout env:PASSWORD
 base64 < "$OUT/openrewind-signing.p12" | tr -d '\n' > "$OUT/openrewind-signing.p12.b64"
 printf '%s' "$PASSWORD" > "$OUT/password.txt"
-rm -f "$OUT/key.pem" "$CONF"
 
 echo "✓ $OUT/openrewind-signing.p12  ($NAME, SHA-1 $(openssl x509 -in "$OUT/cert.pem" -noout -fingerprint -sha1 | cut -d= -f2 | tr -d :))"
-echo "  GitHub → Settings → Secrets and variables → Actions:"
+echo "  GitHub → Settings → Environments → release → Environment secrets (not repository secrets):"
 echo "    MACOS_CERTIFICATE_P12       = contents of $OUT/openrewind-signing.p12.b64"
 echo "    MACOS_CERTIFICATE_PASSWORD  = contents of $OUT/password.txt"
 echo "  To build signed on this Mac: open $OUT/openrewind-signing.p12 and enter the password."
