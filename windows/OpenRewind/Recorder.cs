@@ -12,6 +12,8 @@ sealed class Recorder
     byte[]? lastThumb;
     string lastText = "", lastKey = "";
     DateTime lastWrite = DateTime.MinValue;
+    /// Seconds between stored frames while only a few words change. At or below the capture interval: every capture.
+    public double MinorChangeGap { get; set; } = 2;
     static volatile bool locked;
 
     static Recorder()
@@ -80,10 +82,10 @@ sealed class Recorder
             lastThumb = thumb;
             return null;
         }
-        // Only a few words changed (typing, a clock): store one frame every few seconds, not every tick.
+        // Only a few words changed (typing, a clock) and the user chose a longer gap: wait for it.
         // lastThumb stays on the stored frame, so the screen it settles on is still saved once the gap is up.
-        if (key == lastKey && !heartbeatDue && (DateTime.UtcNow - lastWrite).TotalSeconds < FrameDedup.MinorChangeSeconds
-            && FrameDedup.IsMinorChange(lastText, text))
+        if (key == lastKey && !heartbeatDue && MinorChangeGap > config.Interval
+            && (DateTime.UtcNow - lastWrite).TotalSeconds < MinorChangeGap && FrameDedup.IsMinorChange(lastText, text))
             return null;
 
         var ts = Time.Now();

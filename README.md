@@ -63,8 +63,9 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
 ## What it does (v0.1)
 
 - Takes a screenshot every 2 s (ScreenCaptureKit).
-- Skips frames that did not change, and while only a few words change (typing,
-  a clock) keeps one frame every 10 s instead of every 2 s.
+- Skips frames that did not change. **Settings → Save Frames While Typing** can
+  save fewer frames (every 5, 10 or 30 s) while only a few words change; the
+  default is every 2 s, and the screen you stop on is always saved.
 - Reads text from the focused window's **accessibility tree**. Falls back to
   **Apple Vision OCR**. Never reads password fields.
 - Saves a HEIC (about half the size of a JPEG; JPEG on Macs that cannot encode

@@ -11,6 +11,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let defaults = UserDefaults.standard
     private let screenKey = "recordScreen", audioKey = "recordAudio"
     private let keepScreenKey = "keepScreen", keepAudioKey = "keepAudio"
+    /// Seconds between saved frames while only a few words change (2 = every capture).
+    private let typingGapKey = "typingFrameGap"
     /// The local HTTP API + browser search page. Off unless the user turns it on in Settings.
     private let serverKey = "localSearchServer"
     private var retention: RetentionJob!
@@ -23,7 +25,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         super.init()
         copyOldSettings()
         defaults.register(defaults: [screenKey: true, audioKey: true, serverKey: false,
-                                     keepScreenKey: KeepFor.forever.rawValue, keepAudioKey: KeepFor.forever.rawValue])
+                                     keepScreenKey: KeepFor.forever.rawValue, keepAudioKey: KeepFor.forever.rawValue,
+                                     typingGapKey: 2])
     }
 
     /// The app used to be OpenScreen (bundle id ai.agilityresources.openscreen). Bring its menu
@@ -47,6 +50,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         if defaults.bool(forKey: serverKey) { startServer() }
         engine.startTranscriber()
+        engine.recorder.minorChangeGap = TimeInterval(defaults.integer(forKey: typingGapKey))
         engine.setScreen(defaults.bool(forKey: screenKey))
         engine.setAudio(defaults.bool(forKey: audioKey))
         retention = RetentionJob(db: engine.db, screen: keep(keepScreenKey), audio: keep(keepAudioKey))
@@ -107,6 +111,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let m = NSMenu()
         m.addItem(keepMenu("Keep Screen Recordings For", key: keepScreenKey))
         m.addItem(keepMenu("Keep Audio Recordings For", key: keepAudioKey))
+        m.addItem(typingGapMenu())
         m.addItem(.separator())
 
         let del = NSMenuItem(title: "Delete Recordings", action: nil, keyEquivalent: "")
@@ -132,6 +137,27 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         m.addItem(login)
         return m
+    }
+
+    /// Fewer saved frames while typing means less disk space; the screen you stop on is always saved.
+    private func typingGapMenu() -> NSMenuItem {
+        let item = NSMenuItem(title: "Save Frames While Typing", action: nil, keyEquivalent: "")
+        item.toolTip = "While only a few words on screen change, save a frame this often. Longer uses less disk space; the screen you stop on is still saved."
+        let sub = NSMenu()
+        let current = defaults.integer(forKey: typingGapKey)
+        for secs in FrameDedup.gapChoices {
+            let i = action("Every \(secs) Seconds" + (secs == 2 ? " (Default)" : ""), #selector(setTypingGap(_:)))
+            i.tag = secs
+            i.state = secs == current ? .on : .off
+            sub.addItem(i)
+        }
+        item.submenu = sub
+        return item
+    }
+
+    @objc private func setTypingGap(_ sender: NSMenuItem) {
+        defaults.set(sender.tag, forKey: typingGapKey)
+        engine.recorder.minorChangeGap = TimeInterval(sender.tag)
     }
 
     private func keepMenu(_ title: String, key: String) -> NSMenuItem {
