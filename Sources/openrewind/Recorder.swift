@@ -41,8 +41,9 @@ enum Time {
 
 /// When a new screenshot is close enough to the last stored one to skip it.
 enum FrameDedup {
-    /// While only a few words change (typing, a ticking clock), store at most one frame this often.
-    static let minorChangeSeconds: TimeInterval = 10
+    /// Choices for how often to store a frame while only a few words change (typing, a ticking clock).
+    /// 2 s is every capture, the default.
+    static let gapChoices = [2, 5, 10, 30]
 
     /// Words added plus words removed between two texts, ignoring order.
     static func wordsChanged(_ a: String, _ b: String) -> Int {
@@ -68,6 +69,8 @@ final class Recorder {
     private var lastText = ""
     private var lastKey = ""
     private var lastWrite = Date.distantPast
+    /// Seconds between stored frames while only a few words change. At or below the capture interval: every capture.
+    var minorChangeGap: TimeInterval = 2
     private let excluded: Set<String>
 
     init(config: Config, db: Database) {
@@ -127,10 +130,10 @@ final class Recorder {
             lastThumb = thumb
             return nil
         }
-        // Only a few words changed (typing, a clock): store one frame every few seconds, not every tick.
+        // Only a few words changed (typing, a clock) and the user chose a longer gap: wait for it.
         // lastThumb stays on the stored frame, so the screen it settles on is still saved once the gap is up.
-        if key == lastKey, !heartbeatDue, Date().timeIntervalSince(lastWrite) < FrameDedup.minorChangeSeconds,
-           FrameDedup.isMinorChange(lastText, text) {
+        if key == lastKey, !heartbeatDue, minorChangeGap > config.interval,
+           Date().timeIntervalSince(lastWrite) < minorChangeGap, FrameDedup.isMinorChange(lastText, text) {
             return nil
         }
 

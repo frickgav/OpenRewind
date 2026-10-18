@@ -3,8 +3,9 @@ namespace OpenRewind;
 /// When a new screenshot is close enough to the last stored one to skip it.
 public static class FrameDedup
 {
-    /// While only a few words change (typing, a ticking clock), store at most one frame this often.
-    public const double MinorChangeSeconds = 10;
+    /// Choices for how often to store a frame while only a few words change (typing, a ticking clock).
+    /// 2 s is every capture, the default.
+    public static readonly int[] GapChoices = { 2, 5, 10, 30 };
 
     /// Words added plus words removed between two texts, ignoring order.
     public static int WordsChanged(string a, string b)
