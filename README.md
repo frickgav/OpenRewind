@@ -1,10 +1,64 @@
 # openscreen
 
-Our own take on [screenpipe](https://screenpi.pe): record your screen, pull the
-text out, and search everything you saw. 100% local. One small Swift binary.
+**Rewind your Mac.** openscreen records your screen and audio, pulls the text
+out, and lets you search or scroll back through everything you saw and heard.
+100% local. One small Swift binary. Open source.
 
-Built from a teardown of `/Applications/screenpipe.app` with
-[REA](https://github.com/morluto/rea). See [docs/re/FINDINGS.md](docs/re/FINDINGS.md).
+## The story
+
+### 2022: a search engine for your life
+
+On November 1, 2022, [Rewind](https://techcrunch.com/2022/11/01/rewind-wants-to-revamp-how-you-remember-with-millions-from-a16z/)
+launched with **$10M from Andreessen Horowitz**, at a $75M valuation.
+The founders were Dan Siroker (co-founder of Optimizely) and Brett Bejcek.
+
+The idea was simple and a little wild. Your Mac records everything on your
+screen and everything said in your meetings. Then you can search any word and
+jump back to that moment. It all ran on your own Mac, made possible by Apple
+Silicon. Rewind promised it would "never sell your data or do advertising."
+
+### 2023: the hottest pitch on Twitter
+
+In April 2023, Rewind raised its Series A in public. Siroker posted the pitch
+deck and asked investors to send offers. [More than a thousand investors showed
+interest and 170 made offers](https://fortune.com/2023/05/26/a-i-startup-founder-trend/).
+NEA led the round at a **$350M valuation**.
+
+### 2024: the pivot away from the Mac
+
+In April 2024, Rewind [renamed itself Limitless](https://techcrunch.com/2024/04/17/a16z-backed-rewind-pivots-to-build-ai-powered-pendant-to-record-your-conversations)
+and moved to a $99 AI pendant that records your conversations. The Mac app
+[stopped getting updates](https://sacra.com/research/why-meta-bought-limitless/).
+
+### 2025: lights out
+
+On December 5, 2025, [Meta bought Limitless](https://9to5mac.com/2025/12/05/rewind-limitless-meta-acquisition/).
+The team moved to Meta's wearables group. The Rewind Mac app was shut off:
+**on December 19, 2025, all screen and audio capture stopped.**
+Users in the EU, UK, and some other countries had two weeks to export their
+data before it was deleted.
+
+### Now: openscreen
+
+A tool that remembers your whole digital life should not be able to vanish
+when a company is sold. So we built it again, in the open:
+
+- **Local only.** Your data stays in `~/.openscreen`. No account. No cloud.
+- **Open source ([MIT](LICENSE)).** Read the code. Change it. Nobody can switch it off.
+- **Plain files.** SQLite and JPEGs. Your history is yours to keep or move.
+
+### How it was built
+
+openscreen is new code. It does not contain any Rewind code.
+
+- **The idea and the timeline** come from Rewind. The full-screen timeline
+  (⌥⌘T) is modeled on Rewind's.
+- **The internals** come from a teardown of [screenpipe](https://screenpi.pe),
+  another open screen-memory app, done with [REA](https://github.com/morluto/rea).
+  The database layout and the local API copy screenpipe's shape.
+  See [docs/re/FINDINGS.md](docs/re/FINDINGS.md).
+
+openscreen is not made by or connected to Rewind AI, Limitless, Meta, or screenpipe.
 
 ## What it does (v0.1)
 
@@ -128,11 +182,15 @@ Delete the folder to wipe everything, or from the terminal:
 
 (`15m`, `1h`, `today`, `all`, `older:day|week|month|year`; add `--screen-only` or `--audio-only`.)
 
-## Not yet (screenpipe has these)
+## Not yet (Rewind or screenpipe had these)
 
 - Speaker identification (who said what)
+- Meeting summaries and AI chat over your history ("Ask Rewind")
 - UI input events (clicks, keys)
 - Browser URL per frame
 - Video chunk encoding (ffmpeg) instead of JPEGs
-- Menu bar app, auto-start, retention / cleanup
-- Plugins ("pipes"), AI chat over your history
+- Plugins ("pipes")
+
+## License
+
+[MIT](LICENSE). Use it, change it, share it.
