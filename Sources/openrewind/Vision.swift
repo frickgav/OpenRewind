@@ -58,11 +58,11 @@ enum ImageTools {
 
     static func writeJPEG(_ image: CGImage, to url: URL, quality: Double = 0.7) throws {
         guard let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else {
-            throw NSError(domain: "openscreen", code: 1, userInfo: [NSLocalizedDescriptionKey: "cannot create \(url.path)"])
+            throw NSError(domain: "openrewind", code: 1, userInfo: [NSLocalizedDescriptionKey: "cannot create \(url.path)"])
         }
         CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
         if !CGImageDestinationFinalize(dest) {
-            throw NSError(domain: "openscreen", code: 2, userInfo: [NSLocalizedDescriptionKey: "cannot write \(url.path)"])
+            throw NSError(domain: "openrewind", code: 2, userInfo: [NSLocalizedDescriptionKey: "cannot write \(url.path)"])
         }
     }
 

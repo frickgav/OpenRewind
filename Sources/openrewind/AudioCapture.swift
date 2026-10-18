@@ -132,7 +132,7 @@ final class MicCapture {
     func start() throws {
         let input = engine.inputNode
         let fmt = input.outputFormat(forBus: 0)
-        guard fmt.sampleRate > 0 else { throw NSError(domain: "openscreen", code: 20, userInfo: [NSLocalizedDescriptionKey: "no microphone input"]) }
+        guard fmt.sampleRate > 0 else { throw NSError(domain: "openrewind", code: 20, userInfo: [NSLocalizedDescriptionKey: "no microphone input"]) }
         input.installTap(onBus: 0, bufferSize: 4096, format: fmt) { [weak self] buf, _ in
             guard let self else { return }
             self.writer.append(self.resampler.convert(buf))
@@ -166,7 +166,7 @@ final class MicCapture {
 final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private var stream: SCStream?
     private let resampler = Resampler()
-    private let queue = DispatchQueue(label: "openscreen.sysaudio")
+    private let queue = DispatchQueue(label: "openrewind.sysaudio")
     let writer: ChunkWriter
 
     init(writer: ChunkWriter) { self.writer = writer }
@@ -174,7 +174,7 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     func start() async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let display = content.displays.first else {
-            throw NSError(domain: "openscreen", code: 21, userInfo: [NSLocalizedDescriptionKey: "no display for audio stream"])
+            throw NSError(domain: "openrewind", code: 21, userInfo: [NSLocalizedDescriptionKey: "no display for audio stream"])
         }
         let filter = SCContentFilter(display: display, excludingWindows: [])
         let cfg = SCStreamConfiguration()

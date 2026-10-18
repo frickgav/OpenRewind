@@ -25,7 +25,7 @@ final class Server {
     let port: UInt16
     let router: (HTTPRequest) -> HTTPResponse
     private var listener: NWListener?
-    private let queue = DispatchQueue(label: "openscreen.http", attributes: .concurrent)
+    private let queue = DispatchQueue(label: "openrewind.http", attributes: .concurrent)
 
     init(port: UInt16, router: @escaping (HTTPRequest) -> HTTPResponse) {
         self.port = port
@@ -92,7 +92,7 @@ final class Server {
     }
 }
 
-/// REST routes, shaped like screenpipe's so existing scripts can point at openscreen.
+/// REST routes, shaped like screenpipe's so existing scripts can point at openrewind.
 struct API {
     let db: Database
     let config: Config
@@ -137,7 +137,7 @@ struct API {
         let limit = min(max(Int(q["limit"] ?? "") ?? 20, 1), 100)
         let offset = max(Int(q["offset"] ?? "") ?? 0, 0)
         let empty: [String: Any] = ["data": [], "pagination": ["limit": limit, "offset": offset, "total": 0]]
-        if type == "input" || type == "memory" || type == "parsed" { return .json(empty) }  // not captured by openscreen
+        if type == "input" || type == "memory" || type == "parsed" { return .json(empty) }  // not captured by openrewind
 
         var s = SearchQuery()
         s.q = q["q"]

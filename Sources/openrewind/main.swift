@@ -2,20 +2,20 @@ import AppKit
 import Foundation
 
 let usage = """
-openscreen — record your screen, OCR it, search it locally.
+openrewind — record your screen, OCR it, search it locally.
 
 Usage:
-  openscreen [record]        Record + serve API/UI (default)
-  openscreen app             Run the menu bar app (what OpenScreen.app runs)
-  openscreen serve           Serve API/UI only, no recording
-  openscreen once            Capture one frame and exit
-  openscreen ingest <image> [--app NAME] [--window TITLE]
+  openrewind [record]        Record + serve API/UI (default)
+  openrewind app             Run the menu bar app (what OpenRewind.app runs)
+  openrewind serve           Serve API/UI only, no recording
+  openrewind once            Capture one frame and exit
+  openrewind ingest <image> [--app NAME] [--window TITLE]
                              OCR an image file and store it (for testing)
-  openscreen ingest-audio <file>
+  openrewind ingest-audio <file>
                              Transcribe an audio file and store it (for testing)
-  openscreen delete <15m|1h|today|all|older:week>
+  openrewind delete <15m|1h|today|all|older:week>
                              Delete recordings in that range
-  openscreen doctor          Check and request permissions
+  openrewind doctor          Check and request permissions
 
 Options:
   --port N        API port (default 3031)
@@ -34,7 +34,7 @@ Env:
 """
 
 let args = Array(CommandLine.arguments.dropFirst())
-/// Launched from Finder / Dock as OpenScreen.app with no command → run the menu bar app.
+/// Launched from Finder / Dock as OpenRewind.app with no command → run the menu bar app.
 let launchedAsApp = Bundle.main.bundleURL.pathExtension == "app" && !args.contains(where: { !$0.hasPrefix("-") })
 let command = launchedAsApp ? "app" : (args.first(where: { !$0.hasPrefix("-") }) ?? "record")
 if args.contains("-h") || args.contains("--help") || command == "help" {
@@ -62,7 +62,7 @@ func startServer() {
 func requirePermissions() {
     if !Capture.hasScreenPermission {
         log("screen recording permission missing. Asking macOS now.")
-        log("grant it in System Settings → Privacy & Security → Screen Recording, then restart openscreen.")
+        log("grant it in System Settings → Privacy & Security → Screen Recording, then restart openrewind.")
         Capture.requestScreenPermission()
     }
     if config.useAccessibility && !Accessibility.isTrusted {
@@ -107,7 +107,7 @@ case "once":
 case "ingest":
     guard let path = args.drop(while: { $0 != "ingest" }).dropFirst().first(where: { !$0.hasPrefix("-") }),
           let img = ImageTools.load(URL(fileURLWithPath: path)) else {
-        log("usage: openscreen ingest <image>"); exit(2)
+        log("usage: openrewind ingest <image>"); exit(2)
     }
     let win = ActiveWindow(appName: value(after: "--app") ?? "Imported", windowName: value(after: "--window") ?? path, pid: 0)
     do {
@@ -117,7 +117,7 @@ case "ingest":
 
 case "ingest-audio":
     guard let path = args.drop(while: { $0 != "ingest-audio" }).dropFirst().first(where: { !$0.hasPrefix("-") }) else {
-        log("usage: openscreen ingest-audio <file>"); exit(2)
+        log("usage: openrewind ingest-audio <file>"); exit(2)
     }
     guard let tx = Transcriber(config: config, db: db) else { exit(1) }
     do {
@@ -134,9 +134,9 @@ case "ingest-audio":
     } catch { log("ingest-audio failed: \(error)"); exit(1) }
 
 case "delete":
-    // openscreen delete <15m|1h|today|all> [--screen-only|--audio-only]
+    // openrewind delete <15m|1h|today|all> [--screen-only|--audio-only]
     guard let what = args.drop(while: { $0 != "delete" }).dropFirst().first(where: { !$0.hasPrefix("-") }) else {
-        log("usage: openscreen delete <15m|1h|today|all|older:day|older:week|older:month|older:year>"); exit(2)
+        log("usage: openrewind delete <15m|1h|today|all|older:day|older:week|older:month|older:year>"); exit(2)
     }
     let now = Date()
     var from: Date? = nil, to: Date? = now

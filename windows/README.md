@@ -100,7 +100,7 @@ The code:
 - `windows/OpenRewind`: the Windows app (capture, OCR, UI Automation, audio, tray, timeline).
   It builds on any OS (`EnableWindowsTargeting`) but only runs on Windows.
 - The search page is not copied: the build reads it straight out of
-  `Sources/openscreen/WebUI.swift`, so a change there shows up on both.
+  `Sources/openrewind/WebUI.swift`, so a change there shows up on both.
 
 ## Not yet on Windows
 

@@ -80,7 +80,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
         settings.submenu = settingsMenu()
         menu.addItem(settings)
-        menu.addItem(action("Quit OpenScreen", #selector(quit), key: "q"))
+        menu.addItem(action("Quit OpenRewind", #selector(quit), key: "q"))
     }
 
     // MARK: settings
@@ -133,7 +133,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let what = key == keepScreenKey ? "screenshots" : "audio clips"
         if let secs = k.seconds, (keep(key).seconds ?? .infinity) > secs {
             guard confirm("Keep \(what) for \(k.title.lowercased())?",
-                          "OpenScreen will delete \(what) older than \(k.title.lowercased()) now, and keep doing it every hour. This cannot be undone.",
+                          "OpenRewind will delete \(what) older than \(k.title.lowercased()) now, and keep doing it every hour. This cannot be undone.",
                           button: "Delete Older \(what.capitalized)") else { return }
         }
         defaults.set(k.rawValue, forKey: key)
@@ -251,10 +251,10 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case (false, true): name = "waveform.circle"
         case (false, false): name = "pause.circle"
         }
-        let img = NSImage(systemSymbolName: name, accessibilityDescription: "openscreen")
+        let img = NSImage(systemSymbolName: name, accessibilityDescription: "openrewind")
         img?.isTemplate = true
         item.button?.image = img
-        item.button?.toolTip = "OpenScreen — \(statusLine())"
+        item.button?.toolTip = "OpenRewind — \(statusLine())"
     }
 
     @objc private func toggleScreen() {

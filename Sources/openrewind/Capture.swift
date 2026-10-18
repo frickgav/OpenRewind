@@ -34,9 +34,9 @@ enum Capture {
         let target = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
         let targetID = target?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
         guard let display = content.displays.first(where: { $0.displayID == targetID }) ?? content.displays.first else {
-            throw NSError(domain: "openscreen", code: 10, userInfo: [NSLocalizedDescriptionKey: "no display found"])
+            throw NSError(domain: "openrewind", code: 10, userInfo: [NSLocalizedDescriptionKey: "no display found"])
         }
-        // Do not record ourselves (the web UI may be open in a browser, that is fine; this excludes only openscreen).
+        // Do not record ourselves (the web UI may be open in a browser, that is fine; this excludes only openrewind).
         let mine = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
         let filter = SCContentFilter(display: display, excludingApplications: mine, exceptingWindows: [])
         let cfg = SCStreamConfiguration()
