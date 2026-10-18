@@ -107,7 +107,8 @@ final class OnboardingModel: ObservableObject {
 }
 
 enum Onboarding {
-    static let hotkey = "⌥⌘T"
+    /// The timeline shortcut as the user set it in Settings.
+    static var hotkey: String { Shortcut.load(.standard).label }
 
     static func show(onDone: @escaping (Bool) -> Void) {
         let model = OnboardingModel()

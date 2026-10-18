@@ -45,6 +45,18 @@ static class Program
     [STAThread]
     static int Main(string[] args)
     {
+        Crash.Install();
+        try { return Run(args); }
+        catch (Exception e)
+        {
+            Crash.Write("startup", e);
+            if (!args.Any(a => !a.StartsWith('-'))) Crash.Tell(e);
+            return 1;
+        }
+    }
+
+    static int Run(string[] args)
+    {
         var command = args.FirstOrDefault(a => !a.StartsWith('-')) ?? "app";
         // A WinExe has no console; print to the terminal that started us, if any.
         if (command != "app") Native.AttachConsole(Native.ATTACH_PARENT_PROCESS);
@@ -53,11 +65,21 @@ static class Program
         ApplicationConfiguration.Initialize();
         LoadIcons();
         var config = Config.Load(args);
-        if (command == "app") Log.OpenFile(config.Home);
+        if (command == "app")
+        {
+            Log.OpenFile(config.Home);
+            Log.Write($"OpenRewind {Updater.Current} starting ({Environment.ProcessPath})");
+        }
 
         Database db;
         try { db = new Database(config.DbPath); }
-        catch (Exception e) { Log.Write($"cannot open database at {config.DbPath}: {e.Message}"); return 1; }
+        catch (Exception e)
+        {
+            Log.Write($"cannot open database at {config.DbPath}: {e.Message}");
+            Crash.Write("opening the database", e);
+            if (command == "app") Crash.Tell(e);
+            return 1;
+        }
         var engine = new Engine(config, db);
 
         string? Value(string flag)
@@ -75,7 +97,14 @@ static class Program
                 // One copy at a time: a second launch just opens the timeline of the first.
                 using (var single = new Mutex(true, @"Local\OpenRewind.App", out var first))
                 {
-                    if (!first) { Log.Write("already running"); return 0; }
+                    if (!first)
+                    {
+                        Log.Write("already running");
+                        MessageBox.Show("OpenRewind is already running. Click its icon by the clock (under ^ if it is hidden), or press "
+                                        + $"{(Settings.Load(config.Home).TimelineShortcut ?? HotkeyShortcut.Standard).Label} to open the timeline.",
+                                        "OpenRewind", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return 0;
+                    }
                     Application.Run(new TrayApp(engine));
                 }
                 return 0;
@@ -186,6 +215,24 @@ static class Program
             PausedIcon = Gray(AppIcon);
         }
         catch (Exception e) { Log.Write($"cannot load the app icon: {e.Message}"); }
+    }
+
+    /// Explorer keeps an exe's icon in its cache by path, so a new OpenRewind.exe copied over an old one
+    /// (or swapped in by the updater) still shows the old logo on the file, the taskbar and Start pins.
+    /// Once per new version, tell the shell to read the icon again.
+    public static void RefreshIconIfNew(Settings settings)
+    {
+        if (settings.LastRunVersion == Updater.Current) return;
+        try
+        {
+            if (Environment.ProcessPath is string exe)
+                Native.SHChangeNotify(Native.SHCNE_UPDATEITEM, Native.SHCNF_PATHW | Native.SHCNF_FLUSHNOWAIT, exe, IntPtr.Zero);
+            Native.SHChangeNotify(Native.SHCNE_ASSOCCHANGED, Native.SHCNF_IDLIST | Native.SHCNF_FLUSHNOWAIT, null, IntPtr.Zero);
+            Log.Write($"asked Windows to refresh the app icon ({settings.LastRunVersion ?? "first run"} -> {Updater.Current})");
+        }
+        catch (Exception e) { Log.Write($"cannot refresh the app icon: {e.Message}"); }
+        settings.LastRunVersion = Updater.Current;
+        settings.Save();
     }
 
     /// The tray icon goes gray while nothing is recording.

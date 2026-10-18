@@ -174,12 +174,12 @@ struct TutorialCoach: View {
     var close: () -> Void
 
     private enum Anchor { case bar, search, center }
-    private static let steps: [(title: String, text: String, at: Anchor)] = [
+    private static var steps: [(title: String, text: String, at: Anchor)] { [
         ("This is your timeline", "Every colored block is an app you used. The newest moment is on the right, and the big picture shows what was on screen.", .bar),
         ("Go back in time", "Scroll with the trackpad or mouse wheel, drag along the bar, or press ← and →. Try it now.", .bar),
         ("Search anything", "Press / and type a word you saw or heard, like a name or a file. Pick a result to jump to that moment.", .search),
         ("You're all set", "Press \(Onboarding.hotkey) from anywhere to open this. Esc closes it, and ? shows every shortcut.", .center),
-    ]
+    ] }
     @State private var startIndex = -1
     @State private var pulse = false
 

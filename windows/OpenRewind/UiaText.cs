@@ -18,9 +18,16 @@ static class UiaText
         return uia = a;
     }
 
-    public static string? FocusedWindowText(IntPtr hwnd, int maxNodes = 4000, int maxChars = 60_000, int maxMillis = 1500)
+    /// Browsers whose tab address is saved with each screenshot (exe names). Same set as the Mac app, plus Windows-only ones.
+    static readonly HashSet<string> browsers = new(StringComparer.OrdinalIgnoreCase)
+        { "chrome", "msedge", "arc", "dia", "brave", "firefox", "vivaldi", "opera", "chromium" };
+
+    public static bool IsBrowser(string? exePath) => exePath != null && browsers.Contains(Path.GetFileNameWithoutExtension(exePath));
+
+    /// Text of the window, and for a browser the address of the tab on screen (or null).
+    public static (string? Text, string? Url) FocusedWindow(IntPtr hwnd, bool browser, int maxNodes = 4000, int maxChars = 60_000, int maxMillis = 1500)
     {
-        if (hwnd == IntPtr.Zero) return null;
+        if (hwnd == IntPtr.Zero) return (null, null);
         lock (gate)
         {
             try
@@ -31,6 +38,9 @@ static class UiaText
                 var lines = new List<string>();
                 var seen = new HashSet<string>();
                 int chars = 0, visited = 0;
+                // Chromium browsers and Firefox put the tab's address on the page's document element;
+                // the address bar (an edit box) is the fallback. The first document is the top page.
+                string? docUrl = null, barUrl = null;
                 var deadline = Environment.TickCount64 + maxMillis;
                 var stack = new Stack<(IUIAutomationElement El, int Depth)>();
                 stack.Push((root, 0));
@@ -41,6 +51,15 @@ static class UiaText
                     try
                     {
                         if (el.CurrentIsPassword != 0) continue;
+                        if (browser && docUrl == null)
+                        {
+                            var type = el.CurrentControlType;
+                            if (type == UIA_ControlTypeIds.UIA_DocumentControlTypeId || (type == UIA_ControlTypeIds.UIA_EditControlTypeId && barUrl == null))
+                            {
+                                var u = WebAddress.Normalize(el.GetCurrentPropertyValue(UIA_PropertyIds.UIA_ValueValuePropertyId) as string);
+                                if (type == UIA_ControlTypeIds.UIA_DocumentControlTypeId) docUrl = u; else barUrl = u;
+                            }
+                        }
                         foreach (var id in new[] { UIA_PropertyIds.UIA_NamePropertyId, UIA_PropertyIds.UIA_ValueValuePropertyId, UIA_PropertyIds.UIA_HelpTextPropertyId })
                         {
                             if (el.GetCurrentPropertyValue(id) is string s)
@@ -60,12 +79,12 @@ static class UiaText
                     catch (System.Runtime.InteropServices.COMException) { }  // element went away mid-walk
                 }
                 var text = string.Join("\n", lines);
-                return text.Length >= 20 ? text : null;
+                return (text.Length >= 20 ? text : null, docUrl ?? barUrl);
             }
             catch (Exception e)
             {
                 Log.Write($"accessibility text failed: {e.Message}");
-                return null;
+                return (null, null);
             }
         }
     }
