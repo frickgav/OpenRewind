@@ -2,9 +2,9 @@ name: Windows app
 
 on:
   push:
-    paths: ["windows/**", "Sources/openrewind/WebUI.swift", "scripts/build-windows.ps1", ".github/workflows/windows.yml"]
+    paths: ["windows/**", "Sources/openrewind/WebUI.swift", "scripts/build-windows.ps1", "scripts/launch-check-windows.ps1", ".github/workflows/windows.yml"]
   pull_request:
-    paths: ["windows/**", "Sources/openrewind/WebUI.swift", "scripts/build-windows.ps1", ".github/workflows/windows.yml"]
+    paths: ["windows/**", "Sources/openrewind/WebUI.swift", "scripts/build-windows.ps1", "scripts/launch-check-windows.ps1", ".github/workflows/windows.yml"]
   workflow_dispatch:
 
 jobs:
@@ -28,19 +28,7 @@ jobs:
       - name: Launch check
         if: matrix.arch == 'x64'
         shell: pwsh
-        run: |
-          $home_ = Join-Path $env:RUNNER_TEMP "openrewind-home"
-          New-Item -ItemType Directory -Force $home_ | Out-Null
-          $env:OPENREWIND_HOME = $home_
-          $crash = Join-Path $env:LOCALAPPDATA "OpenRewind\crash.log"
-          Remove-Item $crash -ErrorAction SilentlyContinue
-          $p = Start-Process "dist\win-x64\OpenRewind.exe" -PassThru
-          Start-Sleep -Seconds 30
-          $alive = -not $p.HasExited
-          Write-Host "--- openrewind.log"; Get-Content (Join-Path $home_ "openrewind.log") -ErrorAction SilentlyContinue
-          Write-Host "--- crash.log"; Get-Content $crash -ErrorAction SilentlyContinue
-          if ($alive) { Stop-Process -Id $p.Id -Force } else { Write-Host "exit code $($p.ExitCode)" }
-          if (-not $alive -or (Test-Path $crash)) { throw "OpenRewind did not keep running after launch" }
+        run: scripts/launch-check-windows.ps1 -ExePath dist/win-x64/OpenRewind.exe
       - name: Sign with Azure Trusted Signing
         if: env.CAN_SIGN == 'true'
         uses: azure/trusted-signing-action@v0.5.1
