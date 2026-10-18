@@ -13,9 +13,13 @@ final class Engine {
     private var mic: MicCapture?
     private var system: SystemAudioCapture?
     private var transcriberTask: Task<Void, Never>?
+    private var watchdog: Timer?
+    /// The user wants audio on, even while a stream is between restarts.
+    private var audioWanted = false
+    private var systemRestarting = false
 
     var screenOn: Bool { screenTask != nil }
-    var audioOn: Bool { mic != nil || system != nil }
+    var audioOn: Bool { audioWanted }
 
     init(config: Config, db: Database) {
         self.config = config
@@ -51,6 +55,7 @@ final class Engine {
 
     func setAudio(_ on: Bool) {
         if on, !audioOn {
+            audioWanted = true
             if config.recordMic { startMic() }
             if config.recordSystemAudio {
                 let sys = SystemAudioCapture(writer: ChunkWriter(device: "system audio", isInput: false,
@@ -62,10 +67,48 @@ final class Engine {
                 }
             }
             startTranscriber()
+            startWatchdog()
         } else if !on, audioOn {
+            watchdog?.invalidate(); watchdog = nil
+            audioWanted = false
             mic?.stop(); mic = nil
             if let sys = system { system = nil; Task.detached { await sys.stop() } }
             log("audio recording off")
+        }
+    }
+
+    /// Audio streams can stop without an error (device switch, sleep, another app taking the
+    /// device). If one sends nothing for 60 s, restart it.
+    private func startWatchdog() {
+        guard watchdog == nil else { return }
+        watchdog = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let stale = { (w: ChunkWriter) in Date().timeIntervalSince(w.lastAppend) > 60 }
+            if self.config.recordMic, AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+               self.mic.map({ stale($0.writer) }) ?? true {
+                log(self.mic == nil ? "starting microphone again" : "microphone sent no sound for 60 s, restarting")
+                self.mic?.stop(); self.mic = nil
+                self.startMic()
+            }
+            let sysStale = self.system.map { stale($0.writer) } ?? true
+            if self.config.recordSystemAudio, sysStale, !self.systemRestarting {
+                let old = self.system
+                log(old == nil ? "starting system audio again" : "system audio sent no sound for 60 s, restarting")
+                self.system = nil
+                self.systemRestarting = true
+                Task.detached {
+                    defer { Task { @MainActor in self.systemRestarting = false } }
+                    await old?.stop()
+                    let fresh = SystemAudioCapture(writer: ChunkWriter(device: "system audio", isInput: false,
+                                                                       seconds: self.config.audioChunkSeconds,
+                                                                       config: self.config, db: self.db))
+                    do {
+                        try await fresh.start()
+                        await MainActor.run { self.system = fresh }
+                        log("recording system audio")
+                    } catch { log("system audio restart failed: \(error.localizedDescription)") }
+                }
+            }
         }
     }
 
