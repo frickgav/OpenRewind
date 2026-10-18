@@ -27,9 +27,18 @@ final class Server {
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "openrewind.http", attributes: .concurrent)
 
-    init(port: UInt16, router: @escaping (HTTPRequest) -> HTTPResponse) {
+    /// The CLI quits when the port is taken; the menu bar app only logs it and keeps running.
+    let exitOnFailure: Bool
+
+    init(port: UInt16, exitOnFailure: Bool = true, router: @escaping (HTTPRequest) -> HTTPResponse) {
         self.port = port
+        self.exitOnFailure = exitOnFailure
         self.router = router
+    }
+
+    func stop() {
+        listener?.cancel()
+        listener = nil
     }
 
     func start() throws {
@@ -41,7 +50,9 @@ final class Server {
         l.stateUpdateHandler = { state in
             switch state {
             case .ready: log("api + ui at http://127.0.0.1:\(self.port)")
-            case .failed(let e): log("server failed: \(e)"); exit(1)
+            case .failed(let e):
+                log("server failed: \(e)")
+                if self.exitOnFailure { exit(1) }
             default: break
             }
         }

@@ -71,7 +71,7 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, Meta, or screenp
 - Reads text from the focused window's **accessibility tree**. Falls back to
   **Apple Vision OCR**. Never reads password fields.
 - Saves a JPEG and a row in SQLite with an **FTS5** index.
-- Serves a local API + search page at `http://127.0.0.1:3031`.
+- Can serve a local API + search page at `http://127.0.0.1:3031` (off in the app until you turn it on).
 - Skips password managers by default (`OPENSCREEN_EXCLUDE` to change).
 - Records **microphone** (AVAudioEngine) and **system audio** (ScreenCaptureKit)
   in 30 s chunks, 16 kHz mono WAV. Silent chunks are dropped.
@@ -93,12 +93,16 @@ Copy the app to `/Applications` and open it. It lives in the menu bar:
   Scroll or use ← → to move through time, ⇧ for 1 minute, ↑ ↓ for 10 minutes,
   drag or click the bar, **space** plays the audio at that moment (the picture
   follows along), **+ / −** zoom, **N** jumps to now, **Esc** closes.
-- **Search…** opens the web search page.
+- **Search…** opens the timeline with the cursor in its search box, or the web search page
+  when the local search server is on.
 - **Settings → Keep Screen / Audio Recordings For**: 1 Day, 1 Week, 1 Month,
   1 Year, or Until I Delete Them (default). Older recordings are deleted at
   launch and every hour.
 - **Settings → Delete Recordings**: last 15 minutes, last hour, today, all
   screen, all audio, or everything (asks first).
+- **Settings → Local Search Server** turns on the API and browser search page at
+  `http://127.0.0.1:3031`. Off by default. Only this Mac can connect. The terminal
+  commands `record` and `serve` always start it.
 - **Settings → Launch at Login** starts it with your Mac.
 - The lock screen and screen saver are never recorded.
 - Log: `~/.openscreen/openrewind.log`.
@@ -171,6 +175,8 @@ command (for example Terminal). Grant it, then run again. **Accessibility**
 permission is optional; it gives cleaner text than OCR.
 
 ## API (screenpipe-shaped)
+
+On when you run `record` or `serve` from the terminal, or after **Settings → Local Search Server** in the app.
 
 | Route | What |
 |-------|------|

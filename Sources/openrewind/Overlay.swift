@@ -25,6 +25,13 @@ final class OverlayController {
 
     func toggle() { isVisible ? hide() : show() }
 
+    /// Open the timeline with the keyboard in the search box.
+    func showSearch() {
+        show()
+        // After show() has given the keyboard to the timeline.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.model.focusSearchToken += 1 }
+    }
+
     func show() {
         previousApp = NSWorkspace.shared.frontmostApplication
         let mouse = NSEvent.mouseLocation

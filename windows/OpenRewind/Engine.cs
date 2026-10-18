@@ -3,7 +3,7 @@ using NAudio.CoreAudioApi;
 namespace OpenRewind;
 
 /// Owns everything that records. Screen and audio can each be turned on and off on their own.
-/// The API server and the Whisper worker run for the whole life of the process.
+/// The Whisper worker runs for the whole life of the process; the API server only while it is switched on.
 sealed class Engine
 {
     public readonly Config Config;
@@ -28,8 +28,11 @@ sealed class Engine
         Recorder = new Recorder(config, db);
     }
 
+    public bool ServerOn => server != null;
+
     public void StartServer()
     {
+        if (server != null) return;
         var api = new Api(Db, Config, () => new()
         {
             // Windows has no screen-recording prompt; kept for screenpipe-shaped clients.
@@ -38,8 +41,17 @@ sealed class Engine
             ["ocr_available"] = Ocr.Available,
             ["platform"] = "windows",
         });
-        server = new Server(Config.Port, api.Handle);
-        server.Start();
+        var s = new Server(Config.Port, api.Handle);
+        s.Start();
+        server = s;
+    }
+
+    public void StopServer()
+    {
+        if (server == null) return;
+        server.Dispose();
+        server = null;
+        Log.Write("local search server off");
     }
 
     public void StartTranscriber()
