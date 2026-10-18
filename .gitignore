@@ -3,3 +3,5 @@
 .swiftpm/
 *.sqlite
 dist/
+windows/**/bin/
+windows/**/obj/

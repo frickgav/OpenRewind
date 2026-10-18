@@ -1,0 +1,27 @@
+name: Windows app
+
+on:
+  push:
+    paths: ["windows/**", "Sources/openscreen/WebUI.swift", "scripts/build-windows.ps1", ".github/workflows/windows.yml"]
+  pull_request:
+    paths: ["windows/**", "Sources/openscreen/WebUI.swift", "scripts/build-windows.ps1", ".github/workflows/windows.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        arch: [x64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Build, test and package
+        shell: pwsh
+        run: scripts/build-windows.ps1 -Arch ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenRewind-win-${{ matrix.arch }}
+          path: dist/win-${{ matrix.arch }}/
