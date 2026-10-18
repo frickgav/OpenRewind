@@ -1,0 +1,83 @@
+name: Release
+
+# Builds the Mac .dmg (and the Windows app, once scripts/build-windows.ps1 is on main)
+# and attaches them to a GitHub Release with stable file names, so the website can link to
+#   https://github.com/frickgav/openscreen/releases/latest/download/OpenRewind-mac.dmg
+#   https://github.com/frickgav/openscreen/releases/latest/download/OpenRewind-windows-x64.zip
+#
+# Start a release either way:
+#   git tag v0.2.0 && git push origin v0.2.0
+#   or Actions → Release → Run workflow, and type the version.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, for example 0.2.0"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  VERSION: ${{ inputs.version || github.ref_name }}
+
+jobs:
+  mac:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build the app and .dmg
+        run: |
+          export VERSION="${VERSION#v}"
+          scripts/build-app.sh
+          cp dist/*.dmg dist/OpenRewind-mac.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac
+          path: dist/OpenRewind-mac.dmg
+
+  windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        arch: [x64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        if: hashFiles('scripts/build-windows.ps1') != ''
+        with:
+          dotnet-version: 8.0.x
+      - name: Build the app and .zip
+        if: hashFiles('scripts/build-windows.ps1') != ''
+        shell: pwsh
+        run: |
+          $env:VERSION = $env:VERSION.TrimStart("v")
+          scripts/build-windows.ps1 -Arch ${{ matrix.arch }}
+          Copy-Item "dist/OpenRewind-$env:VERSION-win-${{ matrix.arch }}.zip" "dist/OpenRewind-windows-${{ matrix.arch }}.zip"
+      - uses: actions/upload-artifact@v4
+        if: hashFiles('scripts/build-windows.ps1') != ''
+        with:
+          name: windows-${{ matrix.arch }}
+          path: dist/OpenRewind-windows-${{ matrix.arch }}.zip
+
+  release:
+    needs: [mac, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Publish the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(env.VERSION, 'v') && env.VERSION || format('v{0}', env.VERSION) }}
+          name: OpenRewind ${{ startsWith(env.VERSION, 'v') && env.VERSION || format('v{0}', env.VERSION) }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: assets/*

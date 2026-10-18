@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenRewind · Rewind your computer</title>
+  <meta name="description" content="OpenRewind remembers everything you saw and heard on your computer, so you can search it or scroll back in time. Free, open source, and 100% local on macOS and Windows.">
+  <meta property="og:title" content="OpenRewind · Rewind your computer">
+  <meta property="og:description" content="Search or scroll back through everything you saw and heard. Free, open source, 100% local.">
+  <link rel="icon" href="assets/mark.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="nav" id="top">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top" aria-label="OpenRewind home">
+      <img src="assets/mark.svg" alt="" width="26" height="26">
+      <span>OpenRewind</span>
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="#features">Features</a>
+      <a href="#how">How it works</a>
+      <a href="#open">Open source</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="nav-gh" href="https://github.com/frickgav/openscreen" aria-label="OpenRewind on GitHub">
+        <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
+      <a class="btn btn-dark btn-sm" href="#download">Download free</a>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <!-- Hero -->
+  <section class="hero wrap">
+    <a class="chip reveal" href="https://github.com/frickgav/openscreen">
+      <span class="chip-dot"></span> Free and open source · MIT licensed
+      <span class="chip-arrow" aria-hidden="true">→</span>
+    </a>
+    <h1 class="display reveal">Rewind your computer.</h1>
+    <p class="lede reveal">OpenRewind remembers everything you’ve seen and heard on your screen. Search any word, or scroll back to any moment. It runs entirely on your own machine, costs nothing, and the code is yours to read.</p>
+    <div class="hero-cta reveal">
+      <a class="btn btn-dark" data-dl="mac" href="https://github.com/frickgav/openscreen/releases/latest/download/OpenRewind-mac.dmg">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M16.37 1.43c0 1.14-.42 2.2-1.12 2.97-.84.93-1.98 1.47-3.06 1.38-.13-1.1.42-2.25 1.1-2.98.77-.84 2.06-1.45 3.08-1.37zM20.5 17.1c-.55 1.27-.82 1.84-1.53 2.96-.99 1.56-2.39 3.5-4.12 3.51-1.54.02-1.93-1-4.02-.99-2.09.01-2.52 1.01-4.06.99-1.73-.02-3.05-1.77-4.04-3.33C-.04 15.89-.33 10.8 1.42 8.1c1.24-1.92 3.2-3.04 5.04-3.04 1.87 0 3.05 1.03 4.6 1.03 1.5 0 2.42-1.03 4.58-1.03 1.64 0 3.38.89 4.62 2.43-4.06 2.22-3.4 8.02.24 9.61z"/></svg>
+        Download for Mac
+      </a>
+      <a class="btn btn-ghost" data-dl="win" href="https://github.com/frickgav/openscreen/releases/latest/download/OpenRewind-windows-x64.zip">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M0 3.45 9.75 2.1v9.4H0zM10.95 1.93 24 0v11.5H10.95zM0 12.6h9.75v9.4L0 20.65zM10.95 12.6H24V24l-13.05-1.85z"/></svg>
+        Download for Windows
+      </a>
+    </div>
+    <p class="fine reveal">$0, forever. No account, no subscription, no cloud. <span id="os-hint"></span></p>
+
+    <!-- Product well: a live mock of the timeline overlay -->
+    <div class="well reveal" aria-label="Preview of the OpenRewind timeline">
+      <div class="desk">
+        <div class="desk-glow"></div>
+        <div class="tl">
+          <div class="tl-top">
+            <div class="tl-search">
+              <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true"><circle cx="8.5" cy="8.5" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="m13 13 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              <span class="tl-q" id="typed"></span><span class="caret"></span>
+            </div>
+            <div class="tl-rec"><span class="rec-dot"></span> Recording</div>
+          </div>
+
+          <div class="tl-frame">
+            <div class="frame-bar"><i></i><i></i><i></i><span id="frame-title">Q3 planning · Notes</span></div>
+            <div class="frame-body" id="frame-body">
+              <div class="fb-line w70"></div>
+              <div class="fb-line w45"></div>
+              <div class="fb-hit">launch the beta on <mark>Thursday</mark> after the review</div>
+              <div class="fb-line w80"></div>
+              <div class="fb-line w60"></div>
+              <div class="fb-grid"><span></span><span></span><span></span></div>
+            </div>
+            <div class="frame-time" id="frame-time">Tuesday, 2:14 PM · 3 days ago</div>
+          </div>
+
+          <div class="tl-bar" id="tl-bar">
+            <div class="tl-segs" id="tl-segs"></div>
+            <div class="tl-audio" id="tl-audio"></div>
+            <div class="tl-head" id="tl-head"><span></span></div>
+          </div>
+          <div class="tl-axis"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Now</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Facts strip -->
+  <section class="wrap facts">
+    <div class="fact reveal"><b>$0</b><span>Free to download and use, with no paid tier</span></div>
+    <div class="fact reveal"><b>100%</b><span>Local. Nothing leaves your computer</span></div>
+    <div class="fact reveal"><b>MIT</b><span>Open source. Read, fork, and change it</span></div>
+    <div class="fact reveal"><b>2 s</b><span>A new snapshot whenever your screen changes</span></div>
+  </section>
+
+  <!-- Features -->
+  <section class="wrap section" id="features">
+    <p class="eyebrow reveal">What it does</p>
+    <h2 class="h2 reveal">A memory for everything<br>on your screen.</h2>
+    <p class="sub reveal">You read hundreds of pages, chats, and docs a day, and hear hours of calls. OpenRewind keeps all of it, so the thing you half remember is always one search away.</p>
+
+    <div class="grid">
+      <article class="card card-lg reveal">
+        <div class="card-art art-timeline" aria-hidden="true">
+          <div class="mini-bar"><i style="--w:18%;--c:#6d4aff"></i><i style="--w:9%;--c:#22c55e"></i><i style="--w:24%;--c:#f97316"></i><i style="--w:12%;--c:#0ea5e9"></i><i style="--w:20%;--c:#6d4aff"></i><i style="--w:17%;--c:#ec4899"></i></div>
+          <div class="mini-head"></div>
+          <div class="keys"><kbd>⌥</kbd><kbd>⌘</kbd><kbd>T</kbd></div>
+        </div>
+        <h3>Scroll back through time</h3>
+        <p>Press ⌥⌘T from anywhere and your past fills the screen. Scroll, drag, or use the arrow keys to move through minutes, hours, or months. Press space to hear what was said at that moment.</p>
+      </article>
+
+      <article class="card reveal">
+        <div class="card-art art-search" aria-hidden="true">
+          <div class="pill-search"><span>“invoice 4471”</span></div>
+          <div class="res"><i></i><span>Mail · Re: invoice <mark>4471</mark></span></div>
+          <div class="res"><i class="g"></i><span>Call · “…send <mark>4471</mark> today”</span></div>
+        </div>
+        <h3>Search what you saw</h3>
+        <p>Text is read straight from each app’s accessibility tree, with on-device OCR as a backup, then indexed for instant full-text search.</p>
+      </article>
+
+      <article class="card reveal">
+        <div class="card-art art-wave" aria-hidden="true">
+          <div class="wave" id="wave"></div>
+          <div class="wave-legend"><span><i class="o"></i>Mic</span><span><i class="g"></i>System audio</span></div>
+        </div>
+        <h3>Search what you heard</h3>
+        <p>Your mic and your computer’s audio are transcribed by Whisper on your own machine. Meetings and videos show up in the same search as screen text.</p>
+      </article>
+
+      <article class="card reveal">
+        <div class="card-art art-shield" aria-hidden="true">
+          <svg viewBox="0 0 64 64" width="64" height="64"><path d="M32 6 10 14v16c0 14 9.5 24.5 22 28 12.5-3.5 22-14 22-28V14z" fill="#ede9fe" stroke="#6d4aff" stroke-width="2.5"/><path d="m22 32 7 7 13-14" fill="none" stroke="#6d4aff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <h3>Private by default</h3>
+        <p>Password fields are never read. Password managers are skipped. The lock screen and screen saver are never recorded.</p>
+      </article>
+
+      <article class="card reveal">
+        <div class="card-art art-keep" aria-hidden="true">
+          <div class="seg"><span>1 Day</span><span>1 Week</span><span class="on">1 Month</span><span>1 Year</span><span>Forever</span></div>
+        </div>
+        <h3>You decide what stays</h3>
+        <p>Keep recordings for a day, a year, or until you delete them. Wipe the last 15 minutes, today, or everything in one click.</p>
+      </article>
+
+      <article class="card card-wide reveal">
+        <div class="card-art art-files" aria-hidden="true">
+          <code>~/.openscreen/<br>&nbsp;&nbsp;db.sqlite<br>&nbsp;&nbsp;data/2026-10-18/*.jpg<br>&nbsp;&nbsp;data/audio/*.wav</code>
+        </div>
+        <div>
+          <h3>Plain files you own</h3>
+          <p>Your history is SQLite and JPEGs in one folder. Back it up, move it, or open it with any tool you like.</p>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- Open source + free -->
+  <section class="wrap section" id="open">
+    <div class="open">
+      <div class="open-copy">
+        <p class="eyebrow eyebrow-light reveal">Free and open source</p>
+        <h2 class="h2 reveal">Your memory shouldn’t come with a subscription, or an off switch.</h2>
+        <p class="reveal">Screen memory apps have been sold, shut down, and switched off before, taking people’s history with them. OpenRewind is built so that can’t happen. The code is public under the MIT license, the data lives in plain files on your disk, and there’s nothing to pay for.</p>
+        <div class="hero-cta reveal">
+          <a class="btn btn-light" href="https://github.com/frickgav/openscreen">View the source on GitHub</a>
+          <a class="btn btn-outline-light" href="#download">Download free</a>
+        </div>
+      </div>
+      <div class="price reveal">
+        <div class="price-tag"><span class="cur">$</span>0</div>
+        <p class="price-sub">Every feature. Every platform. Forever.</p>
+        <ul class="checks">
+          <li>No account or sign-up</li>
+          <li>No subscription or paid tier</li>
+          <li>No cloud, no tracking, no ads</li>
+          <li>MIT license: use, fork, change, share</li>
+          <li>Built in the open, with every line on GitHub</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section class="wrap section" id="how">
+    <p class="eyebrow reveal">How it works</p>
+    <h2 class="h2 reveal">Three quiet steps,<br>all on your machine.</h2>
+    <div class="steps">
+      <div class="step reveal">
+        <span class="step-n">01</span>
+        <h3>Capture</h3>
+        <p>Every 2 seconds OpenRewind takes a snapshot, and throws it away if nothing changed. Mic and system audio are saved in 30-second chunks, and silence is dropped.</p>
+      </div>
+      <div class="step reveal">
+        <span class="step-n">02</span>
+        <h3>Understand</h3>
+        <p>Text is pulled from the focused window, falling back to on-device OCR. Audio is transcribed by local Whisper. No server ever sees it.</p>
+      </div>
+      <div class="step reveal">
+        <span class="step-n">03</span>
+        <h3>Remember</h3>
+        <p>Everything lands in a full-text index on your disk. Search it from the timeline or the menu bar.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Keyboard -->
+  <section class="wrap section">
+    <div class="kbd-card reveal">
+      <div>
+        <p class="eyebrow">The timeline</p>
+        <h2 class="h3">Made for your keyboard.</h2>
+        <p class="sub">Fly through your day without touching the mouse.</p>
+      </div>
+      <dl class="shortcuts">
+        <div><dt><kbd>⌥</kbd><kbd>⌘</kbd><kbd>T</kbd></dt><dd>Open the timeline from anywhere</dd></div>
+        <div><dt><kbd>←</kbd><kbd>→</kbd></dt><dd>Step through moments</dd></div>
+        <div><dt><kbd>⇧</kbd><kbd>←</kbd></dt><dd>Jump a minute</dd></div>
+        <div><dt><kbd>↑</kbd><kbd>↓</kbd></dt><dd>Jump ten minutes</dd></div>
+        <div><dt><kbd>space</kbd></dt><dd>Play the audio from that moment</dd></div>
+        <div><dt><kbd>+</kbd><kbd>−</kbd></dt><dd>Zoom the timeline</dd></div>
+        <div><dt><kbd>N</kbd></dt><dd>Jump back to now</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <!-- Download -->
+  <section class="wrap section" id="download">
+    <p class="eyebrow reveal">Download</p>
+    <h2 class="h2 reveal">Free for everyone.<br>Pick your computer.</h2>
+    <div class="dl-grid">
+      <div class="dl reveal" data-os="mac">
+        <div class="dl-icon"><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path fill="currentColor" d="M16.37 1.43c0 1.14-.42 2.2-1.12 2.97-.84.93-1.98 1.47-3.06 1.38-.13-1.1.42-2.25 1.1-2.98.77-.84 2.06-1.45 3.08-1.37zM20.5 17.1c-.55 1.27-.82 1.84-1.53 2.96-.99 1.56-2.39 3.5-4.12 3.51-1.54.02-1.93-1-4.02-.99-2.09.01-2.52 1.01-4.06.99-1.73-.02-3.05-1.77-4.04-3.33C-.04 15.89-.33 10.8 1.42 8.1c1.24-1.92 3.2-3.04 5.04-3.04 1.87 0 3.05 1.03 4.6 1.03 1.5 0 2.42-1.03 4.58-1.03 1.64 0 3.38.89 4.62 2.43-4.06 2.22-3.4 8.02.24 9.61z"/></svg></div>
+        <h3>macOS</h3>
+        <p>macOS 14 Sonoma or later. Apple silicon and Intel. Lives in your menu bar.</p>
+        <a class="btn btn-dark" href="https://github.com/frickgav/openscreen/releases/latest/download/OpenRewind-mac.dmg">Download .dmg</a>
+      </div>
+      <div class="dl reveal" data-os="win">
+        <div class="dl-icon"><svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="currentColor" d="M0 3.45 9.75 2.1v9.4H0zM10.95 1.93 24 0v11.5H10.95zM0 12.6h9.75v9.4L0 20.65zM10.95 12.6H24V24l-13.05-1.85z"/></svg></div>
+        <h3>Windows</h3>
+        <p>Windows 10 and 11. Lives in your system tray. Same timeline, same search.</p>
+        <a class="btn btn-dark" href="https://github.com/frickgav/openscreen/releases/latest/download/OpenRewind-windows-x64.zip">Download for Windows</a>
+        <a class="alt-link" href="https://github.com/frickgav/openscreen/releases/latest/download/OpenRewind-windows-arm64.zip">Windows on ARM</a>
+      </div>
+      <div class="dl dl-src reveal">
+        <div class="dl-icon"><svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="m8 6-6 6 6 6M16 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <h3>Build from source</h3>
+        <p>Clone the repo and build it yourself in a minute.</p>
+        <pre><code>swift build -c release</code></pre>
+        <a class="btn btn-ghost" href="https://github.com/frickgav/openscreen">Open on GitHub</a>
+      </div>
+    </div>
+    <p class="fine center reveal">Downloads are hosted on <a href="https://github.com/frickgav/openscreen/releases/latest">GitHub Releases</a>. Every build is free and built automatically from the public source code.</p>
+  </section>
+
+  <!-- FAQ -->
+  <section class="wrap section narrow" id="faq">
+    <p class="eyebrow reveal">FAQ</p>
+    <h2 class="h2 reveal">Questions, answered.</h2>
+    <div class="faq">
+      <details class="reveal" open>
+        <summary>Is OpenRewind really free?</summary>
+        <p>Yes. There’s no trial, no paid plan, and no account. It’s open source under the MIT license, so you can use it, share it, and change it however you like.</p>
+      </details>
+      <details class="reveal">
+        <summary>Does any of my data leave my computer?</summary>
+        <p>No. Screenshots, audio, transcripts, and the search index all stay in one folder on your disk. Speech is turned into text on your own computer, and the built-in search page can only be opened from your own computer.</p>
+      </details>
+      <details class="reveal">
+        <summary>How much disk space does it use?</summary>
+        <p>Frames that didn’t change are skipped and silent audio is dropped, which keeps it small. You can also have older recordings deleted automatically after a day, week, month, or year.</p>
+      </details>
+      <details class="reveal">
+        <summary>What won’t it record?</summary>
+        <p>Password fields, password managers, the lock screen, and the screen saver. You can add more apps to the exclude list, and pause screen or audio recording from the menu at any time.</p>
+      </details>
+      <details class="reveal">
+        <summary>Is this the old Rewind app?</summary>
+        <p>No. OpenRewind is new, independent code inspired by the idea of rewinding your screen. It isn’t made by or connected to Rewind AI, Limitless, or Meta.</p>
+      </details>
+      <details class="reveal">
+        <summary>Can I contribute?</summary>
+        <p>Please do. Issues, ideas, and pull requests are all welcome on GitHub.</p>
+      </details>
+    </div>
+  </section>
+
+  <!-- Closing CTA -->
+  <section class="wrap section">
+    <div class="closer reveal">
+      <h2 class="h2">Never lose a thought again.</h2>
+      <p class="sub">Free, open source, and private. Start remembering in under a minute.</p>
+      <div class="hero-cta center">
+        <a class="btn btn-dark" href="#download">Download free</a>
+        <a class="btn btn-ghost" href="https://github.com/frickgav/openscreen">Star on GitHub</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap foot-inner">
+    <div class="foot-brand">
+      <a class="brand" href="#top"><img src="assets/mark.svg" alt="" width="22" height="22"><span>OpenRewind</span></a>
+      <p>Rewind your computer. Free and open source.</p>
+    </div>
+    <div class="foot-cols">
+      <div><h4>Product</h4><a href="#features">Features</a><a href="#how">How it works</a><a href="#download">Download</a></div>
+      <div><h4>Open source</h4><a href="https://github.com/frickgav/openscreen">GitHub</a><a href="https://github.com/frickgav/openscreen/releases">Releases</a><a href="https://github.com/frickgav/openscreen/blob/main/LICENSE">MIT License</a></div>
+      <div><h4>Help</h4><a href="#faq">FAQ</a><a href="https://github.com/frickgav/openscreen/issues">Report an issue</a></div>
+    </div>
+  </div>
+  <div class="wrap foot-legal">
+    <span>© <span id="yr">2026</span> OpenRewind contributors. MIT licensed.</span>
+    <span>Not affiliated with Rewind AI, Limitless, or Meta.</span>
+  </div>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>
