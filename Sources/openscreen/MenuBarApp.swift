@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Carbon.HIToolbox
 import ServiceManagement
 
@@ -15,6 +16,14 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Last measured size of the data folder; measured in the background when the menu opens.
     private var dataSize: Int64?
     private var measuring = false
+    private let pausedUntilKey = "pausedUntil"
+    private var resumeTimer: Timer?
+    /// When recording comes back on by itself. `.distantFuture` means paused until the user resumes.
+    private var pausedUntil: Date? {
+        get { (defaults.object(forKey: pausedUntilKey) as? Date).flatMap { $0 > Date() ? $0 : nil } }
+        set { defaults.set(newValue, forKey: pausedUntilKey) }
+    }
+    private var isPaused: Bool { pausedUntil != nil }
 
     init(engine: Engine) {
         self.engine = engine
@@ -31,13 +40,12 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         do { try engine.startServer() } catch { log("cannot start server: \(error)") }
         engine.startTranscriber()
-        engine.setScreen(defaults.bool(forKey: screenKey))
-        engine.setAudio(defaults.bool(forKey: audioKey))
+        if let until = pausedUntil { schedulePause(until) } else { applyRecordingPrefs() }
         retention = RetentionJob(db: engine.db, screen: keep(keepScreenKey), audio: keep(keepAudioKey))
         retention.start()
 
-        // ⌥⌘T opens the timeline from anywhere.
-        hotKey = HotKey(keyCode: kVK_ANSI_T, modifiers: optionKey | cmdKey) { [weak self] in self?.overlay.toggle() }
+        // ⌥⌘T (or the shortcut picked in Settings) opens the timeline from anywhere.
+        registerHotKey(Shortcut.load(defaults))
         updateIcon()
     }
 
@@ -49,12 +57,24 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(status)
         menu.addItem(.separator())
 
-        menu.addItem(toggleItem("Record Screen", on: engine.screenOn, action: #selector(toggleScreen), symbol: "display"))
+        if let until = pausedUntil {
+            let resume = action("Resume Recording (\(pauseText(until)))", #selector(resumeRecording))
+            resume.image = NSImage(systemSymbolName: "play.circle", accessibilityDescription: nil)
+            menu.addItem(resume)
+        } else {
+            menu.addItem(pauseMenu())
+        }
+        menu.addItem(.separator())
+
+        // While paused, the switches show and change what comes back on after the pause.
+        let screenWanted = isPaused ? defaults.bool(forKey: screenKey) : engine.screenOn
+        let audioWanted = isPaused ? defaults.bool(forKey: audioKey) : engine.audioOn
+        menu.addItem(toggleItem("Record Screen", on: screenWanted, action: #selector(toggleScreen), symbol: "display"))
         if (engine.screenOn || engine.audioOn) && !Capture.hasScreenPermission {
             let fix = action("  ⚠︎ Screen permission needed — Open Settings…", #selector(openScreenSettings))
             menu.addItem(fix)
         }
-        menu.addItem(toggleItem("Record Audio", on: engine.audioOn, action: #selector(toggleAudio), symbol: "waveform"))
+        menu.addItem(toggleItem("Record Audio", on: audioWanted, action: #selector(toggleAudio), symbol: "waveform"))
         if engine.audioOn, engine.transcriber == nil {
             let warn = NSMenuItem(title: "  Transcription off: install whisper-cpp", action: nil, keyEquivalent: "")
             warn.isEnabled = false
@@ -62,8 +82,11 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(.separator())
 
-        let tl = NSMenuItem(title: "Open Timeline", action: #selector(openTimeline), keyEquivalent: "t")
-        tl.keyEquivalentModifierMask = [.option, .command]
+        let sc = Shortcut.load(defaults)
+        let single = sc.key.count == 1 ? sc.key.lowercased() : ""
+        let tl = NSMenuItem(title: single.isEmpty ? "Open Timeline  (\(sc.label))" : "Open Timeline",
+                            action: #selector(openTimeline), keyEquivalent: single)
+        tl.keyEquivalentModifierMask = sc.menuModifiers
         tl.target = self
         menu.addItem(tl)
         menu.addItem(action("Search…", #selector(openSearch)))
@@ -76,11 +99,72 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         measureStorage(menu)
         menu.addItem(.separator())
 
-        let settings = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
+        let missing = Permission.allCases.filter { !$0.granted }.count
+        let settings = NSMenuItem(title: missing > 0 ? "Settings  ⚠︎" : "Settings", action: nil, keyEquivalent: "")
         settings.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
         settings.submenu = settingsMenu()
         menu.addItem(settings)
         menu.addItem(action("Quit OpenScreen", #selector(quit), key: "q"))
+    }
+
+    // MARK: pause
+
+    private func pauseMenu() -> NSMenuItem {
+        let item = NSMenuItem(title: "Pause Recording", action: nil, keyEquivalent: "")
+        item.image = NSImage(systemSymbolName: "pause.circle", accessibilityDescription: nil)
+        let sub = NSMenu()
+        for (title, minutes) in [("For 30 Minutes", 30), ("For 1 Hour", 60), ("For 1 Day", 24 * 60), ("Until I Resume", 0)] {
+            let i = action(title, #selector(pauseRecording(_:)))
+            i.tag = minutes
+            sub.addItem(i)
+        }
+        item.submenu = sub
+        return item
+    }
+
+    @objc private func pauseRecording(_ sender: NSMenuItem) {
+        let until = sender.tag == 0 ? Date.distantFuture : Date().addingTimeInterval(Double(sender.tag) * 60)
+        pausedUntil = until
+        schedulePause(until)
+        log("recording paused (\(sender.title.lowercased()))")
+    }
+
+    @objc private func resumeRecording() {
+        pausedUntil = nil
+        resumeTimer?.invalidate()
+        resumeTimer = nil
+        applyRecordingPrefs()
+        log("recording resumed")
+    }
+
+    /// Stop both recorders now and turn them back on at `until`.
+    private func schedulePause(_ until: Date) {
+        engine.setScreen(false)
+        engine.setAudio(false)
+        resumeTimer?.invalidate()
+        resumeTimer = nil
+        if until != .distantFuture {
+            let t = Timer(fire: until, interval: 0, repeats: false) { [weak self] _ in self?.resumeRecording() }
+            RunLoop.main.add(t, forMode: .common)
+            resumeTimer = t
+        }
+        updateIcon()
+    }
+
+    /// Turn screen and audio on or off to match the switches.
+    private func applyRecordingPrefs() {
+        engine.setScreen(defaults.bool(forKey: screenKey))
+        engine.setAudio(defaults.bool(forKey: audioKey))
+        updateIcon()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.updateIcon() }
+    }
+
+    private func pauseText(_ until: Date) -> String {
+        if until == .distantFuture { return "paused" }
+        let f = DateFormatter()
+        f.dateStyle = Calendar.current.isDateInToday(until) ? .none : .short
+        f.timeStyle = .short
+        return "paused until \(f.string(from: until))"
     }
 
     // MARK: settings
@@ -89,6 +173,19 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func settingsMenu() -> NSMenu {
         let m = NSMenu()
+        let sc = Shortcut.load(defaults)
+        let shortcut = NSMenuItem(title: "Timeline Shortcut: \(sc.label)", action: nil, keyEquivalent: "")
+        shortcut.image = NSImage(systemSymbolName: "keyboard", accessibilityDescription: nil)
+        let sm = NSMenu()
+        sm.addItem(action("Change Shortcut…", #selector(changeShortcut)))
+        let reset = action("Reset to \(Shortcut.standard.label)", #selector(resetShortcut))
+        reset.isEnabled = sc != .standard
+        sm.addItem(reset)
+        shortcut.submenu = sm
+        m.addItem(shortcut)
+        m.addItem(resolutionMenu())
+        m.addItem(lookMenu())
+        m.addItem(.separator())
         m.addItem(keepMenu("Keep Screen Recordings For", key: keepScreenKey))
         m.addItem(keepMenu("Keep Audio Recordings For", key: keepAudioKey))
         m.addItem(.separator())
@@ -106,10 +203,150 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         m.addItem(del)
         m.addItem(.separator())
 
+        m.addItem(permissionsMenu())
+        m.addItem(.separator())
+
         let login = action("Launch at Login", #selector(toggleLogin))
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         m.addItem(login)
         return m
+    }
+
+    // MARK: shortcut
+
+    @discardableResult
+    private func registerHotKey(_ sc: Shortcut) -> Bool {
+        hotKey = nil  // unregister the old one first
+        hotKey = HotKey(keyCode: sc.keyCode, modifiers: sc.modifiers) { [weak self] in self?.overlay.toggle() }
+        return hotKey?.registered == true
+    }
+
+    /// Small window that waits for the next key combination and saves it.
+    @objc private func changeShortcut() {
+        let old = Shortcut.load(defaults)
+        hotKey = nil  // so pressing the old shortcut now does not open the timeline
+        NSApp.activate(ignoringOtherApps: true)
+        let a = NSAlert()
+        a.messageText = "Press the new shortcut"
+        a.informativeText = "Use ⌘, ⌥ or ⌃ with a key, for example ⌥⌘T. F-keys work alone.\nNow: \(old.label)"
+        a.addButton(withTitle: "Cancel")
+        var picked: Shortcut?
+        let monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+            if e.keyCode == UInt16(kVK_Escape) { NSApp.abortModal(); return nil }
+            guard let sc = Shortcut(event: e) else { NSSound.beep(); return nil }
+            picked = sc
+            NSApp.abortModal()
+            return nil
+        }
+        a.runModal()
+        if let monitor { NSEvent.removeMonitor(monitor) }
+
+        guard let sc = picked, sc != old else { registerHotKey(old); return }
+        if registerHotKey(sc) {
+            sc.save(defaults)
+            log("timeline shortcut set to \(sc.label)")
+        } else {
+            registerHotKey(old)
+            let err = NSAlert()
+            err.messageText = "\(sc.label) is already in use"
+            err.informativeText = "Another app or macOS uses this shortcut. The shortcut stays \(old.label)."
+            err.runModal()
+        }
+    }
+
+    @objc private func resetShortcut() {
+        Shortcut.standard.save(defaults)
+        if !registerHotKey(.standard) { log("cannot register \(Shortcut.standard.label); another app may use it") }
+    }
+
+    // MARK: resolution
+
+    private func resolutionMenu() -> NSMenuItem {
+        let current = Recorder.snapshotScale(default: engine.config.snapshotScale)
+        let item = NSMenuItem(title: "Screenshot Resolution", action: nil, keyEquivalent: "")
+        item.image = NSImage(systemSymbolName: "photo", accessibilityDescription: nil)
+        let sub = NSMenu()
+        // Size of the main display in real pixels, to show what each choice gives.
+        let screen = NSScreen.main
+        let px = screen.map { ($0.frame.width * $0.backingScaleFactor, $0.frame.height * $0.backingScaleFactor) }
+        for (title, scale) in [("Full", 1.0), ("High", 0.75), ("Medium", 0.5), ("Low", 0.33)] {
+            var t = "\(title) (\(Int(scale * 100))%)"
+            if let (w, h) = px { t += "  —  \(Int(w * scale)) × \(Int(h * scale))" }
+            let i = action(t, #selector(setResolution(_:)))
+            i.representedObject = scale
+            i.state = abs(Double(current) - scale) < 0.01 ? .on : .off
+            sub.addItem(i)
+        }
+        sub.addItem(.separator())
+        let note = NSMenuItem(title: "Higher looks sharper but uses more disk space", action: nil, keyEquivalent: "")
+        note.isEnabled = false
+        sub.addItem(note)
+        item.submenu = sub
+        return item
+    }
+
+    @objc private func setResolution(_ sender: NSMenuItem) {
+        guard let scale = sender.representedObject as? Double else { return }
+        defaults.set(scale, forKey: Recorder.scaleKey)
+        log("screenshot resolution set to \(Int(scale * 100))%")
+    }
+
+    // MARK: look
+
+    private func lookMenu() -> NSMenuItem {
+        let current = OverlayLook.current
+        let item = NSMenuItem(title: "Timeline Look", action: nil, keyEquivalent: "")
+        item.image = NSImage(systemSymbolName: "circle.lefthalf.filled", accessibilityDescription: nil)
+        let sub = NSMenu()
+        for look in OverlayLook.allCases {
+            let i = action(look.title, #selector(setLook(_:)))
+            i.representedObject = look.rawValue
+            i.state = look == current ? .on : .off
+            sub.addItem(i)
+        }
+        item.submenu = sub
+        return item
+    }
+
+    @objc private func setLook(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String else { return }
+        defaults.set(raw, forKey: OverlayLook.key)
+        log("timeline look set to \(raw)")
+    }
+
+    // MARK: permissions
+
+    /// One line per macOS permission with its state. Clicking a line opens its page in System Settings.
+    private func permissionsMenu() -> NSMenuItem {
+        let missing = Permission.allCases.filter { !$0.granted }.count
+        let item = NSMenuItem(title: missing > 0 ? "Permissions  ⚠︎ \(missing) needed" : "Permissions  ✓ All on",
+                              action: nil, keyEquivalent: "")
+        item.image = NSImage(systemSymbolName: "lock.shield", accessibilityDescription: nil)
+        let sub = NSMenu()
+        for p in Permission.allCases {
+            let i = action("\(p.title) — \(p.granted ? "On" : "Off, click to turn on")", #selector(openPermission(_:)))
+            i.representedObject = p.rawValue
+            i.image = NSImage(systemSymbolName: p.granted ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
+                              accessibilityDescription: p.granted ? "on" : "off")
+            sub.addItem(i)
+            let why = NSMenuItem(title: "    " + p.why, action: nil, keyEquivalent: "")
+            why.isEnabled = false
+            sub.addItem(why)
+        }
+        sub.addItem(.separator())
+        sub.addItem(action("Open Privacy & Security Settings…", #selector(openPrivacySettings)))
+        item.submenu = sub
+        return item
+    }
+
+    @objc private func openPermission(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let p = Permission(rawValue: raw) else { return }
+        p.request()
+        NSWorkspace.shared.open(p.settingsURL)
+    }
+
+    @objc private func openPrivacySettings() {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy")!)
     }
 
     private func keepMenu(_ title: String, key: String) -> NSMenuItem {
@@ -224,6 +461,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func statusLine() -> String {
         let s = engine.db.stats(), a = engine.db.audioStats()
         var parts: [String] = []
+        if let until = pausedUntil { let t = pauseText(until); return t.prefix(1).uppercased() + t.dropFirst() + "  —  \(s.count) frames, \(a.segments) audio" }
         parts.append(engine.screenOn ? "Screen on" : "Screen off")
         parts.append(engine.audioOn ? "Audio on" : "Audio off")
         return parts.joined(separator: " · ") + "  —  \(s.count) frames, \(a.segments) audio"
@@ -258,16 +496,16 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func toggleScreen() {
-        let on = !engine.screenOn
-        engine.setScreen(on)
+        let on = !(isPaused ? defaults.bool(forKey: screenKey) : engine.screenOn)
         defaults.set(on, forKey: screenKey)
+        if !isPaused { engine.setScreen(on) }
         updateIcon()
     }
 
     @objc private func toggleAudio() {
-        let on = !engine.audioOn
-        engine.setAudio(on)
+        let on = !(isPaused ? defaults.bool(forKey: audioKey) : engine.audioOn)
         defaults.set(on, forKey: audioKey)
+        if !isPaused { engine.setAudio(on) }
         // Mic start can finish a moment later (permission prompt), so refresh again shortly.
         updateIcon()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.updateIcon() }
@@ -296,4 +534,52 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
+}
+
+/// The macOS privacy permissions OpenScreen uses.
+enum Permission: String, CaseIterable {
+    case screen, microphone, accessibility
+
+    var title: String {
+        switch self {
+        case .screen: return "Screen Recording"
+        case .microphone: return "Microphone"
+        case .accessibility: return "Accessibility"
+        }
+    }
+
+    var why: String {
+        switch self {
+        case .screen: return "Takes screenshots and records system audio"
+        case .microphone: return "Records your voice"
+        case .accessibility: return "Reads text and browser tabs from windows"
+        }
+    }
+
+    var granted: Bool {
+        switch self {
+        case .screen: return Capture.hasScreenPermission
+        case .microphone: return AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        case .accessibility: return Accessibility.isTrusted
+        }
+    }
+
+    /// Ask macOS to show its prompt, so OpenScreen is in the list in System Settings.
+    func request() {
+        switch self {
+        case .screen: Capture.requestScreenPermission()
+        case .microphone: AVCaptureDevice.requestAccess(for: .audio) { _ in }
+        case .accessibility: Accessibility.promptForTrust()
+        }
+    }
+
+    var settingsURL: URL {
+        let pane: String
+        switch self {
+        case .screen: pane = "Privacy_ScreenCapture"
+        case .microphone: pane = "Privacy_Microphone"
+        case .accessibility: pane = "Privacy_Accessibility"
+        }
+        return URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!
+    }
 }

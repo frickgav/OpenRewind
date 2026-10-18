@@ -7,6 +7,7 @@ struct TimelineFrame {
     var appName: String
     var windowName: String
     var path: String
+    var url: String
 }
 
 struct TimelineAudio {
@@ -30,7 +31,7 @@ extension Database {
     func timelineFrames(since: Date) -> [TimelineFrame] {
         lock.lock(); defer { lock.unlock() }
         var st: OpaquePointer?
-        let sql = "SELECT id, timestamp, app_name, window_name, snapshot_path FROM frames WHERE timestamp >= ? ORDER BY timestamp ASC"
+        let sql = "SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url FROM frames WHERE timestamp >= ? ORDER BY timestamp ASC"
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(st) }
         bind(st, 1, Time.iso.string(from: since))
@@ -38,7 +39,7 @@ extension Database {
         while sqlite3_step(st) == SQLITE_ROW {
             guard let t = Time.iso.date(from: col(st, 1)) else { continue }
             out.append(TimelineFrame(id: sqlite3_column_int64(st, 0), time: t, appName: col(st, 2),
-                                     windowName: col(st, 3), path: col(st, 4)))
+                                     windowName: col(st, 3), path: col(st, 4), url: col(st, 5)))
         }
         return out
     }
