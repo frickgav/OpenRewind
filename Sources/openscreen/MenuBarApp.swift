@@ -10,10 +10,13 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hotKey: HotKey?
     private let defaults = UserDefaults.standard
     private let screenKey = "recordScreen", audioKey = "recordAudio"
+    private let keepScreenKey = "keepScreen", keepAudioKey = "keepAudio"
+    private var retention: RetentionJob!
 
     init(engine: Engine) {
         self.engine = engine
-        defaults.register(defaults: [screenKey: true, audioKey: true])
+        defaults.register(defaults: [screenKey: true, audioKey: true,
+                                     keepScreenKey: KeepFor.forever.rawValue, keepAudioKey: KeepFor.forever.rawValue])
     }
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -27,6 +30,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         engine.startTranscriber()
         engine.setScreen(defaults.bool(forKey: screenKey))
         engine.setAudio(defaults.bool(forKey: audioKey))
+        retention = RetentionJob(db: engine.db, screen: keep(keepScreenKey), audio: keep(keepAudioKey))
+        retention.start()
 
         // ⌥⌘T opens the timeline from anywhere.
         hotKey = HotKey(keyCode: kVK_ANSI_T, modifiers: optionKey | cmdKey) { [weak self] in self?.overlay.toggle() }
@@ -62,10 +67,113 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(action("Show Data Folder", #selector(openData)))
         menu.addItem(.separator())
 
+        let settings = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
+        settings.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
+        settings.submenu = settingsMenu()
+        menu.addItem(settings)
+        menu.addItem(action("Quit OpenScreen", #selector(quit), key: "q"))
+    }
+
+    // MARK: settings
+
+    private func keep(_ key: String) -> KeepFor { KeepFor(rawValue: defaults.string(forKey: key) ?? "") ?? .forever }
+
+    private func settingsMenu() -> NSMenu {
+        let m = NSMenu()
+        m.addItem(keepMenu("Keep Screen Recordings For", key: keepScreenKey))
+        m.addItem(keepMenu("Keep Audio Recordings For", key: keepAudioKey))
+        m.addItem(.separator())
+
+        let del = NSMenuItem(title: "Delete Recordings", action: nil, keyEquivalent: "")
+        let dm = NSMenu()
+        for (title, tag) in [("Last 15 Minutes", 1), ("Last Hour", 2), ("Today", 3)] {
+            let i = action(title, #selector(deleteRecent(_:))); i.tag = tag; dm.addItem(i)
+        }
+        dm.addItem(.separator())
+        for (title, tag) in [("All Screen Recordings…", 1), ("All Audio Recordings…", 2), ("Everything…", 3)] {
+            let i = action(title, #selector(deleteAll(_:))); i.tag = tag; dm.addItem(i)
+        }
+        del.submenu = dm
+        m.addItem(del)
+        m.addItem(.separator())
+
         let login = action("Launch at Login", #selector(toggleLogin))
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        menu.addItem(login)
-        menu.addItem(action("Quit OpenScreen", #selector(quit), key: "q"))
+        m.addItem(login)
+        return m
+    }
+
+    private func keepMenu(_ title: String, key: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        let current = keep(key)
+        for k in KeepFor.allCases {
+            let i = action(k.title, #selector(setKeep(_:)))
+            i.representedObject = [key, k.rawValue]
+            i.state = k == current ? .on : .off
+            sub.addItem(i)
+        }
+        item.submenu = sub
+        return item
+    }
+
+    @objc private func setKeep(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [String], pair.count == 2,
+              let k = KeepFor(rawValue: pair[1]) else { return }
+        let key = pair[0]
+        let what = key == keepScreenKey ? "screenshots" : "audio clips"
+        if let secs = k.seconds, (keep(key).seconds ?? .infinity) > secs {
+            guard confirm("Keep \(what) for \(k.title.lowercased())?",
+                          "OpenScreen will delete \(what) older than \(k.title.lowercased()) now, and keep doing it every hour. This cannot be undone.",
+                          button: "Delete Older \(what.capitalized)") else { return }
+        }
+        defaults.set(k.rawValue, forKey: key)
+        if key == keepScreenKey { retention.screenKeep = k } else { retention.audioKeep = k }
+        retention.runNow()
+    }
+
+    @objc private func deleteRecent(_ sender: NSMenuItem) {
+        let now = Date()
+        let from: Date
+        switch sender.tag {
+        case 1: from = now.addingTimeInterval(-15 * 60)
+        case 2: from = now.addingTimeInterval(-3600)
+        default: from = Calendar.current.startOfDay(for: now)
+        }
+        guard confirm("Delete \(sender.title.lowercased()) of recordings?",
+                      "Screenshots and audio from \(sender.title.lowercased()) will be deleted. This cannot be undone.",
+                      button: "Delete") else { return }
+        let db = engine.db
+        DispatchQueue.global(qos: .userInitiated).async {
+            let f = db.deleteFrames(from: from, to: now), a = db.deleteAudio(from: from, to: now)
+            log("deleted \(f) screenshots, \(a) audio clips (\(sender.title))")
+        }
+    }
+
+    @objc private func deleteAll(_ sender: NSMenuItem) {
+        let screen = sender.tag != 2, audio = sender.tag != 1
+        let what = screen && audio ? "all screenshots and audio" : (screen ? "all screenshots" : "all audio recordings")
+        guard confirm("Delete \(what)?", "This removes \(what) from this Mac. This cannot be undone.",
+                      button: "Delete Everything") else { return }
+        let db = engine.db, now = Date()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let f = screen ? db.deleteFrames(from: nil, to: now) : 0
+            let a = audio ? db.deleteAudio(from: nil, to: now) : 0
+            db.compact()
+            log("deleted \(f) screenshots, \(a) audio clips (all)")
+        }
+    }
+
+    private func confirm(_ title: String, _ text: String, button: String) -> Bool {
+        NSApp.activate(ignoringOtherApps: true)
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = text
+        a.alertStyle = .warning
+        a.addButton(withTitle: button)
+        a.addButton(withTitle: "Cancel")
+        a.buttons.first?.hasDestructiveAction = true
+        return a.runModal() == .alertFirstButtonReturn
     }
 
     private func statusLine() -> String {

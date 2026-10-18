@@ -54,7 +54,8 @@ final class Recorder {
         let env = ProcessInfo.processInfo.environment["OPENSCREEN_EXCLUDE"]
         let list = env?.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
             ?? ["1password", "keychain access", "bitwarden", "passwords"]
-        excluded = Set(list)
+        // Never record the lock screen or screen saver, whatever the user list says.
+        excluded = Set(list + ["loginwindow", "screensaverengine"])
     }
 
     func run() async {

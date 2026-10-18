@@ -35,7 +35,14 @@ Copy the app to `/Applications` and open it. It lives in the menu bar:
   Scroll or use ← → to move through time, ⇧ for 1 minute, ↑ ↓ for 10 minutes,
   drag or click the bar, **space** plays the audio at that moment (the picture
   follows along), **+ / −** zoom, **N** jumps to now, **Esc** closes.
-- **Search…** opens the web search page. **Launch at Login** starts it with your Mac.
+- **Search…** opens the web search page.
+- **Settings → Keep Screen / Audio Recordings For**: 1 Day, 1 Week, 1 Month,
+  1 Year, or Until I Delete Them (default). Older recordings are deleted at
+  launch and every hour.
+- **Settings → Delete Recordings**: last 15 minutes, last hour, today, all
+  screen, all audio, or everything (asks first).
+- **Settings → Launch at Login** starts it with your Mac.
+- The lock screen and screen saver are never recorded.
 - Log: `~/.openscreen/openscreen.log`.
 
 ### Put it online for others
@@ -113,7 +120,13 @@ Response: `{"data":[{"type":"OCR","content":{"frame_id","text","timestamp","app_
 
 `~/.openscreen/db.sqlite`, `~/.openscreen/data/<date>/*.jpg`, and
 `~/.openscreen/data/audio/<date>/*.wav`.
-Delete the folder to wipe everything.
+Delete the folder to wipe everything, or from the terminal:
+
+```bash
+.build/release/openscreen delete older:week
+```
+
+(`15m`, `1h`, `today`, `all`, `older:day|week|month|year`; add `--screen-only` or `--audio-only`.)
 
 ## Not yet (screenpipe has these)
 

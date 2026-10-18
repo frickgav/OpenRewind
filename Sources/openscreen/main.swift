@@ -13,6 +13,8 @@ Usage:
                              OCR an image file and store it (for testing)
   openscreen ingest-audio <file>
                              Transcribe an audio file and store it (for testing)
+  openscreen delete <15m|1h|today|all|older:week>
+                             Delete recordings in that range
   openscreen doctor          Check and request permissions
 
 Options:
@@ -130,6 +132,27 @@ case "ingest-audio":
         tx.transcribe(chunk)
         print("stored audio chunk \(id) → \(db.chunk(id: id)?.status ?? "?")")
     } catch { log("ingest-audio failed: \(error)"); exit(1) }
+
+case "delete":
+    // openscreen delete <15m|1h|today|all> [--screen-only|--audio-only]
+    guard let what = args.drop(while: { $0 != "delete" }).dropFirst().first(where: { !$0.hasPrefix("-") }) else {
+        log("usage: openscreen delete <15m|1h|today|all|older:day|older:week|older:month|older:year>"); exit(2)
+    }
+    let now = Date()
+    var from: Date? = nil, to: Date? = now
+    switch what {
+    case "all": from = nil
+    case "today": from = Calendar.current.startOfDay(for: now)
+    case let w where w.hasPrefix("older:"):
+        guard let k = KeepFor(rawValue: String(w.dropFirst(6))), let secs = k.seconds else { log("bad value \(w)"); exit(2) }
+        from = nil; to = now.addingTimeInterval(-secs)
+    default:
+        guard let t = Time.parse(what + " ago").flatMap({ Time.iso.date(from: $0) }) else { log("bad value \(what)"); exit(2) }
+        from = t
+    }
+    let f = args.contains("--audio-only") ? 0 : db.deleteFrames(from: from, to: to)
+    let a = args.contains("--screen-only") ? 0 : db.deleteAudio(from: from, to: to)
+    print("deleted \(f) screenshots, \(a) audio clips")
 
 case "doctor":
     print("data dir:        \(config.home.path)")
