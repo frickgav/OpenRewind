@@ -11,6 +11,8 @@ sealed class Settings
     public bool RecordAudio { get; set; } = true;
     public string KeepScreen { get; set; } = "forever";
     public string KeepAudio { get; set; } = "forever";
+    /// The local HTTP API + browser search page. Off unless the user turns it on.
+    public bool LocalSearchServer { get; set; } = false;
 
     string path = "";
 

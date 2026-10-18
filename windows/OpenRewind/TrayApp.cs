@@ -25,7 +25,7 @@ sealed class TrayApp : ApplicationContext
         overlay = new OverlayForm(new TimelineModel(engine.Db));
         _ = overlay.Handle;  // create it on the UI thread now
 
-        try { engine.StartServer(); } catch (Exception e) { Log.Write($"cannot start server: {e.Message}"); }
+        if (settings.LocalSearchServer) StartServer();
         engine.StartTranscriber();
         engine.SetScreen(settings.RecordScreen);
         engine.SetAudio(settings.RecordAudio);
@@ -58,7 +58,8 @@ sealed class TrayApp : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
 
         menu.Items.Add(new ToolStripMenuItem("Open Timeline", null, (_, _) => overlay.ShowOverlay()) { ShortcutKeyDisplayString = "Ctrl+Alt+T" });
-        menu.Items.Add(Item("Search…", () => Open($"http://127.0.0.1:{engine.Config.Port}/")));
+        // The browser page when the local server is on, else the timeline's own search box.
+        menu.Items.Add(Item("Search…", () => { if (engine.ServerOn) Open($"http://127.0.0.1:{engine.Config.Port}/"); else overlay.ShowSearch(); }));
         menu.Items.Add(Item("Show Data Folder", () => Open(engine.Config.Home)));
         foreach (var line in StorageLines()) menu.Items.Add(new ToolStripMenuItem("   " + line) { Enabled = false });
         MeasureStorage();
@@ -77,6 +78,10 @@ sealed class TrayApp : ApplicationContext
         del.DropDownItems.Add(Item("All Audio Recordings…", () => DeleteAll(screen: false, audio: true)));
         del.DropDownItems.Add(Item("Everything…", () => DeleteAll(screen: true, audio: true)));
         s.DropDownItems.Add(del);
+        s.DropDownItems.Add(new ToolStripSeparator());
+        var server = Toggle($"Local Search Server (127.0.0.1:{engine.Config.Port})", engine.ServerOn, ToggleServer);
+        server.ToolTipText = "Search in the browser and let local scripts read your history through the API. Only this PC can connect.";
+        s.DropDownItems.Add(server);
         s.DropDownItems.Add(new ToolStripSeparator());
         s.DropDownItems.Add(Toggle("Launch at Login", Settings.LaunchAtLogin, () =>
         {
@@ -203,6 +208,19 @@ sealed class TrayApp : ApplicationContext
         var tip = $"OpenRewind — {(engine.ScreenOn ? "Screen on" : "Screen off")} · {(engine.AudioOn ? "Audio on" : "Audio off")}";
         icon.Text = tip.Length > 127 ? tip[..127] : tip;
         icon.Icon = engine.ScreenOn || engine.AudioOn ? Program.AppIcon : Program.PausedIcon;
+    }
+
+    void ToggleServer()
+    {
+        if (engine.ServerOn) engine.StopServer(); else StartServer();
+        settings.LocalSearchServer = engine.ServerOn;
+        settings.Save();
+    }
+
+    void StartServer()
+    {
+        try { engine.StartServer(); }
+        catch (Exception e) { Log.Write($"cannot start server: {e.Message}"); }
     }
 
     void ToggleScreen()

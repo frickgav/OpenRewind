@@ -11,6 +11,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let defaults = UserDefaults.standard
     private let screenKey = "recordScreen", audioKey = "recordAudio"
     private let keepScreenKey = "keepScreen", keepAudioKey = "keepAudio"
+    /// The local HTTP API + browser search page. Off unless the user turns it on in Settings.
+    private let serverKey = "localSearchServer"
     private var retention: RetentionJob!
     /// Last measured size of the data folder; measured in the background when the menu opens.
     private var dataSize: Int64?
@@ -18,7 +20,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     init(engine: Engine) {
         self.engine = engine
-        defaults.register(defaults: [screenKey: true, audioKey: true,
+        defaults.register(defaults: [screenKey: true, audioKey: true, serverKey: false,
                                      keepScreenKey: KeepFor.forever.rawValue, keepAudioKey: KeepFor.forever.rawValue])
     }
 
@@ -29,7 +31,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         item.menu = menu
 
-        do { try engine.startServer() } catch { log("cannot start server: \(error)") }
+        if defaults.bool(forKey: serverKey) { startServer() }
         engine.startTranscriber()
         engine.setScreen(defaults.bool(forKey: screenKey))
         engine.setAudio(defaults.bool(forKey: audioKey))
@@ -104,6 +106,12 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         del.submenu = dm
         m.addItem(del)
+        m.addItem(.separator())
+
+        let server = action("Local Search Server (127.0.0.1:\(engine.config.port))", #selector(toggleServer))
+        server.state = engine.serverOn ? .on : .off
+        server.toolTip = "Search in the browser and let local scripts read your history through the API. Only this Mac can connect."
+        m.addItem(server)
         m.addItem(.separator())
 
         let login = action("Launch at Login", #selector(toggleLogin))
@@ -280,8 +288,22 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openTimeline() { overlay.show() }
 
+    /// The browser page when the local server is on, else the timeline's own search box.
     @objc private func openSearch() {
-        NSWorkspace.shared.open(URL(string: "http://127.0.0.1:\(engine.config.port)/")!)
+        if engine.serverOn {
+            NSWorkspace.shared.open(URL(string: "http://127.0.0.1:\(engine.config.port)/")!)
+        } else {
+            overlay.showSearch()
+        }
+    }
+
+    @objc private func toggleServer() {
+        if engine.serverOn { engine.stopServer() } else { startServer() }
+        defaults.set(engine.serverOn, forKey: serverKey)
+    }
+
+    private func startServer() {
+        do { try engine.startServer(exitOnFailure: false) } catch { log("cannot start server: \(error)") }
     }
 
     @objc private func openData() { NSWorkspace.shared.open(engine.config.home) }

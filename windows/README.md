@@ -22,11 +22,15 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   10 minutes, drag or click the bar, **space** plays the audio at that moment (the picture
   follows along), **+ / −** zoom, **N** jumps to now, **/** or **Ctrl+F** searches,
   **?** lists every key, **Esc** closes.
-- **Search…** opens the web search page (http://127.0.0.1:3031).
+- **Search…** opens the timeline with the cursor in its search box, or the web search page
+  when the local search server is on.
 - **Settings → Keep Screen / Audio Recordings For**: 1 Day, 1 Week, 1 Month, 1 Year,
   or Until I Delete Them (default). Older recordings are deleted at launch and every hour.
 - **Settings → Delete Recordings**: last 15 minutes, last hour, today, all screen,
   all audio, or everything (asks first).
+- **Settings → Local Search Server** turns on the API and browser search page at
+  http://127.0.0.1:3031. Off by default. Only this PC can connect. The terminal commands
+  `record` and `serve` always start it.
 - **Settings → Launch at Login** starts it when you sign in.
 - The lock screen and screen saver are never recorded. Password fields are never read.
   Password managers (1Password, Bitwarden, KeePass, Dashlane, LastPass) are skipped;

@@ -87,6 +87,13 @@ sealed class OverlayForm : Form
         clock.Start();
     }
 
+    /// Open the timeline with the keyboard in the search box.
+    public void ShowSearch()
+    {
+        if (!Visible) ShowOverlay();
+        FocusSearch();
+    }
+
     public void HideOverlay()
     {
         model.StopAudio();

@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 
 /// Owns everything that records. Screen and audio can each be turned on and off on their own.
-/// The API server and the Whisper worker run for the whole life of the process.
+/// The Whisper worker runs for the whole life of the process; the API server only while it is switched on.
 final class Engine {
     let config: Config
     let db: Database
@@ -27,11 +27,21 @@ final class Engine {
         self.recorder = Recorder(config: config, db: db)
     }
 
-    func startServer() throws {
+    var serverOn: Bool { server != nil }
+
+    func startServer(exitOnFailure: Bool = true) throws {
+        guard server == nil else { return }
         let api = API(db: db, config: config)
-        let s = Server(port: config.port, router: api.handle)
+        let s = Server(port: config.port, exitOnFailure: exitOnFailure, router: api.handle)
         try s.start()
         server = s
+    }
+
+    func stopServer() {
+        guard let s = server else { return }
+        s.stop()
+        server = nil
+        log("local search server off")
     }
 
     func startTranscriber() {
