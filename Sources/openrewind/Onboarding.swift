@@ -14,12 +14,13 @@ final class OnboardingModel: ObservableObject {
     @Published var micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
     @Published var launchAtLogin = true
 
-    // Block choices.
-    @Published var passwordManagers: Bool
-    @Published var moneyApps: Bool
-    @Published var privateWindows: Bool
-    @Published var bankSites: Bool
-    @Published var picked: Set<String>
+    // Block choices, saved as soon as they change: the window can close, or the app quit
+    // (an update, macOS reopening it for Screen Recording) before setup is finished.
+    @Published var passwordManagers: Bool { didSet { saveChoices() } }
+    @Published var moneyApps: Bool { didSet { saveChoices() } }
+    @Published var privateWindows: Bool { didSet { saveChoices() } }
+    @Published var bankSites: Bool { didSet { saveChoices() } }
+    @Published var picked: Set<String> { didSet { saveChoices() } }
     var found: [FoundApp] = []
 
     /// Called once at the end; true when the user wants the guided tour in the real timeline.
@@ -71,6 +72,20 @@ final class OnboardingModel: ObservableObject {
         guard !done else { return }
         done = true
         timer?.invalidate()
+        saveChoices()
+        let store = BlocklistStore.shared
+        store.onboardingDone = true
+        UserDefaults.standard.removeObject(forKey: Self.stepKey)
+        do {
+            let enabled = SMAppService.mainApp.status == .enabled
+            if launchAtLogin && !enabled { try SMAppService.mainApp.register() }
+            if !launchAtLogin && enabled { try SMAppService.mainApp.unregister() }
+        } catch { log("launch at login failed: \(error.localizedDescription)") }
+        finished(tour)
+    }
+
+    /// Write the block choices on this page to the block list recording uses.
+    private func saveChoices() {
         let store = BlocklistStore.shared, old = store.current
         var apps: [Blocklist.App] = []
         if passwordManagers { apps += BlockCatalog.apps(.passwordManager) }
@@ -89,14 +104,6 @@ final class OnboardingModel: ObservableObject {
         var words = old.keywords.filter { w in !BlockCatalog.bankingSites.contains { $0.caseInsensitiveCompare(w) == .orderedSame } }
         if bankSites { words += BlockCatalog.bankingSites }
         store.save(Blocklist(apps: apps, keywords: words, privateWindows: privateWindows, extraNames: old.extraNames))
-        store.onboardingDone = true
-        UserDefaults.standard.removeObject(forKey: Self.stepKey)
-        do {
-            let enabled = SMAppService.mainApp.status == .enabled
-            if launchAtLogin && !enabled { try SMAppService.mainApp.register() }
-            if !launchAtLogin && enabled { try SMAppService.mainApp.unregister() }
-        } catch { log("launch at login failed: \(error.localizedDescription)") }
-        finished(tour)
     }
 }
 
