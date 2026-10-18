@@ -35,7 +35,6 @@ sealed class TrayApp : ApplicationContext
         engine.Recorder.MinorChangeGap = settings.TypingFrameGap;
         engine.Config.SnapshotScale = ScreenshotSizes.Scale(settings.ScreenshotPercent);
         resumeTimer.Tick += (_, _) => CheckPause();
-        if (PausedUntil is DateTime until) SchedulePause(until); else ApplyRecordingPrefs();
         retention = new RetentionJob(engine.Db, settings.Screen, settings.Audio);
         retention.Start();
 
@@ -50,6 +49,11 @@ sealed class TrayApp : ApplicationContext
         menu.Opening += (_, _) => BuildMenu();
         icon = new NotifyIcon { Icon = Program.AppIcon, ContextMenuStrip = menu, Visible = true };
         icon.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) overlay.Toggle(); };
+
+        // Start recording, or re-arm a pause saved last time, only once `icon` exists:
+        // both paths end in UpdateIcon(), which sets the icon's tooltip and picture.
+        if (PausedUntil is DateTime until) SchedulePause(until); else ApplyRecordingPrefs();
+
         BuildMenu();
         UpdateIcon();
     }
