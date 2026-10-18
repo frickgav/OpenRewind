@@ -97,9 +97,6 @@ Copy the app to `/Applications` and open it. It lives in the menu bar:
 - **Settings → Keep Screen / Audio Recordings For**: 1 Day, 1 Week, 1 Month,
   1 Year, or Until I Delete Them (default). Older recordings are deleted at
   launch and every hour.
-- **Settings → Screenshot Resolution**: how big saved screenshots are compared with
-  your screen: Full, 75%, Half (default) or Quarter. Higher is sharper in the timeline
-  and uses more disk space. Text search works the same at every size.
 - **Settings → Delete Recordings**: last 15 minutes, last hour, today, all
   screen, all audio, or everything (asks first).
 - **Settings → Local Search Server** turns on the API and browser search page at
