@@ -115,9 +115,13 @@ final class OverlayController {
             default: return false  // let the text field have it
             }
         }
+        if !cmd && e.characters == "?" { model.showHelp.toggle(); return true }
         if !cmd && e.charactersIgnoringModifiers == "/" { model.focusSearchToken += 1; return true }
         switch Int(e.keyCode) {
-        case kVK_Escape: if model.showResults { model.showResults = false } else { hide() }
+        case kVK_Escape:
+            if model.showHelp { model.showHelp = false }
+            else if model.showResults { model.showResults = false }
+            else { hide() }
         case kVK_LeftArrow: shift ? model.jump(to: model.playhead.addingTimeInterval(-60)) : model.step(-1)
         case kVK_RightArrow: shift ? model.jump(to: model.playhead.addingTimeInterval(60)) : model.step(1)
         case kVK_UpArrow: model.jump(to: model.playhead.addingTimeInterval(-600))

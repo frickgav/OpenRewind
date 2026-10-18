@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Combine
+import ImageIO
 
 /// State behind the timeline overlay: which moment is shown, its screenshot, and audio at that moment.
 final class TimelineModel: ObservableObject {
@@ -29,6 +30,10 @@ final class TimelineModel: ObservableObject {
     var searchWork: DispatchWorkItem?
     /// Set by the overlay: gives the keyboard back to the timeline (so space plays audio again).
     var leaveSearchBox: (() -> Void)?
+    /// True while the keyboard shortcut card is open.
+    @Published var showHelp = false
+    private var thumbCache: [Int64: NSImage] = [:]
+    private var thumbOrder: [Int64] = []
 
     private var player: AVAudioPlayer?
     private var playTimer: Timer?
@@ -39,6 +44,27 @@ final class TimelineModel: ObservableObject {
     init(db: Database) { self.db = db }
 
     var current: TimelineFrame? { frames.indices.contains(index) ? frames[index] : nil }
+
+    /// True when the newest screenshot is shown.
+    var isLive: Bool { frames.isEmpty || index == frames.count - 1 }
+
+    /// The frame shown at `date` and a small picture of it, for the hover preview on the bar.
+    /// Nil when nothing was recorded within a minute before `date`.
+    func preview(at date: Date) -> (frame: TimelineFrame, image: NSImage?)? {
+        guard !frames.isEmpty, date >= frames[0].time else { return nil }
+        let f = frames[frameIndex(at: date)]
+        guard date.timeIntervalSince(f.time) <= 60 else { return nil }
+        if let img = thumbCache[f.id] { return (f, img) }
+        let opts = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 480,
+                     kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary
+        guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: f.path) as CFURL, nil),
+              let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts) else { return (f, nil) }
+        let img = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        thumbCache[f.id] = img
+        thumbOrder.append(f.id)
+        if thumbOrder.count > 64 { thumbCache.removeValue(forKey: thumbOrder.removeFirst()) }
+        return (f, img)
+    }
 
     /// Audio chunks that cover the playhead (mic and system audio can overlap).
     var audioHere: [TimelineAudio] {
