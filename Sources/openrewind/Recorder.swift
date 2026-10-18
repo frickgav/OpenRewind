@@ -120,8 +120,8 @@ final class Recorder {
             log("could not blur blocked apps; skipping this frame"); return
         }
         // A blocked window in front: keep the app name for the timeline, but not its title or its text.
-        let bundle = NSRunningApplication(processIdentifier: win.pid)?.bundleIdentifier
-        if list.blocksWindow(bundleID: bundle, appName: win.appName, title: win.windowName) {
+        let app = NSRunningApplication(processIdentifier: win.pid)
+        if list.blocksWindow(bundleID: app?.bundleIdentifier, appName: win.appName, path: app?.bundleURL?.path, title: win.windowName) {
             _ = try ingest(image: image, window: ActiveWindow(appName: win.appName, windowName: "", pid: win.pid), pid: nil)
         } else {
             _ = try ingest(image: image, window: win, pid: win.pid)
