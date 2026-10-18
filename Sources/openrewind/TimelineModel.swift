@@ -32,6 +32,11 @@ final class TimelineModel: ObservableObject {
     var leaveSearchBox: (() -> Void)?
     /// True while the keyboard shortcut card is open.
     @Published var showHelp = false
+    /// Where the searched words are on the shown screenshot, as fractions of its size (top-left origin).
+    @Published var highlights: [CGRect] = []
+    var highlightWork: DispatchWorkItem?
+    var highlightCache: [String: [CGRect]] = [:]
+    var highlightOrder: [String] = []
     private var thumbCache: [Int64: NSImage] = [:]
     private var thumbOrder: [Int64] = []
 
@@ -127,6 +132,7 @@ final class TimelineModel: ObservableObject {
         let f = frames[index]
         playhead = f.time
         image = loadImage(f)
+        refreshHighlights()
         updateCaption()
         // Warm the cache for the next scroll step either way.
         for j in [index - 1, index + 1] where frames.indices.contains(j) { _ = loadImage(frames[j]) }
@@ -176,6 +182,7 @@ final class TimelineModel: ObservableObject {
                 if i != self.index {
                     self.index = i
                     self.image = self.loadImage(self.frames[i])
+                    self.refreshHighlights()
                 }
                 self.updateCaption()
             }

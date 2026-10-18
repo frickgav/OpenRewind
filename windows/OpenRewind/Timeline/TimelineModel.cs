@@ -30,6 +30,8 @@ sealed class TimelineModel
     public bool ShowResults;
     /// True while the keyboard shortcut card is open.
     public bool ShowHelp;
+    /// Where the searched words are on the shown screenshot, as fractions of its size.
+    public List<RectangleF> Highlights { get; private set; } = new();
 
     /// Something visible changed; the overlay repaints.
     public event Action? Changed;
@@ -43,11 +45,16 @@ sealed class TimelineModel
     WaveFileReader? reader;
     TimelineAudio? playing;
     readonly System.Windows.Forms.Timer playTimer = new() { Interval = 250 };
+    // Reading the words off a screenshot takes a moment, so wait until scrolling settles.
+    readonly System.Windows.Forms.Timer highlightTimer = new() { Interval = 150 };
+    readonly Dictionary<(long, string), List<RectangleF>> highlightCache = new();
+    readonly List<(long, string)> highlightOrder = new();
 
     public TimelineModel(Database db)
     {
         Db = db;
         playTimer.Tick += (_, _) => FollowAudio();
+        highlightTimer.Tick += (_, _) => { highlightTimer.Stop(); FindHighlights(); };
     }
 
     public TimelineFrame? Current => Index >= 0 && Index < Frames.Count ? Frames[Index] : null;
@@ -126,6 +133,7 @@ sealed class TimelineModel
         var f = Frames[Index];
         Playhead = f.Time;
         Image = LoadImage(f);
+        RefreshHighlights();
         UpdateCaption();
         // Warm the cache for the next scroll step either way.
         foreach (var j in new[] { Index - 1, Index + 1 }) if (j >= 0 && j < Frames.Count) LoadImage(Frames[j]);
@@ -188,6 +196,7 @@ sealed class TimelineModel
     public void RunSearch()
     {
         var q = Query.Trim();
+        RefreshHighlights();
         if (q.Length == 0) { Hits = new(); ShowResults = false; Notify(); return; }
         Hits = SearchHits.Find(Db, q);
         SelectedHit = 0;
@@ -225,7 +234,41 @@ sealed class TimelineModel
         Open(Hits[SelectedHit]);
     }
 
-    public void ClearSearch() { Query = ""; Hits = new(); ShowResults = false; Notify(); }
+    public void ClearSearch() { Query = ""; Hits = new(); ShowResults = false; RefreshHighlights(); Notify(); }
+
+    /// Mark the searched words on the shown screenshot. Uses what is cached, otherwise reads it shortly.
+    void RefreshHighlights()
+    {
+        highlightTimer.Stop();
+        var terms = SearchHits.Terms(Query);
+        if (terms.Count == 0 || Current is not TimelineFrame f || Image == null || !Ocr.Available) { Highlights = new(); return; }
+        if (highlightCache.TryGetValue((f.Id, string.Join(" ", terms)), out var cached)) { Highlights = cached; return; }
+        Highlights = new();
+        highlightTimer.Start();
+    }
+
+    void FindHighlights()
+    {
+        var terms = SearchHits.Terms(Query);
+        if (terms.Count == 0 || Current is not TimelineFrame f) return;
+        var key = (f.Id, string.Join(" ", terms));
+        var ui = SynchronizationContext.Current;
+        Task.Run(() =>
+        {
+            // Its own copy of the picture: GDI+ images can't be shared across threads.
+            using var bmp = ReadImage(f.Path) as Bitmap;
+            var found = bmp == null ? new List<RectangleF>() : Ocr.Find(bmp, terms);
+            ui?.Post(_ =>
+            {
+                highlightCache[key] = found;
+                highlightOrder.Add(key);
+                if (highlightOrder.Count > 64) { highlightCache.Remove(highlightOrder[0]); highlightOrder.RemoveAt(0); }
+                if (Current?.Id != key.Item1 || string.Join(" ", SearchHits.Terms(Query)) != key.Item2) return;
+                Highlights = found;
+                Notify();
+            }, null);
+        });
+    }
 
     // MARK: audio
 
@@ -271,6 +314,7 @@ sealed class TimelineModel
         {
             Index = i;
             Image = LoadImage(Frames[i]);
+            RefreshHighlights();
         }
         UpdateCaption();
         Notify();

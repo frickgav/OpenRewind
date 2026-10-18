@@ -43,6 +43,27 @@ static class Ocr
         }
     }
 
+    /// Where the search terms appear in the image, as fractions of its width and height (0–1, top-left origin).
+    public static List<RectangleF> Find(Bitmap image, IReadOnlyList<string> terms)
+    {
+        var found = new List<RectangleF>();
+        if (terms.Count == 0 || engine.Value is not OcrEngine e) return found;
+        try
+        {
+            using var sb = ToSoftwareBitmap(image, (int)OcrEngine.MaxImageDimension);
+            float w = sb.PixelWidth, h = sb.PixelHeight;
+            var result = e.RecognizeAsync(sb).AsTask().GetAwaiter().GetResult();
+            foreach (var word in result.Lines.SelectMany(l => l.Words))
+            {
+                if (!SearchHits.Matches(word.Text, terms)) continue;
+                var r = word.BoundingRect;
+                found.Add(new RectangleF((float)r.X / w, (float)r.Y / h, (float)r.Width / w, (float)r.Height / h));
+            }
+        }
+        catch (Exception ex) { Log.Write($"ocr failed: {ex.Message}"); }
+        return found;
+    }
+
     static SoftwareBitmap ToSoftwareBitmap(Bitmap image, int maxDim)
     {
         Bitmap src = image;

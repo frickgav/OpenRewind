@@ -216,6 +216,7 @@ struct TimelineView: View {
                         .resizable()
                         .interpolation(.high)
                         .aspectRatio(contentMode: .fit)
+                        .overlay(highlightBoxes)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.stroke))
                         .shadow(color: .black.opacity(0.6), radius: 24)
@@ -235,6 +236,22 @@ struct TimelineView: View {
                 }
             }
         }
+    }
+
+    /// A yellow box around each place the searched words appear on the screenshot.
+    private var highlightBoxes: some View {
+        GeometryReader { g in
+            ForEach(Array(model.highlights.enumerated()), id: \.offset) { _, h in
+                let r = CGRect(x: h.minX * g.size.width, y: h.minY * g.size.height,
+                               width: h.width * g.size.width, height: h.height * g.size.height).insetBy(dx: -3, dy: -2)
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.yellow.opacity(0.28))
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.yellow, lineWidth: 2))
+                    .frame(width: r.width, height: r.height)
+                    .position(x: r.midX, y: r.midY)
+            }
+        }
+        .allowsHitTesting(false)
     }
 
     private var emptyState: some View {

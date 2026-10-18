@@ -319,6 +319,18 @@ sealed class OverlayForm : Form
 
     // MARK: screenshot
 
+    /// A yellow box around each place the searched words appear on the screenshot.
+    void DrawHighlights(Graphics g, RectangleF ir)
+    {
+        foreach (var h in model.Highlights)
+        {
+            var r = new RectangleF(ir.X + h.X * ir.Width, ir.Y + h.Y * ir.Height, h.Width * ir.Width, h.Height * ir.Height);
+            r.Inflate(3 * k, 2 * k);
+            Draw.Fill(g, r, 4 * k, Color.FromArgb(70, 255, 214, 10));
+            Draw.Stroke(g, r, 4 * k, Color.FromArgb(255, 214, 10), 2 * k);
+        }
+    }
+
     /// The screenshot, with the spoken words at this moment shown like subtitles.
     void DrawScreenshot(Graphics g, RectangleF r)
     {
@@ -332,6 +344,7 @@ sealed class OverlayForm : Form
                 var state = g.Save();
                 g.SetClip(path);
                 g.DrawImage(img, ir);
+                DrawHighlights(g, ir);
                 g.Restore(state);
             }
             Draw.Stroke(g, ir, 12 * k, Draw.White(0.12));

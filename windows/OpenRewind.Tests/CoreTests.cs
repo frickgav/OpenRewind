@@ -205,4 +205,15 @@ public class CoreTests : IDisposable
         Assert.Contains("needle", s);
         Assert.EndsWith("…", s);
     }
+
+    [Fact]
+    public void SearchWordsAreFoundInScreenWords()
+    {
+        var terms = SearchHits.Terms("  Invoice \"march\" invoice ");
+        Assert.Equal(new[] { "invoice", "march" }, terms);
+        Assert.True(SearchHits.Matches("INVOICE:", terms));
+        Assert.True(SearchHits.Matches("(March", terms));
+        Assert.False(SearchHits.Matches("April", terms));
+        Assert.Empty(SearchHits.Terms("  \"\" "));
+    }
 }
