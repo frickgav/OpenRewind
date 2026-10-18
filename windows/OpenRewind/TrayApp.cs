@@ -30,6 +30,7 @@ sealed class TrayApp : ApplicationContext
         if (settings.LocalSearchServer) StartServer();
         engine.StartTranscriber();
         engine.Recorder.MinorChangeGap = settings.TypingFrameGap;
+        engine.Config.SnapshotScale = ScreenshotSizes.Scale(settings.ScreenshotPercent);
         engine.SetScreen(settings.RecordScreen);
         engine.SetAudio(settings.RecordAudio);
         retention = new RetentionJob(engine.Db, settings.Screen, settings.Audio);
@@ -72,6 +73,7 @@ sealed class TrayApp : ApplicationContext
         s.DropDownItems.Add(KeepMenu("Keep Screen Recordings For", screen: true));
         s.DropDownItems.Add(KeepMenu("Keep Audio Recordings For", screen: false));
         s.DropDownItems.Add(TypingGapMenu());
+        s.DropDownItems.Add(ScreenshotSizeMenu());
         s.DropDownItems.Add(new ToolStripSeparator());
         var del = new ToolStripMenuItem("Delete Recordings");
         del.DropDownItems.Add(Item("Last 15 Minutes", () => DeleteRecent("last 15 minutes", DateTime.UtcNow.AddMinutes(-15))));
@@ -111,6 +113,23 @@ sealed class TrayApp : ApplicationContext
             {
                 settings.TypingFrameGap = secs;
                 engine.Recorder.MinorChangeGap = secs;
+                settings.Save();
+            }));
+        return item;
+    }
+
+    /// Bigger screenshots are sharper to read back in the timeline and use more disk space.
+    ToolStripMenuItem ScreenshotSizeMenu()
+    {
+        var item = new ToolStripMenuItem("Screenshot Resolution")
+        {
+            ToolTipText = "How big each saved screenshot is compared with your screen. Higher is sharper in the timeline but uses more disk space. Applies to new screenshots."
+        };
+        foreach (var pct in ScreenshotSizes.Choices)
+            item.DropDownItems.Add(Toggle(ScreenshotSizes.Title(pct), pct == settings.ScreenshotPercent, () =>
+            {
+                settings.ScreenshotPercent = pct;
+                engine.Config.SnapshotScale = ScreenshotSizes.Scale(pct);
                 settings.Save();
             }));
         return item;
