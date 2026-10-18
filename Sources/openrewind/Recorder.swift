@@ -39,6 +39,29 @@ enum Time {
     }
 }
 
+/// When a new screenshot is close enough to the last stored one to skip it.
+enum FrameDedup {
+    /// Choices for how often to store a frame while only a few words change (typing, a ticking clock).
+    /// 2 s is every capture, the default.
+    static let gapChoices = [2, 5, 10, 30]
+
+    /// Words added plus words removed between two texts, ignoring order.
+    static func wordsChanged(_ a: String, _ b: String) -> Int {
+        var counts: [Substring: Int] = [:]
+        for w in words(a) { counts[w, default: 0] += 1 }
+        for w in words(b) { counts[w, default: 0] -= 1 }
+        return counts.values.reduce(0) { $0 + abs($1) }
+    }
+
+    /// True when the texts differ by at most 4 words, or 2% of the longer one.
+    static func isMinorChange(_ a: String, _ b: String) -> Bool {
+        let longer = max(words(a).count, words(b).count)
+        return wordsChanged(a, b) <= max(4, longer / 50)
+    }
+
+    private static func words(_ s: String) -> [Substring] { s.split(whereSeparator: { $0.isWhitespace }) }
+}
+
 final class Recorder {
     let config: Config
     let db: Database
@@ -46,6 +69,8 @@ final class Recorder {
     private var lastText = ""
     private var lastKey = ""
     private var lastWrite = Date.distantPast
+    /// Seconds between stored frames while only a few words change. At or below the capture interval: every capture.
+    var minorChangeGap: TimeInterval = 2
     private let excluded: Set<String>
 
     init(config: Config, db: Database) {
@@ -105,12 +130,18 @@ final class Recorder {
             lastThumb = thumb
             return nil
         }
+        // Only a few words changed (typing, a clock) and the user chose a longer gap: wait for it.
+        // lastThumb stays on the stored frame, so the screen it settles on is still saved once the gap is up.
+        if key == lastKey, !heartbeatDue, minorChangeGap > config.interval,
+           Date().timeIntervalSince(lastWrite) < minorChangeGap, FrameDedup.isMinorChange(lastText, text) {
+            return nil
+        }
 
         let ts = Time.now()
         let dayDir = config.dataDir.appendingPathComponent(String(ts.prefix(10)))
         try FileManager.default.createDirectory(at: dayDir, withIntermediateDirectories: true)
-        let file = dayDir.appendingPathComponent(ts.replacingOccurrences(of: ":", with: "-") + ".jpg")
-        try ImageTools.writeJPEG(ImageTools.scaled(image, by: config.snapshotScale), to: file)
+        let file = try ImageTools.writeSnapshot(ImageTools.scaled(image, by: config.snapshotScale),
+                                                to: dayDir.appendingPathComponent(ts.replacingOccurrences(of: ":", with: "-")))
 
         let id = try db.insert(Frame(id: 0, timestamp: ts, appName: window.appName, windowName: window.windowName,
                                      focused: true, snapshotPath: file.path, text: text, textSource: source,
