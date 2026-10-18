@@ -24,6 +24,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self.engine = engine
         super.init()
         copyOldSettings()
+        clearOldPermissions()
         defaults.register(defaults: [screenKey: true, audioKey: true, serverKey: false,
                                      keepScreenKey: KeepFor.forever.rawValue, keepAudioKey: KeepFor.forever.rawValue,
                                      typingGapKey: 2])
@@ -38,6 +39,21 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if defaults.object(forKey: key) == nil, let v = old.object(forKey: key) { defaults.set(v, forKey: key) }
         }
         defaults.set(true, forKey: done)
+    }
+
+    /// Once the old OpenScreen app is gone, its entries in System Settings → Privacy & Security
+    /// (Screen Recording, Microphone, …) are dead weight that look like a second app. Clear them once.
+    private func clearOldPermissions() {
+        let done = "clearedOpenScreenPermissions", oldID = "ai.agilityresources.openscreen"
+        guard !defaults.bool(forKey: done), NSWorkspace.shared.urlForApplication(withBundleIdentifier: oldID) == nil else { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        p.arguments = ["reset", "All", oldID]
+        p.terminationHandler = { [defaults] p in
+            if p.terminationStatus == 0 { defaults.set(true, forKey: done) }
+            log("cleared old OpenScreen permissions (tccutil exit \(p.terminationStatus))")
+        }
+        do { try p.run() } catch { log("cannot run tccutil: \(error.localizedDescription)") }
     }
 
     func applicationDidFinishLaunching(_ note: Notification) {
