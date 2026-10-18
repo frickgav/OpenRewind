@@ -4,5 +4,7 @@
 <dict>
     <!-- Hardened runtime needs this to use the microphone. -->
     <key>com.apple.security.device.audio-input</key><true/>
+    <!-- And this to switch browser tabs with AppleScript (Open in the timeline). -->
+    <key>com.apple.security.automation.apple-events</key><true/>
 </dict>
 </plist>
