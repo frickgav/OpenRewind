@@ -41,16 +41,22 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         defaults.set(true, forKey: done)
     }
 
-    /// Once the old OpenScreen app is gone, its entries in System Settings → Privacy & Security
-    /// (Screen Recording, Microphone, …) are dead weight that look like a second app. Clear them once.
+    /// The old OpenScreen app's entries in System Settings → Privacy & Security (Screen Recording,
+    /// Microphone, …) look like a second app. Clear them once. tccutil only accepts a bundle id that
+    /// macOS can still find, so this has to run while the old app is still on disk; once it is gone
+    /// the user removes the row with the − button in System Settings.
     private func clearOldPermissions() {
         let done = "clearedOpenScreenPermissions", oldID = "ai.agilityresources.openscreen"
-        guard !defaults.bool(forKey: done), NSWorkspace.shared.urlForApplication(withBundleIdentifier: oldID) == nil else { return }
+        guard !defaults.bool(forKey: done) else { return }
+        guard NSWorkspace.shared.urlForApplication(withBundleIdentifier: oldID) != nil else {
+            defaults.set(true, forKey: done)
+            return
+        }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
         p.arguments = ["reset", "All", oldID]
         p.terminationHandler = { [defaults] p in
-            if p.terminationStatus == 0 { defaults.set(true, forKey: done) }
+            defaults.set(true, forKey: done)
             log("cleared old OpenScreen permissions (tccutil exit \(p.terminationStatus))")
         }
         do { try p.run() } catch { log("cannot run tccutil: \(error.localizedDescription)") }
