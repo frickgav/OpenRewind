@@ -81,6 +81,13 @@ jobs:
         if: hashFiles('scripts/build-windows.ps1') != '' && env.CAN_SIGN == 'true'
         shell: pwsh
         run: Compress-Archive -Force -Path "dist/win-${{ matrix.arch }}/*" -DestinationPath "dist/OpenRewind-windows-${{ matrix.arch }}.zip"
+      # Start the exe that is about to be published and make sure it is still running 30 s later,
+      # so a build that crashes on startup fails the release instead of being attached to it.
+      # It runs on the signed files when signing is on, but never needs signing to be set up.
+      - name: Launch check
+        if: hashFiles('scripts/build-windows.ps1') != '' && matrix.arch == 'x64'
+        shell: pwsh
+        run: scripts/launch-check-windows.ps1 -ExePath dist/win-x64/OpenRewind.exe
       - uses: actions/upload-artifact@v4
         if: hashFiles('scripts/build-windows.ps1') != ''
         with:
