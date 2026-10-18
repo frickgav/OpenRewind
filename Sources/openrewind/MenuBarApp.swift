@@ -39,6 +39,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ note: Notification) {
         overlay = OverlayController(db: engine.db)
+        overlay.model.openInBrowser = { [weak self] in self?.openBrowserSearch() }
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
         menu.delegate = self
@@ -308,6 +309,20 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             overlay.showSearch()
         }
+    }
+
+    /// The browser search page, with the timeline's query filled in. It needs the local server,
+    /// so pressing O turns the server on (and remembers that, like the Settings switch).
+    private func openBrowserSearch() {
+        let query = overlay.model.query.trimmingCharacters(in: .whitespaces)
+        overlay.hide()
+        if !engine.serverOn {
+            startServer()
+            defaults.set(engine.serverOn, forKey: serverKey)
+        }
+        guard engine.serverOn, var url = URLComponents(string: "http://127.0.0.1:\(engine.config.port)/") else { return }
+        if !query.isEmpty { url.queryItems = [URLQueryItem(name: "q", value: query)] }
+        if let u = url.url { NSWorkspace.shared.open(u) }
     }
 
     @objc private func toggleServer() {

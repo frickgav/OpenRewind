@@ -109,18 +109,21 @@ sealed class Engine
     /// Streams can stop without an error (device unplugged, default device changed, sleep).
     /// The mic sends data all the time, so 60 s of nothing means it is stuck: restart it.
     /// Loopback sends nothing while nothing plays, so it is restarted only when the default output device changed.
+    /// Both move to the new default device when it changes (headset plugged in), like AVAudioEngine does on the Mac.
     void Watch()
     {
         lock (gate)
         {
             if (!audioWanted) return;
-            if (Config.RecordMic && (mic == null || (DateTime.UtcNow - mic.Writer.LastAppend).TotalSeconds > 60))
+            var inId = DefaultDeviceId(DataFlow.Capture);
+            bool micMoved = mic != null && inId != micDevice;
+            if (Config.RecordMic && (mic == null || micMoved || (DateTime.UtcNow - mic.Writer.LastAppend).TotalSeconds > 60))
             {
-                Log.Write(mic == null ? "starting microphone again" : "microphone sent no sound for 60 s, restarting");
+                Log.Write(mic == null ? "starting microphone again" : micMoved ? "microphone device changed, restarting" : "microphone sent no sound for 60 s, restarting");
                 mic?.Dispose(); mic = null;
                 StartMic();
             }
-            var outId = DefaultOutputId();
+            var outId = DefaultDeviceId(DataFlow.Render);
             if (Config.RecordSystemAudio && (system == null || outId != systemDevice))
             {
                 Log.Write(system == null ? "starting system audio again" : "output device changed, restarting system audio");
@@ -130,21 +133,24 @@ sealed class Engine
         }
     }
 
-    string? systemDevice;
+    string? systemDevice, micDevice;
 
-    static string? DefaultOutputId()
+    /// The device NAudio opens by default: the Console role for the mic, Multimedia for loopback.
+    static string? DefaultDeviceId(DataFlow flow)
     {
+        var role = flow == DataFlow.Capture ? Role.Console : Role.Multimedia;
         try
         {
             using var e = new MMDeviceEnumerator();
-            return e.HasDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia) ? e.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia).ID : null;
+            return e.HasDefaultAudioEndpoint(flow, role) ? e.GetDefaultAudioEndpoint(flow, role).ID : null;
         }
         catch { return null; }
     }
 
     void StartMic()
     {
-        if (!AudioStream.HasDevice(DataFlow.Capture)) { Log.Write("no microphone found"); return; }
+        micDevice = DefaultDeviceId(DataFlow.Capture);
+        if (micDevice == null) { Log.Write("no microphone found"); return; }
         try
         {
             var m = AudioStream.Mic(new ChunkWriter("microphone", true, Config.AudioChunkSeconds, Config, Db));
@@ -159,7 +165,7 @@ sealed class Engine
 
     void StartSystem()
     {
-        systemDevice = DefaultOutputId();
+        systemDevice = DefaultDeviceId(DataFlow.Render);
         if (systemDevice == null) { Log.Write("no speakers or headphones found for system audio"); return; }
         try
         {

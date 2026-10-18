@@ -171,17 +171,19 @@ static class Program
         }
     }
 
+    /// The logo from the .ico built into the exe, at the tray's size (16 px, or more on scaled screens).
+    /// The exe's own icon is the fallback: it only holds one 32 px picture, which looks soft in the tray.
     static void LoadIcons()
     {
         try
         {
-            if (Environment.ProcessPath is string exe && Icon.ExtractAssociatedIcon(exe) is Icon ico)
-            {
+            using var s = typeof(Program).Assembly.GetManifestResourceStream("OpenRewind.ico");
+            if (s != null) AppIcon = new Icon(s, SystemInformation.SmallIconSize);
+            else if (Environment.ProcessPath is string exe && Icon.ExtractAssociatedIcon(exe) is Icon ico)
                 AppIcon = new Icon(ico, SystemInformation.SmallIconSize);
-                PausedIcon = Gray(AppIcon);
-            }
+            PausedIcon = Gray(AppIcon);
         }
-        catch { }
+        catch (Exception e) { Log.Write($"cannot load the app icon: {e.Message}"); }
     }
 
     /// The tray icon goes gray while nothing is recording.
