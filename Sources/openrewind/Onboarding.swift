@@ -52,15 +52,9 @@ final class OnboardingModel: ObservableObject {
 
     deinit { timer?.invalidate() }
 
-    func allowScreen() {
-        Capture.requestScreenPermission()
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-    }
+    func allowScreen() { PermissionHelper.shared.show(.screen) }
 
-    func allowAccessibility() {
-        Accessibility.promptForTrust()
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-    }
+    func allowAccessibility() { PermissionHelper.shared.show(.accessibility) }
 
     func allowMic() {
         if micStatus == .notDetermined {
