@@ -233,9 +233,93 @@ public class CoreTests : IDisposable
     public void ScreenshotResolutionChoices()
     {
         Assert.Equal(1.0, ScreenshotSizes.Scale(100));
-        Assert.Equal(0.25, ScreenshotSizes.Scale(25));
+        Assert.Equal(0.33, ScreenshotSizes.Scale(33));
         Assert.Equal(0.5, ScreenshotSizes.Scale(ScreenshotSizes.Default));
-        Assert.Equal(0.5, ScreenshotSizes.Scale(33));  // hand-edited value: back to the default
-        Assert.Equal("Half (50%, Default)", ScreenshotSizes.Title(50));
+        Assert.Equal(0.33, ScreenshotSizes.Scale(25));  // the old Quarter choice: the closest one now
+        Assert.Equal("Medium (50%)", ScreenshotSizes.Title(50));
+        Assert.Equal("Low (33%)  —  633 × 356", ScreenshotSizes.Title(33, 1920, 1080));
+    }
+
+    [Fact]
+    public void BrowserUrlIsStoredAndLoadedForTheTimeline()
+    {
+        var now = DateTime.UtcNow;
+        AddFrame(now.AddMinutes(-2), "Notepad", "plain notes");
+        db.Insert(new Frame(0, Time.Iso(now.AddMinutes(-1)), "Google Chrome", "Docs", true, "x.jpg", "the docs page", "accessibility", 0, "https://example.com/docs"));
+        Assert.Equal("https://example.com/docs", db.Search(new SearchQuery { Q = "docs page" }).Rows[0].BrowserUrl);
+        Assert.Equal(new[] { "", "https://example.com/docs" }, db.TimelineFrames(now.AddHours(-1)).Select(f => f.Url));
+    }
+
+    [Fact]
+    public void OlderDatabasesGetTheBrowserUrlColumn()
+    {
+        var oldPath = Path.Combine(home, "old.sqlite");
+        using (var c = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={oldPath};Pooling=False"))
+        {
+            c.Open();
+            using var cmd = c.CreateCommand();
+            // The frames table as it was before browser_url.
+            cmd.CommandText = """
+                CREATE TABLE frames (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL, app_name TEXT NOT NULL DEFAULT '',
+                    window_name TEXT NOT NULL DEFAULT '', focused INTEGER NOT NULL DEFAULT 1, snapshot_path TEXT NOT NULL DEFAULT '',
+                    text TEXT NOT NULL DEFAULT '', text_source TEXT NOT NULL DEFAULT 'ocr', hash INTEGER NOT NULL DEFAULT 0);
+                INSERT INTO frames (timestamp, app_name) VALUES ('2026-10-18T19:45:05.123Z', 'Old');
+                """;
+            cmd.ExecuteNonQuery();
+        }
+        using var reopened = new Database(oldPath);
+        Assert.Equal("", reopened.FrameById(1)!.BrowserUrl);
+        reopened.Insert(new Frame(0, Time.Now(), "Microsoft Edge", "", true, "", "", "ocr", 0, "https://a.example/"));
+        Assert.Equal("https://a.example/", reopened.FrameById(2)!.BrowserUrl);
+    }
+
+    [Fact]
+    public void AddressBarTextBecomesAWebAddress()
+    {
+        Assert.Equal("https://example.com/docs?q=1", WebAddress.Normalize("example.com/docs?q=1"));
+        Assert.Equal("http://localhost:3000/", WebAddress.Normalize("http://localhost:3000"));
+        Assert.Equal("https://localhost:8080/x", WebAddress.Normalize("localhost:8080/x"));
+        Assert.Null(WebAddress.Normalize("weather today"));
+        Assert.Null(WebAddress.Normalize("notes"));
+        Assert.Null(WebAddress.Normalize("file:///C:/x.txt"));
+        Assert.Null(WebAddress.Normalize("chrome://settings"));
+        Assert.Null(WebAddress.Normalize(""));
+        Assert.Equal("github.com", WebAddress.Host("https://github.com/frickgav"));
+    }
+
+    [Fact]
+    public void TimelineShortcutPresses()
+    {
+        Assert.Equal("Ctrl+Alt+T", HotkeyShortcut.Standard.Label);
+        uint ctrl = HotkeyShortcut.Ctrl, alt = HotkeyShortcut.Alt, shift = HotkeyShortcut.Shift, win = HotkeyShortcut.Win;
+        Assert.Equal("Win+Ctrl+Alt+Shift+R", HotkeyShortcut.FromPress(ctrl | alt | shift | win, 0x52)!.Label);
+        Assert.Equal("F5", HotkeyShortcut.FromPress(0, 0x74)!.Label);              // F-keys work alone
+        Assert.Equal("Ctrl+Space", HotkeyShortcut.FromPress(ctrl, 0x20)!.Label);
+        Assert.Equal("Alt+;", HotkeyShortcut.FromPress(alt, 0xBA, ';')!.Label);    // layout key: named by what it types
+        Assert.Null(HotkeyShortcut.FromPress(0, 0x54));                            // T alone would fire while typing
+        Assert.Null(HotkeyShortcut.FromPress(shift, 0x54));
+        Assert.Null(HotkeyShortcut.FromPress(ctrl, 0x11));                         // still holding Ctrl
+        Assert.Equal(HotkeyShortcut.Standard, HotkeyShortcut.FromPress(ctrl | alt, 0x54));
+
+        // Saved in settings.json and read back.
+        var json = JsonSerializer.Serialize(HotkeyShortcut.FromPress(win | shift, 0x53));
+        Assert.Equal("Win+Shift+S", JsonSerializer.Deserialize<HotkeyShortcut>(json)!.Label);
+    }
+
+    [Fact]
+    public void PauseRecordingTimes()
+    {
+        var now = new DateTime(2026, 10, 18, 12, 0, 0, DateTimeKind.Utc);
+        Assert.Equal(now.AddMinutes(30), Pause.Until(30, now));
+        Assert.Equal(DateTime.MaxValue, Pause.Until(0, now));
+        Assert.Equal("paused", Pause.Text(DateTime.MaxValue, now));
+        Assert.Equal(now.AddHours(1), Pause.Active(now.AddHours(1), now));
+        Assert.Null(Pause.Active(now.AddSeconds(-1), now));     // ended while the app was closed
+        Assert.Null(Pause.Active(null, now));
+        Assert.NotNull(Pause.Active(DateTime.MaxValue, now));
+        var c = System.Globalization.CultureInfo.InvariantCulture;
+        var local = now.AddMinutes(30).ToLocalTime();
+        Assert.Equal($"paused until {local.ToString("t", c)}", Pause.Text(now.AddMinutes(30), now, c));
+        Assert.StartsWith("paused until " + now.AddDays(1).ToLocalTime().ToString("d", c), Pause.Text(now.AddDays(1), now, c));
     }
 }
