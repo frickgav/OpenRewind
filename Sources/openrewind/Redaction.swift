@@ -21,7 +21,7 @@ enum Redaction {
     static func windows(_ list: Blocklist) -> [Window] {
         guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return [] }
         let me = ProcessInfo.processInfo.processIdentifier
-        var bundles: [pid_t: String] = [:]
+        var apps: [pid_t: (bundle: String, path: String)] = [:]
         var out: [Window] = []
         for w in info {
             guard let pid = w[kCGWindowOwnerPID as String] as? pid_t, pid != me,
@@ -32,10 +32,13 @@ enum Redaction {
             let layer = w[kCGWindowLayer as String] as? Int ?? 0
             let owner = w[kCGWindowOwnerName as String] as? String ?? ""
             let title = w[kCGWindowName as String] as? String ?? ""
-            if bundles[pid] == nil { bundles[pid] = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "" }
-            let bundle = bundles[pid] ?? ""
-            let blocked = list.blocksWindow(bundleID: bundle, appName: owner, title: title)
-            let label = list.blocksApp(bundleID: bundle, name: owner) && !owner.isEmpty ? owner
+            if apps[pid] == nil {
+                let app = NSRunningApplication(processIdentifier: pid)
+                apps[pid] = (app?.bundleIdentifier ?? "", app?.bundleURL?.path ?? "")
+            }
+            let bundle = apps[pid]?.bundle ?? "", path = apps[pid]?.path ?? ""
+            let blocked = list.blocksWindow(bundleID: bundle, appName: owner, path: path, title: title)
+            let label = list.blocksApp(bundleID: bundle, name: owner, path: path) && !owner.isEmpty ? owner
                 : Blocklist.isPrivateTitle(title) ? "Private window" : "Hidden window"
             out.append(Window(id: w[kCGWindowNumber as String] as? CGWindowID ?? 0, frame: frame, blocked: blocked,
                               occludes: layer == 0 && alpha >= 1, label: label))

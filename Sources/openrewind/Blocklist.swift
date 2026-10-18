@@ -19,6 +19,9 @@ struct Blocklist {
     /// Extra app names from OPENREWIND_EXCLUDE.
     let extraNames: [String]
     private let keys: Set<String>
+    /// Where the blocked apps are installed. Some apps show their windows from a helper app inside
+    /// their bundle (Docker.app runs "Docker Desktop.app"), so a process anywhere in here is blocked too.
+    private let paths: [String]
 
     init(apps: [App], keywords: [String], privateWindows: Bool, extraNames: [String] = []) {
         self.apps = apps
@@ -26,16 +29,20 @@ struct Blocklist {
         self.privateWindows = privateWindows
         self.extraNames = extraNames
         keys = Set((apps.flatMap { [$0.id, $0.name] } + extraNames).map { $0.lowercased() }.filter { !$0.isEmpty })
+        paths = apps.compactMap { $0.id.isEmpty ? nil : NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.id)?.path }
+            .map { $0.hasSuffix("/") ? $0 : $0 + "/" }
     }
 
-    func blocksApp(bundleID: String?, name: String?) -> Bool {
+    /// `path` is the running app's bundle path (NSRunningApplication.bundleURL).
+    func blocksApp(bundleID: String?, name: String?, path: String? = nil) -> Bool {
         if let b = bundleID?.lowercased(), !b.isEmpty, keys.contains(b) { return true }
         if let n = name?.lowercased(), !n.isEmpty, keys.contains(n) { return true }
+        if let p = path, !p.isEmpty, paths.contains(where: { (p + "/").hasPrefix($0) }) { return true }
         return false
     }
 
-    func blocksWindow(bundleID: String?, appName: String?, title: String?) -> Bool {
-        blocksApp(bundleID: bundleID, name: appName)
+    func blocksWindow(bundleID: String?, appName: String?, path: String? = nil, title: String?) -> Bool {
+        blocksApp(bundleID: bundleID, name: appName, path: path)
             || (privateWindows && Blocklist.isPrivateTitle(title))
             || Blocklist.hasKeyword(title, keywords)
     }
