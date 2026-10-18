@@ -109,6 +109,13 @@ final class OnboardingModel: ObservableObject {
 enum Onboarding {
     /// The timeline shortcut as the user set it in Settings.
     static var hotkey: String { Shortcut.load(.standard).label }
+    /// The same shortcut as keycaps for the demo: each modifier, then the key.
+    static var hotkeyCaps: [String] {
+        let label = hotkey
+        let mods = label.prefix { "⌃⌥⇧⌘".contains($0) }.map(String.init)
+        let key = String(label.dropFirst(mods.count))
+        return key.isEmpty ? mods : mods + [key]
+    }
 
     static func show(onDone: @escaping (Bool) -> Void) {
         let model = OnboardingModel()
@@ -273,7 +280,7 @@ struct OnboardingView: View {
             Text("Here's how it works").font(.system(size: 28, weight: .bold))
             Text("Press \(Onboarding.hotkey) anytime. Scroll to go back, type to search. Click Try it now for a quick guided tour of the real thing.")
                 .font(.system(size: 15)).foregroundColor(SetupTheme.dim).fixedSize(horizontal: false, vertical: true)
-            DemoView(hotkey: ["⌥", "⌘", "T"]).padding(.top, 10)
+            DemoView(hotkey: Onboarding.hotkeyCaps).padding(.top, 10)
         }
     }
 }
