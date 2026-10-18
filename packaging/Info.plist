@@ -23,6 +23,8 @@
     <string>OpenRewind records the sound your Mac plays (videos, calls) so you can search and replay it. Audio stays on this Mac.</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>OpenRewind records your screen and system audio so you can scroll back in time. Recordings stay on this Mac.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>OpenRewind switches your browser to the tab you pick in the timeline.</string>
     <key>NSAppTransportSecurity</key>
     <dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict>

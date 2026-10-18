@@ -25,6 +25,7 @@ sealed class TrayApp : ApplicationContext
     {
         this.engine = engine;
         settings = Settings.Load(engine.Config.Home);
+        Program.RefreshIconIfNew(settings);
         var model = new TimelineModel(engine.Db);
         overlay = new OverlayForm(model) { Look = settings.TimelineLook };
         _ = overlay.Handle;  // create it on the UI thread now
