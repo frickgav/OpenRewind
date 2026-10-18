@@ -28,7 +28,11 @@ enum Capture {
     static func requestScreenPermission() { _ = CGRequestScreenCaptureAccess() }
 
     /// Grab the display that holds the mouse (falls back to the main display).
-    static func screenshot() async throws -> CGImage {
+    static func screenshot() async throws -> CGImage { try await capture().image }
+
+    /// Like `screenshot`, leaving out the windows in `excluding`. Also returns where the display
+    /// is (global points, top-left origin), so window frames can be placed on the image.
+    static func capture(excluding: Set<CGWindowID> = []) async throws -> (image: CGImage, bounds: CGRect) {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         let mouse = NSEvent.mouseLocation
         let target = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
@@ -36,14 +40,17 @@ enum Capture {
         guard let display = content.displays.first(where: { $0.displayID == targetID }) ?? content.displays.first else {
             throw NSError(domain: "openrewind", code: 10, userInfo: [NSLocalizedDescriptionKey: "no display found"])
         }
-        // Do not record ourselves (the web UI may be open in a browser, that is fine; this excludes only openrewind).
-        let mine = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
-        let filter = SCContentFilter(display: display, excludingApplications: mine, exceptingWindows: [])
+        // Do not record ourselves (the web UI may be open in a browser, that is fine; this excludes only openrewind),
+        // nor blocked windows (Redaction blurs where they were).
+        let me = ProcessInfo.processInfo.processIdentifier
+        let skip = content.windows.filter { $0.owningApplication?.processID == me || excluding.contains($0.windowID) }
+        let filter = SCContentFilter(display: display, excludingWindows: skip)
         let cfg = SCStreamConfiguration()
         let scale = target?.backingScaleFactor ?? 2
         cfg.width = Int(CGFloat(display.width) * scale)
         cfg.height = Int(CGFloat(display.height) * scale)
         cfg.showsCursor = false
-        return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+        return (image, CGDisplayBounds(display.displayID))
     }
 }
