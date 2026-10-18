@@ -12,6 +12,9 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let screenKey = "recordScreen", audioKey = "recordAudio"
     private let keepScreenKey = "keepScreen", keepAudioKey = "keepAudio"
     private var retention: RetentionJob!
+    /// Last measured size of the data folder; measured in the background when the menu opens.
+    private var dataSize: Int64?
+    private var measuring = false
 
     init(engine: Engine) {
         self.engine = engine
@@ -65,6 +68,12 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(tl)
         menu.addItem(action("Search…", #selector(openSearch)))
         menu.addItem(action("Show Data Folder", #selector(openData)))
+        for line in storageLines() {
+            let i = NSMenuItem(title: "  " + line, action: nil, keyEquivalent: "")
+            i.isEnabled = false
+            menu.addItem(i)
+        }
+        measureStorage(menu)
         menu.addItem(.separator())
 
         let settings = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
@@ -174,6 +183,42 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         a.addButton(withTitle: "Cancel")
         a.buttons.first?.hasDestructiveAction = true
         return a.runModal() == .alertFirstButtonReturn
+    }
+
+    // MARK: storage
+
+    private func storageLines() -> [String] {
+        let size = dataSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "measuring…"
+        var lines = ["Using \(size)"]
+        if let oldest = engine.db.oldestRecording() {
+            let f = DateFormatter()
+            f.dateStyle = .medium; f.timeStyle = .short
+            let rel = RelativeDateTimeFormatter()
+            rel.unitsStyle = .full
+            lines.append("Goes back to \(f.string(from: oldest)) (\(rel.localizedString(for: oldest, relativeTo: Date())))")
+        } else {
+            lines.append("No recordings yet")
+        }
+        return lines
+    }
+
+    /// Measure the folder off the main thread, then refresh the open menu with the result.
+    private func measureStorage(_ menu: NSMenu) {
+        guard !measuring else { return }
+        measuring = true
+        let home = engine.config.home
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let size = folderSize(home)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.measuring = false
+                let changed = self.dataSize != size
+                self.dataSize = size
+                if changed, let i = menu.items.firstIndex(where: { $0.title.hasPrefix("  Using ") }) {
+                    menu.items[i].title = "  " + self.storageLines()[0]
+                }
+            }
+        }
     }
 
     private func statusLine() -> String {

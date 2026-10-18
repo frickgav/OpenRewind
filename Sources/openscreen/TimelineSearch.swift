@@ -66,6 +66,8 @@ extension TimelineModel {
         }
         jump(to: hit.time)
         showResults = false
+        // Done typing: arrows and space should drive the timeline now, not the text box.
+        DispatchQueue.main.async { [weak self] in self?.leaveSearchBox?() }
         if hit.kind == .audio, let a = audio.first(where: { $0.id == hit.chunkId }) { play(a) }
     }
 

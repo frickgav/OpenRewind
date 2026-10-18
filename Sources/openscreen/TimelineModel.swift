@@ -7,6 +7,8 @@ final class TimelineModel: ObservableObject {
     let db: Database
     @Published private(set) var frames: [TimelineFrame] = []
     @Published private(set) var audio: [TimelineAudio] = []
+    /// Recorded stretches, with long breaks between them (see TimelineAxis).
+    private(set) var sessions: [TimelineAxis.Session] = []
     @Published private(set) var index = 0
     @Published private(set) var image: NSImage?
     @Published private(set) var caption: String?
@@ -25,6 +27,8 @@ final class TimelineModel: ObservableObject {
     /// Bumped to ask the view to focus the search box.
     @Published var focusSearchToken = 0
     var searchWork: DispatchWorkItem?
+    /// Set by the overlay: gives the keyboard back to the timeline (so space plays audio again).
+    var leaveSearchBox: (() -> Void)?
 
     private var player: AVAudioPlayer?
     private var playTimer: Timer?
@@ -46,6 +50,7 @@ final class TimelineModel: ObservableObject {
         loadedSince = Date().addingTimeInterval(-hours * 3600)
         frames = db.timelineFrames(since: loadedSince)
         audio = db.timelineAudio(since: loadedSince)
+        sessions = TimelineAxis.sessions(frames: frames, audio: audio)
         show(frames.count - 1)
     }
 
@@ -58,6 +63,7 @@ final class TimelineModel: ObservableObject {
         loadedSince = since
         frames = older + frames
         audio = db.timelineAudio(since: since)
+        sessions = TimelineAxis.sessions(frames: frames, audio: audio)
         if let keepId, let i = frames.firstIndex(where: { $0.id == keepId }) { index = i }
     }
 
@@ -116,6 +122,9 @@ final class TimelineModel: ObservableObject {
         caption = caps.first(where: { $0.start <= offset + 0.5 && offset <= $0.end + 0.5 })?.text
             ?? caps.last(where: { $0.start <= offset })?.text
     }
+
+    /// Axis for the current zoom: each break gets 6% of the visible width.
+    var axis: TimelineAxis { TimelineAxis(sessions: sessions, gapV: span * 0.06) }
 
     // MARK: - audio
 
