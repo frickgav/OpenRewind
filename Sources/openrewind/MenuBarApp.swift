@@ -20,6 +20,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     init(engine: Engine) {
         self.engine = engine
+        super.init()
         copyOldSettings()
         defaults.register(defaults: [screenKey: true, audioKey: true, serverKey: false,
                                      keepScreenKey: KeepFor.forever.rawValue, keepAudioKey: KeepFor.forever.rawValue])
