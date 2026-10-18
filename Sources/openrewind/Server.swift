@@ -19,7 +19,7 @@ struct HTTPResponse {
     static func error(_ msg: String, status: Int) -> HTTPResponse { json(["error": msg], status: status) }
 }
 
-/// Tiny HTTP/1.1 server on 127.0.0.1 only. Same idea as screenpipe's localhost:3030 API.
+/// Tiny HTTP/1.1 server on 127.0.0.1 only.
 /// No CORS headers are sent, so other websites cannot read this data from the browser.
 final class Server {
     let port: UInt16
@@ -103,7 +103,7 @@ final class Server {
     }
 }
 
-/// REST routes, shaped like screenpipe's so existing scripts can point at openrewind.
+/// REST routes for scripts and the browser search page.
 struct API {
     let db: Database
     let config: Config
