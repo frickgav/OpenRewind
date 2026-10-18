@@ -31,11 +31,24 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # Every release must be signed with the same certificate, or updating resets the Mac
+      # permissions (see "Signing" in the README). A Developer ID .p12 drops into the same secrets.
+      - name: Load the signing certificate
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERTIFICATE_P12" ]; then
+            echo "::error::Add the MACOS_CERTIFICATE_P12 and MACOS_CERTIFICATE_PASSWORD secrets (scripts/make-signing-cert.sh makes them)"
+            exit 1
+          fi
+          scripts/import-signing-cert.sh
       - name: Build the app and .dmg
         run: |
           export VERSION="${VERSION#v}"
           scripts/build-app.sh
           cp dist/*.dmg dist/OpenRewind-mac.dmg
+          codesign --display --requirements - dist/OpenRewind.app 2>&1 | grep -E '^designated => .*(certificate (leaf|root)|anchor apple generic)'
       - uses: actions/upload-artifact@v4
         with:
           name: mac

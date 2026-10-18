@@ -3,7 +3,7 @@
 #
 #   scripts/build-app.sh               build + sign + dmg
 #   VERSION=0.2.0 scripts/build-app.sh
-#   SIGN_IDENTITY="Developer ID Application: ..." scripts/build-app.sh
+#   SIGN_IDENTITY="Developer ID Application: ..." scripts/build-app.sh   (default: see Signing below)
 #   NOTARY_PROFILE=openrewind scripts/build-app.sh   also notarize + staple (see README)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -27,19 +27,37 @@ sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" packaging/Info.plist >
 # Icon PNGs come from branding/logo.png via scripts/make-icons.py.
 iconutil -c icns packaging/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
 
-# Signing: Developer ID if present (needed for downloads), else Apple Development, else ad-hoc.
+# Signing. macOS keeps Screen Recording / Accessibility / Microphone permission for the signing
+# identity, so every build has to use the same one or updates lose them (see "Signing" in the README).
+# Order: SIGN_IDENTITY, Developer ID, the OpenRewind self-signed certificate
+# (scripts/make-signing-cert.sh), Apple Development, ad-hoc.
 if [ -z "${SIGN_IDENTITY:-}" ]; then
   SIGN_IDENTITY="$(security find-identity -v -p codesigning | grep -o '"Developer ID Application[^"]*"' | head -1 | tr -d '"' || true)"
+fi
+if [ -z "$SIGN_IDENTITY" ]; then
+  # No -v: the self-signed certificate isn't trusted by the system, and codesign doesn't need it to be.
+  SIGN_IDENTITY="$(security find-identity -p codesigning | awk '/"OpenRewind Code Signing"/ {print $2; exit}' || true)"
 fi
 if [ -z "$SIGN_IDENTITY" ]; then
   SIGN_IDENTITY="$(security find-identity -v -p codesigning | grep -o '"Apple Development[^"]*"' | head -1 | tr -d '"' || true)"
 fi
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 echo "→ signing with: $SIGN_IDENTITY"
-codesign --force --options runtime --timestamp=none \
+if [ "$SIGN_IDENTITY" = "-" ]; then
+  echo "!! ad-hoc signature: macOS will ask for its permissions again after every rebuild"
+fi
+# Notarization needs a secure timestamp; the other identities don't.
+TIMESTAMP="--timestamp=none"
+if security find-identity -v -p codesigning | grep -F "$SIGN_IDENTITY" | grep -q "Developer ID Application"; then
+  TIMESTAMP="--timestamp"
+fi
+codesign --force --options runtime "$TIMESTAMP" \
   --entitlements packaging/openrewind.entitlements \
   --sign "$SIGN_IDENTITY" "$APP"
 codesign --verify --strict --verbose=1 "$APP"
+# The designated requirement is what macOS stores with each permission. It has to name the
+# certificate (not a cdhash) for permissions to carry over to the next build.
+codesign --display --requirements - "$APP" 2>&1 | grep '^designated' || true
 
 echo "→ making $DMG"
 STAGE="$DIST/dmg"
