@@ -287,13 +287,22 @@ final class SetupWindows: NSObject, NSWindowDelegate {
         if let w = windows[key] { w.makeKeyAndOrderFront(nil); return }
         var style: NSWindow.StyleMask = [.titled, .closable, .fullSizeContentView]
         if resizable { style.insert(.resizable) }
+        // Never taller or wider than the screen; long lists scroll inside instead.
+        var size = size
+        if let visible = NSScreen.main?.visibleFrame {
+            size.width = min(size.width, visible.width - 40)
+            size.height = min(size.height, visible.height - 40)
+        }
         let w = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: style, backing: .buffered, defer: false)
         w.title = title
         w.titlebarAppearsTransparent = true
         w.appearance = NSAppearance(named: .darkAqua)
         w.backgroundColor = NSColor(SetupTheme.bg)
         w.isReleasedWhenClosed = false
-        w.contentView = NSHostingView(rootView: view())
+        let host = NSHostingView(rootView: view())
+        // Otherwise the window grows to the content's ideal size, e.g. every app on the Mac.
+        host.sizingOptions = []
+        w.contentView = host
         w.center()
         w.delegate = self
         w.identifier = NSUserInterfaceItemIdentifier(key)
