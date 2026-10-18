@@ -250,7 +250,8 @@ public static class WebUI
     {
         using var s = typeof(WebUI).Assembly.GetManifestResourceStream("WebUI.swift");
         if (s == null) return "<!doctype html><title>OpenRewind</title><p>Search page missing from this build.</p>";
-        var src = new StreamReader(s).ReadToEnd();
+        // Git on Windows may check the file out with CRLF line endings.
+        var src = new StreamReader(s).ReadToEnd().Replace("\r\n", "\n");
         int a = src.IndexOf("#\"\"\"", StringComparison.Ordinal), b = src.LastIndexOf("\"\"\"#", StringComparison.Ordinal);
         if (a < 0 || b <= a) return "<!doctype html><title>OpenRewind</title><p>Search page missing from this build.</p>";
         // Swift drops the newline after the opening quotes, and the indentation is zero, so this is the page as served on Mac.
