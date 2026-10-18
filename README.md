@@ -159,8 +159,43 @@ the menu. **Settings → Download Updates Automatically** (on by default) fetche
 nothing is installed until you click **Update** / **Restart to Update**, which swaps the app in place
 and reopens it. **Settings → Check for Updates…** checks right away.
 Releases come from the Release workflow (`git tag v0.3.0 && git push origin v0.3.0`); the check needs
-the repository to be public. Until the Mac app has a Developer ID signature, macOS may ask for the
-Screen Recording permission again after an update.
+the repository to be public. Screen Recording, Accessibility and Microphone stay on across updates
+because every build is signed with the same certificate (below).
+
+### Signing
+
+macOS remembers Screen Recording, Accessibility and Microphone for the certificate an app is signed
+with. An ad-hoc signature is new on every build, so each update used to lose them. Now every build
+is signed with one long-lived certificate:
+
+- **Make it once:** `scripts/make-signing-cert.sh` writes a self-signed "OpenRewind Code Signing"
+  certificate to `signing/` (valid 20 years). Keep the `.p12` and password safe and don't commit
+  them: anything signed with that key gets the permissions you gave OpenRewind.
+- **GitHub Actions:** the real certificate is only for releases. It lives in a `release`
+  environment that only `main` and `v*` tags can use, so a pushed branch or a PR can't reach it
+  even by editing a workflow. Branch and PR builds sign with a throwaway certificate. Set it up once:
+  1. Settings → Environments → **New environment**, name it `release`.
+  2. Deployment branches and tags → **Selected branches and tags** → add the branch `main` and the
+     tag pattern `v*`. Optionally tick **Required reviewers** and add yourself, so each release waits
+     for your click.
+  3. In that environment, **Add environment secret**: `MACOS_CERTIFICATE_P12` (the contents of
+     `openrewind-signing.p12.b64`) and `MACOS_CERTIFICATE_PASSWORD` (the contents of `password.txt`).
+  4. Settings → Secrets and variables → Actions: **delete** any repository secrets with those names
+     (and the `AZURE_*` ones, after adding them to the environment). Repository secrets are open to
+     every branch.
+  5. Settings → Rules → Rulesets → **New tag ruleset** for `v*`, restricting creation to you, so
+     nobody else can push a tag that opens the environment.
+
+  CI imports the key as non-extractable and deletes the keychain after signing. The Release workflow
+  refuses to build the Mac app without the secrets.
+- **Your Mac:** double-click `openrewind-signing.p12` and enter the password. `scripts/build-app.sh`
+  picks it up (after a Developer ID certificate, before Apple Development or ad-hoc); allow
+  `codesign` to use the key when asked.
+- **Developer ID later:** export the Developer ID Application certificate as a `.p12` and put it in
+  the same two secrets. That also removes the "unidentified developer" warning (with notarizing).
+
+Changing the certificate (ad-hoc → self-signed, or self-signed → Developer ID) means turning the
+permissions on one more time; after that, updates keep them.
 
 ## Windows app
 
