@@ -1,7 +1,8 @@
 namespace OpenRewind;
 
 /// Url is the browser tab's address in this frame, or "".
-public record TimelineFrame(long Id, DateTime Time, string AppName, string WindowName, string Path, string Url = "");
+/// End is set only while the timeline shows one app: when the next screenshot (of any app) was taken.
+public record TimelineFrame(long Id, DateTime Time, string AppName, string WindowName, string Path, string Url = "", DateTime? End = null);
 
 public record TimelineAudio(long Id, DateTime Start, double Duration, string Device, bool IsInput, string Path)
 {

@@ -27,14 +27,17 @@ extension TimelineModel {
         var s = SearchQuery()
         s.q = q
         s.limit = 200
+        s.appName = appFilter
         let screen = db.search(s).rows.compactMap { f -> SearchHit? in
-            guard let t = Time.iso.date(from: f.timestamp) else { return nil }
+            guard let t = Time.iso.date(from: f.timestamp), appFilter == nil || f.appName == appFilter else { return nil }
             return SearchHit(id: "f\(f.id)", kind: .screen, time: t,
                              title: f.appName.isEmpty ? "Screen" : f.appName,
                              snippet: Self.snippet(f.text, around: q), chunkId: nil)
         }
         let spoken = db.searchAudio(s, fetch: 200).rows.compactMap { a -> SearchHit? in
             guard let t = Time.iso.date(from: a.timestamp) else { return nil }
+            // While filtering, speech only counts when it was heard with that app in front.
+            if appFilter != nil && !AppFilter.covers(frames, t) { return nil }
             return SearchHit(id: "a\(a.id)", kind: .audio, time: t,
                              title: a.isInput ? "Microphone" : "System audio",
                              snippet: a.text, chunkId: a.chunkId)
@@ -63,7 +66,7 @@ extension TimelineModel {
     func open(_ hit: SearchHit) {
         if hit.time < loadedSince {
             let hours = Date().timeIntervalSince(hit.time) / 3600 + 1
-            reload(hours: hours)
+            reload(hours: hours, keepApp: true)
         }
         jump(to: hit.time)
         showResults = false

@@ -8,7 +8,12 @@ namespace OpenRewind;
 sealed class TimelineModel
 {
     public readonly Database Db;
+    /// The screenshots shown: all of them, or only those of the filtered app.
     public List<TimelineFrame> Frames { get; private set; } = new();
+    /// Every screenshot loaded, whatever the app filter.
+    List<TimelineFrame> allFrames = new();
+    /// Only show moments when this app was in front (null = all apps).
+    public string? AppFilterName { get; private set; }
     public List<TimelineAudio> Audio { get; private set; } = new();
     /// Recorded stretches, with long breaks between them (see TimelineAxis).
     List<TimelineAxis.Session> sessions = new();
@@ -95,18 +100,48 @@ sealed class TimelineModel
     /// Axis for the current zoom: each break gets 6% of the visible width.
     public TimelineAxis Axis => new(sessions, Span * 0.06);
 
+    /// Apps in the loaded history, the one in front longest first (for the app filter menu).
+    public List<string> Apps => AppFilter.Apps(allFrames);
+
+    /// The newest screenshot of any app.
+    public TimelineFrame? Newest => allFrames.Count > 0 ? allFrames[^1] : null;
+
+    /// Show only the moments when `app` was in front, or every app (null). Stays near the same time.
+    public void SetAppFilter(string? app)
+    {
+        if (app == AppFilterName) return;
+        var at = Playhead;
+        StopAudio();
+        AppFilterName = app;
+        ApplyFilter();
+        Show(FrameIndex(at));
+        if (Query.Trim().Length > 0) RunSearch();
+    }
+
+    /// Frames and the bar's stretches for the current app filter. While filtering, time in
+    /// other apps becomes breaks, and audio does not keep those stretches open.
+    void ApplyFilter()
+    {
+        Frames = AppFilter.Apply(allFrames, AppFilterName);
+        sessions = AppFilterName == null
+            ? TimelineAxis.BuildSessions(Frames, Audio)
+            : TimelineAxis.BuildSessions(Frames, Array.Empty<TimelineAudio>(), gap: AppFilter.GapThreshold);
+    }
+
     /// Audio chunks that cover the playhead (mic and system audio can overlap).
     public List<TimelineAudio> AudioHere => Audio.Where(a => a.Start <= Playhead && Playhead < a.End).ToList();
 
-    public void Reload(double hours = 24)
+    /// `keepApp`: keep the app filter (opening an older search result); a fresh open shows every app.
+    public void Reload(double hours = 24, bool keepApp = false)
     {
         StopAudio();
         targetFor = null;
         LoadedAt = DateTime.UtcNow;
         LoadedSince = LoadedAt.AddHours(-hours);
-        Frames = Db.TimelineFrames(LoadedSince);
+        allFrames = Db.TimelineFrames(LoadedSince);
         Audio = Db.TimelineAudio(LoadedSince);
-        sessions = TimelineAxis.BuildSessions(Frames, Audio);
+        if (!keepApp || !allFrames.Any(f => f.AppName == AppFilterName)) AppFilterName = null;
+        ApplyFilter();
         Show(Frames.Count - 1);
     }
 
@@ -118,9 +153,9 @@ sealed class TimelineModel
         if (older.Count == 0) return;
         var keepId = Current?.Id;
         LoadedSince = since;
-        Frames = older.Concat(Frames).ToList();
+        allFrames = older.Concat(allFrames).ToList();
         Audio = Db.TimelineAudio(since);
-        sessions = TimelineAxis.BuildSessions(Frames, Audio);
+        ApplyFilter();
         if (keepId != null) Index = Math.Max(0, Frames.FindIndex(f => f.Id == keepId));
     }
 
@@ -194,7 +229,7 @@ sealed class TimelineModel
     {
         if (Frames.Count == 0 || date < Frames[0].Time) return null;
         var f = Frames[FrameIndex(date)];
-        if ((date - f.Time).TotalSeconds > 60) return null;
+        if (date > (f.End != null ? AppFilter.Until(f) : f.Time.AddSeconds(60))) return null;
         if (thumbCache.TryGetValue(f.Id, out var cached)) return (f, cached);
         Image? thumb = null;
         if (ReadImage(f.Path) is Image full)
@@ -229,7 +264,9 @@ sealed class TimelineModel
         var q = Query.Trim();
         RefreshHighlights();
         if (q.Length == 0) { Hits = new(); ShowResults = false; Notify(); return; }
-        Hits = SearchHits.Find(Db, q);
+        Hits = SearchHits.Find(Db, q, AppFilterName);
+        // While filtering, speech only counts when it was heard with that app in front.
+        if (AppFilterName != null) Hits = Hits.Where(h => !h.IsAudio || AppFilter.Covers(Frames, h.Time)).ToList();
         SelectedHit = 0;
         ShowResults = true;
         Notify();
@@ -238,7 +275,7 @@ sealed class TimelineModel
     /// Go to a result: load enough history, move the playhead, play speech from that point.
     public void Open(SearchHit hit)
     {
-        if (hit.Time < LoadedSince) Reload((DateTime.UtcNow - hit.Time).TotalHours + 1);
+        if (hit.Time < LoadedSince) Reload((DateTime.UtcNow - hit.Time).TotalHours + 1, keepApp: true);
         Jump(hit.Time);
         ShowResults = false;
         if (hit.IsAudio && Audio.FirstOrDefault(a => a.Id == hit.ChunkId) is TimelineAudio a) Play(a);
