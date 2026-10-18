@@ -103,13 +103,45 @@ final class Transcriber {
     static func parse(_ data: Data) -> [(start: Double, end: Double, text: String)] {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let segs = obj["transcription"] as? [[String: Any]] else { return [] }
-        return segs.compactMap { seg in
+        let kept: [(start: Double, end: Double, text: String)] = segs.compactMap { seg in
             let text = (seg["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !isNoise(text) else { return nil }
+            guard !isNoise(text), !isFakeLine(text) else { return nil }
             let off = seg["offsets"] as? [String: Any]
             let from = (off?["from"] as? NSNumber)?.doubleValue ?? 0
             let to = (off?["to"] as? NSNumber)?.doubleValue ?? from
             return (from / 1000, to / 1000, text)
+        }
+        // A clip that only says "Thank you." or "You" is almost always Whisper guessing on silence.
+        if !kept.isEmpty, kept.allSatisfy({ weakLines.contains(normalize($0.text)) }) { return [] }
+        return kept
+    }
+
+    /// Lines Whisper makes up on quiet audio. It learned them from video subtitle credits.
+    static let fakeLines: [String] = [
+        "transcription by castingwords", "transcribed by", "subtitles by", "subtitled by",
+        "captions by", "captioning by", "amaraorg", "thanks for watching", "thank you for watching",
+        "thanks for listening", "thank you for listening", "please subscribe", "like and subscribe",
+        "dont forget to subscribe", "see you in the next video", "see you next time",
+        "translated by", "copyright", "all rights reserved", "www.", ".com",
+    ]
+
+    /// Real speech can be just these words, so they are dropped only when they are the whole clip.
+    static let weakLines: Set<String> = ["thank you", "thanks", "you", "bye", "okay", "ok", "so", "yeah", "hmm", "uh", "um"]
+
+    static func normalize(_ t: String) -> String {
+        t.lowercased()
+            .filter { $0.isLetter || $0.isNumber || $0 == " " || $0 == "." }
+            .replacingOccurrences(of: ".", with: "")
+            .split(separator: " ").joined(separator: " ")
+    }
+
+    static func isFakeLine(_ t: String) -> Bool {
+        let n = normalize(t)
+        let raw = t.lowercased()
+        // Only short lines: a long sentence that happens to contain "copyright" is real speech.
+        guard n.split(separator: " ").count <= 12 else { return false }
+        return fakeLines.contains { f in
+            f.contains(".") ? raw.contains(f) : n.contains(f.replacingOccurrences(of: ".", with: ""))
         }
     }
 
