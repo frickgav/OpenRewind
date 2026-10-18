@@ -63,15 +63,15 @@ static class Draw
         g.DrawString(s, f, b, box, fmt);
     }
 
-    /// A key drawn like a keyboard key. Returns its width.
-    public static float Keycap(Graphics g, string key, Font f, float x, float midY, float k)
+    /// A key drawn like a keyboard key, in `ink` (white on dark, black on light). Returns its width.
+    public static float Keycap(Graphics g, Color ink, string key, Font f, float x, float midY, float k)
     {
         var sz = Measure(g, key, f);
         float w = Math.Max(18 * k, sz.Width + 10 * k), h = sz.Height + 3 * k;
         var r = new RectangleF(x, midY - h / 2, w, h);
-        Fill(g, r, 4 * k, White(0.12));
-        Stroke(g, r, 4 * k, White(0.18));
-        Text(g, key, f, White(0.85), r.X + (w - sz.Width) / 2, r.Y + (h - sz.Height) / 2);
+        Fill(g, r, 4 * k, WithAlpha(ink, 0.12));
+        Stroke(g, r, 4 * k, WithAlpha(ink, 0.18));
+        Text(g, key, f, WithAlpha(ink, 0.85), r.X + (w - sz.Width) / 2, r.Y + (h - sz.Height) / 2);
         return w;
     }
 }

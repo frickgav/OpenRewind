@@ -36,8 +36,9 @@ sealed class TimelineModel
     /// Where the searched words are on the shown screenshot, as fractions of its size.
     public List<RectangleF> Highlights { get; private set; } = new();
 
-    /// Set by the tray app: opens the browser search page, for the current query if there is one.
-    public Action? OpenInBrowser;
+    /// Short message shown for a moment at the top (for example, why O did nothing).
+    public string? Notice { get; private set; }
+    readonly System.Windows.Forms.Timer noticeTimer = new() { Interval = 2500 };
 
     /// Something visible changed; the overlay repaints.
     public event Action? Changed;
@@ -61,7 +62,30 @@ sealed class TimelineModel
         Db = db;
         playTimer.Tick += (_, _) => FollowAudio();
         highlightTimer.Tick += (_, _) => { highlightTimer.Stop(); FindHighlights(); };
+        noticeTimer.Tick += (_, _) => { noticeTimer.Stop(); Notice = null; Notify(); };
     }
+
+    public void ShowNotice(string text)
+    {
+        Notice = text;
+        noticeTimer.Stop();
+        noticeTimer.Start();
+        Notify();
+    }
+
+    /// What O opens for the shown screenshot, or null when there is nothing to go back to.
+    /// Worked out once per shown screenshot (it may look through the open windows).
+    public OpenTarget? CurrentTarget
+    {
+        get
+        {
+            if (Current is not TimelineFrame f) return null;
+            if (targetFor != f.Id) { targetFor = f.Id; target = Reopen.For(f); }
+            return target;
+        }
+    }
+    long? targetFor;
+    OpenTarget? target;
 
     public TimelineFrame? Current => Index >= 0 && Index < Frames.Count ? Frames[Index] : null;
 
@@ -77,6 +101,7 @@ sealed class TimelineModel
     public void Reload(double hours = 24)
     {
         StopAudio();
+        targetFor = null;
         LoadedAt = DateTime.UtcNow;
         LoadedSince = LoadedAt.AddHours(-hours);
         Frames = Db.TimelineFrames(LoadedSince);

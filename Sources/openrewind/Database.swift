@@ -13,6 +13,8 @@ struct Frame: Codable {
     var text: String
     var textSource: String
     var hash: Int64
+    /// Address of the browser tab in this frame, the open document (file://), or "".
+    var browserUrl = ""
 }
 
 struct SearchQuery {
@@ -95,6 +97,10 @@ final class Database {
             VALUES ('delete', old.id, old.text, old.app_name, old.window_name);
         END;
         """)
+        // Added later: older databases do not have this column yet. Windows adds the same column.
+        if scalarInt("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'browser_url'", []) == 0 {
+            try exec("ALTER TABLE frames ADD COLUMN browser_url TEXT NOT NULL DEFAULT ''")
+        }
     }
 
     func exec(_ sql: String) throws {
@@ -110,7 +116,7 @@ final class Database {
     @discardableResult
     func insert(_ f: Frame) throws -> Int64 {
         lock.lock(); defer { lock.unlock() }
-        let sql = "INSERT INTO frames (timestamp, app_name, window_name, focused, snapshot_path, text, text_source, hash) VALUES (?,?,?,?,?,?,?,?)"
+        let sql = "INSERT INTO frames (timestamp, app_name, window_name, focused, snapshot_path, text, text_source, hash, browser_url) VALUES (?,?,?,?,?,?,?,?,?)"
         var st: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { throw DBError.prepare(errmsg) }
         defer { sqlite3_finalize(st) }
@@ -118,6 +124,7 @@ final class Database {
         sqlite3_bind_int(st, 4, f.focused ? 1 : 0)
         bind(st, 5, f.snapshotPath); bind(st, 6, f.text); bind(st, 7, f.textSource)
         sqlite3_bind_int64(st, 8, f.hash)
+        bind(st, 9, f.browserUrl)
         guard sqlite3_step(st) == SQLITE_DONE else { throw DBError.step(errmsg) }
         return sqlite3_last_insert_rowid(db)
     }
@@ -167,7 +174,7 @@ final class Database {
 
     // MARK: - helpers
 
-    private static let cols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash"
+    private static let cols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url"
 
     /// Turn free text into a safe FTS5 query: every word becomes a quoted prefix term.
     static func ftsQuery(_ raw: String) -> String? {
@@ -210,7 +217,7 @@ final class Database {
             out.append(Frame(id: sqlite3_column_int64(st, 0), timestamp: col(st, 1), appName: col(st, 2),
                              windowName: col(st, 3), focused: sqlite3_column_int(st, 4) != 0,
                              snapshotPath: col(st, 5), text: col(st, 6), textSource: col(st, 7),
-                             hash: sqlite3_column_int64(st, 8)))
+                             hash: sqlite3_column_int64(st, 8), browserUrl: col(st, 9)))
         }
         return out
     }

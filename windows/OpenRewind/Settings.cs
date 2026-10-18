@@ -13,12 +13,20 @@ sealed class Settings
     public string KeepAudio { get; set; } = "forever";
     /// Seconds between saved frames while only a few words change (2 = every capture).
     public int TypingFrameGap { get; set; } = 2;
+    /// Saved screenshot size as a percent of the screen (see ScreenshotSizes.Choices).
+    public int ScreenshotPercent { get; set; } = ScreenshotSizes.Default;
     /// The local HTTP API + browser search page. Off unless the user turns it on.
     public bool LocalSearchServer { get; set; } = false;
     /// Download new versions in the background; they are installed only on a click.
     public bool AutoDownloadUpdates { get; set; } = true;
     /// The version whose timeline banner was closed; a newer version shows it again.
     public string? DismissedUpdateVersion { get; set; }
+    /// Pause Recording: when screen and audio come back on (UTC); DateTime.MaxValue = until resumed. Null when not paused.
+    public DateTime? PausedUntil { get; set; }
+    /// Timeline hotkey (see HotkeyShortcut). Null = Ctrl+Alt+T.
+    public HotkeyShortcut? TimelineShortcut { get; set; }
+    /// Timeline Look: "system", "light" or "dark".
+    public string TimelineLook { get; set; } = "system";
 
     string path = "";
 

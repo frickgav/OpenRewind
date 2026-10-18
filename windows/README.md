@@ -17,13 +17,30 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
 ## Use it
 
 - **Record Screen** and **Record Audio** switch on and off on their own (remembered).
+- **Pause Recording**: for 30 minutes, 1 hour, 1 day, or until you resume. Both screen and
+  audio stop; the menu shows **Resume Recording** and when recording comes back on (also
+  after a restart). The switches still pick what comes back on.
 - **Open Timeline**, a left-click on the tray icon, or **Ctrl+Alt+T** from anywhere shows a
   full-screen overlay. Scroll or use ← → to move through time, Shift for 1 minute, ↑ ↓ for
   10 minutes, drag or click the bar, **space** plays the audio at that moment (the picture
-  follows along), **+ / −** zoom, **N** jumps to now, **O** opens the search page in the browser (and turns the local search server on), **/** or **Ctrl+F** searches,
+  follows along), **+ / −** zoom, **N** jumps to now, **/** or **Ctrl+F** searches,
   **?** lists every key, **Esc** closes.
+- **O** (or the button at the bottom right of the screenshot) goes back to that moment: it
+  reopens the browser tab in the same browser (Chrome, Edge, Arc, Brave, Firefox, Vivaldi, Opera),
+  or brings the app's window with that title to the front, starting the app if it is closed.
+  The tab's address is saved with each screenshot. Windows apps do not say which file a window
+  shows, so documents come back as their app window (the Mac app reopens the file itself).
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
+- **Settings → Timeline Shortcut**: **Change Shortcut…** waits for the new key combination
+  (Ctrl, Alt or Win with a key, or an F-key alone); **Reset** goes back to Ctrl+Alt+T.
+- **Settings → Screenshot Resolution**: Full (100%), High (75%), Medium (50%, default) or
+  Low (33%), with the pixel size each gives on your main display. Higher looks sharper but
+  uses more disk space. Applies to the next screenshot; text search works the same at every size.
+- **Settings → Timeline Look**: Match System, Light or Dark.
+- **Settings → Permissions** shows whether Windows lets OpenRewind use the microphone (the only
+  permission Windows asks for); click it to open the microphone privacy page. **Settings** shows ⚠
+  when it is off.
 - **Settings → Keep Screen / Audio Recordings For**: 1 Day, 1 Week, 1 Month, 1 Year,
   or Until I Delete Them (default). Older recordings are deleted at launch and every hour.
 - **Settings → Delete Recordings**: last 15 minutes, last hour, today, all screen,
