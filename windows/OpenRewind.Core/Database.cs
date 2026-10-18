@@ -23,7 +23,7 @@ public class SearchQuery
     public int Offset = 0;
 }
 
-/// Thin SQLite wrapper with the exact schema the Mac app uses (screenpipe's shape):
+/// Thin SQLite wrapper with the exact schema the Mac app uses:
 /// `frames` + `frames_fts`, `audio_chunks` + `audio_transcriptions` + `audio_fts`.
 /// One connection, one lock: the app is small and writes are rare.
 public sealed partial class Database : IDisposable

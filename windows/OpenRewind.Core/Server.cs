@@ -21,7 +21,7 @@ public sealed class HttpResponse
     public static HttpResponse Error(string msg, int status) => Json(new Dictionary<string, object> { ["error"] = msg }, status);
 }
 
-/// Tiny HTTP/1.1 server on 127.0.0.1 only. Same as the Mac app's (and screenpipe's localhost API).
+/// Tiny HTTP/1.1 server on 127.0.0.1 only. Same as the Mac app's.
 /// No CORS headers are sent, so other websites cannot read this data from the browser.
 /// A raw socket instead of HttpListener: HttpListener needs an admin-made URL reservation on Windows.
 public sealed class Server : IDisposable
@@ -106,7 +106,7 @@ public sealed class Server : IDisposable
     public void Dispose() => listener.Stop();
 }
 
-/// REST routes, shaped like screenpipe's so existing scripts can point at OpenRewind.
+/// REST routes for scripts and the browser search page, the same as the Mac app's.
 public sealed class Api
 {
     readonly Database db;

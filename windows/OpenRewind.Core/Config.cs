@@ -12,7 +12,7 @@ public sealed class Config
     public bool UseAccessibility { get; set; } = true;
     public bool RecordMic { get; set; } = true;
     public bool RecordSystemAudio { get; set; } = true;
-    /// Length of each audio chunk sent to Whisper (screenpipe uses 30 s).
+    /// Length of each audio chunk sent to Whisper.
     public double AudioChunkSeconds { get; set; } = 30;
     public string? WhisperModel { get; set; }
     public string? WhisperBinary { get; set; }

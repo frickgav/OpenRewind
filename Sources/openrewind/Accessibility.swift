@@ -2,7 +2,7 @@ import AppKit
 import ApplicationServices
 
 /// Reads text from the focused window's accessibility tree.
-/// screenpipe uses this as the primary text source and OCR as the fallback.
+/// This is the primary text source; OCR is the fallback.
 enum Accessibility {
     static var isTrusted: Bool { AXIsProcessTrusted() }
 

@@ -22,7 +22,7 @@ struct Transcript {
     var filePath: String
 }
 
-/// Audio tables, same shape as screenpipe's `audio_chunks` / `audio_transcriptions` / `audio_transcriptions_fts`.
+/// Audio tables: `audio_chunks` / `audio_transcriptions` / `audio_transcriptions_fts`.
 extension Database {
     func migrateAudio() throws {
         try exec("""

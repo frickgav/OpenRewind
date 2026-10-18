@@ -55,21 +55,15 @@ when a company is sold. So we built it again, in the open:
 
 ### How it was built
 
-OpenRewind is new code. It does not contain any Rewind code.
+OpenRewind is new code. It does not contain any Rewind code. The idea and the
+full-screen timeline (⌥⌘T) are modeled on Rewind's.
 
-- **The idea and the timeline** come from Rewind. The full-screen timeline
-  (⌥⌘T) is modeled on Rewind's.
-- **The internals** come from a teardown of [screenpipe](https://screenpi.pe),
-  another open screen-memory app, done with [REA](https://github.com/morluto/rea).
-  The database layout and the local API copy screenpipe's shape.
-  See [docs/re/FINDINGS.md](docs/re/FINDINGS.md).
-
-OpenRewind is not made by or connected to Rewind AI, Limitless, Meta, or screenpipe.
+OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
 
 ## What it does (v0.1)
 
 - Takes a screenshot every 2 s (ScreenCaptureKit).
-- Skips frames that did not change (64-bit dHash, like screenpipe's simhash).
+- Skips frames that did not change (64-bit dHash).
 - Reads text from the focused window's **accessibility tree**. Falls back to
   **Apple Vision OCR**. Never reads password fields.
 - Saves a JPEG and a row in SQLite with an **FTS5** index.
@@ -176,7 +170,7 @@ macOS asks for **Screen Recording** (screen + system audio) and
 command (for example Terminal). Grant it, then run again. **Accessibility**
 permission is optional; it gives cleaner text than OCR.
 
-## API (screenpipe-shaped)
+## API
 
 On when you run `record` or `serve` from the terminal, or after **Settings → Local Search Server** in the app.
 
@@ -204,14 +198,14 @@ Delete the folder to wipe everything, or from the terminal:
 
 (`15m`, `1h`, `today`, `all`, `older:day|week|month|year`; add `--screen-only` or `--audio-only`.)
 
-## Not yet (Rewind or screenpipe had these)
+## Not yet (Rewind had these)
 
 - Speaker identification (who said what)
 - Meeting summaries and AI chat over your history ("Ask Rewind")
 - UI input events (clicks, keys)
 - Browser URL per frame
 - Video chunk encoding (ffmpeg) instead of JPEGs
-- Plugins ("pipes")
+- Plugins
 
 ## License
 

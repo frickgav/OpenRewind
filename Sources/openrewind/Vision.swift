@@ -6,7 +6,7 @@ import Vision
 
 enum ImageTools {
     /// 64-bit difference hash (dHash). Close screens give close hashes,
-    /// so we can skip frames that barely changed (screenpipe uses simhash for this).
+    /// so we can skip frames that barely changed.
     static func dHash(_ image: CGImage) -> UInt64 {
         let w = 9, h = 8
         var pixels = [UInt8](repeating: 0, count: w * h)
