@@ -220,6 +220,13 @@ struct API {
               let data = FileManager.default.contents(atPath: path) else {
             return .error("snapshot missing", status: 404)
         }
+        // Chrome and Firefox cannot show HEIC: send JPEG.
+        if path.hasSuffix(".heic") {
+            guard let img = ImageTools.load(URL(fileURLWithPath: path)), let jpg = ImageTools.jpegData(img) else {
+                return .error("cannot decode snapshot", status: 500)
+            }
+            return HTTPResponse(contentType: "image/jpeg", body: jpg)
+        }
         return HTTPResponse(contentType: "image/jpeg", body: data)
     }
 }

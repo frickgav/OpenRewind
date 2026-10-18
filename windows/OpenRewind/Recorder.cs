@@ -80,6 +80,11 @@ sealed class Recorder
             lastThumb = thumb;
             return null;
         }
+        // Only a few words changed (typing, a clock): store one frame every few seconds, not every tick.
+        // lastThumb stays on the stored frame, so the screen it settles on is still saved once the gap is up.
+        if (key == lastKey && !heartbeatDue && (DateTime.UtcNow - lastWrite).TotalSeconds < FrameDedup.MinorChangeSeconds
+            && FrameDedup.IsMinorChange(lastText, text))
+            return null;
 
         var ts = Time.Now();
         var dayDir = Path.Combine(config.DataDir, ts[..10]);
