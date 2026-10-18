@@ -24,6 +24,7 @@ struct TimelineView: View {
             VStack(spacing: 14) {
                 topBar
                 if let gap = staleGap { staleBanner(gap) }
+                UpdateBanner()
                 ZStack(alignment: .topLeading) {
                     screenshot
                     if model.showResults { results.padding(.top, 2) }

@@ -70,6 +70,8 @@ static class Program
         switch (command)
         {
             case "app":
+                // After an update the new copy starts while the old one is quitting.
+                Updater.CleanUp(args);
                 // One copy at a time: a second launch just opens the timeline of the first.
                 using (var single = new Mutex(true, @"Local\OpenRewind.App", out var first))
                 {
