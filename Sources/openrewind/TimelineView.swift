@@ -78,6 +78,7 @@ struct TimelineView: View {
                 .allowsHitTesting(false)
             }
             if model.showHelp { helpCard }
+            if model.tutorialStep != nil { TutorialCoach(model: model) { model.tutorialStep = nil } }
         }
         .foregroundColor(theme.text)
         .onChange(of: model.focusSearchToken) { _ in searchFocused = true }

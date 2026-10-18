@@ -71,7 +71,10 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
 - Saves a HEIC (about half the size of a JPEG; JPEG on Macs that cannot encode
   HEIC) and a row in SQLite with an **FTS5** index.
 - Can serve a local API + search page at `http://127.0.0.1:3031` (off in the app until you turn it on).
-- Skips password managers by default (`OPENREWIND_EXCLUDE` to change).
+- **Blocked apps** are blurred in every screenshot, wherever they are on screen, and their text
+  is never saved. First launch asks what to block (password managers, money apps, private
+  browsing windows and bank sites are ticked); change it in **Settings → Blocked Apps & Sites**.
+  `OPENREWIND_EXCLUDE` adds more app names from the terminal.
 - Records **microphone** (AVAudioEngine) and **system audio** (ScreenCaptureKit)
   in 30 s chunks, 16 kHz mono WAV. Silent chunks are dropped.
 - Transcribes each chunk with **local Whisper** (`whisper-cli` from
@@ -119,6 +122,12 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
   commands `record` and `serve` always start it.
 - **Settings → Launch at Login** starts it with your Mac.
 - The lock screen and screen saver are never recorded.
+- **Settings → Blocked Apps & Sites** picks apps to blur, plus words that hide a window when its
+  title has them (a browser's title is the page title, so "PayPal" hides PayPal tabs). Private
+  browsing windows are hidden when the browser names them in the title (Incognito, InPrivate,
+  Private Browsing).
+- **Settings → Show Tutorial** walks through the timeline again; **Run Setup Again…** reopens
+  the first-run setup.
 - Log: `~/.openrewind/openrewind.log`.
 
 ### Put it online for others

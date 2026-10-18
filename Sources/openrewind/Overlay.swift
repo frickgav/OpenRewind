@@ -61,9 +61,16 @@ final class OverlayController {
         installMonitor()
     }
 
+    /// Open the timeline with the guided tour on it.
+    func showTutorial() {
+        show()
+        model.tutorialStep = 0
+    }
+
     /// `restoreFocus: false` when another app is about to come to the front (Open tab).
     func hide(restoreFocus: Bool = true) {
         model.stopAudio()
+        model.tutorialStep = nil
         if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
         guard let p = panel else { return }
         NSAnimationContext.runAnimationGroup({ $0.duration = 0.12; p.animator().alphaValue = 0 }) {

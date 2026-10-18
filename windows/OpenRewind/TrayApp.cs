@@ -12,6 +12,7 @@ sealed class TrayApp : ApplicationContext
     readonly NotifyIcon icon;
     readonly ContextMenuStrip menu = new();
     readonly OverlayForm overlay;
+    readonly TimelineModel timeline;
     HotKey hotKey;
     /// Turns recording back on when a timed pause ends.
     readonly System.Windows.Forms.Timer resumeTimer = new();
@@ -26,8 +27,9 @@ sealed class TrayApp : ApplicationContext
         this.engine = engine;
         settings = Settings.Load(engine.Config.Home);
         Program.RefreshIconIfNew(settings);
-        var model = new TimelineModel(engine.Db);
-        overlay = new OverlayForm(model) { Look = settings.TimelineLook };
+        Blocklist.Current = settings.ToBlocklist();
+        timeline = new TimelineModel(engine.Db);
+        overlay = new OverlayForm(timeline) { Look = settings.TimelineLook };
         _ = overlay.Handle;  // create it on the UI thread now
 
         if (settings.LocalSearchServer) StartServer();
@@ -56,6 +58,23 @@ sealed class TrayApp : ApplicationContext
 
         BuildMenu();
         UpdateIcon();
+        if (!settings.OnboardingDone) ShowSetup();
+    }
+
+    /// The first-run setup; ends in the guided tour if the user asks for it.
+    void ShowSetup()
+    {
+        if (setup is { IsDisposed: false }) { setup.Activate(); return; }
+        OnboardingForm.Hotkey = Shortcut.Label;
+        setup = new OnboardingForm(settings, tour => { if (tour) ShowTutorial(); });
+        setup.Show();
+    }
+    OnboardingForm? setup;
+
+    void ShowTutorial()
+    {
+        OnboardingForm.Hotkey = Shortcut.Label;
+        TutorialCoach.Start(overlay, timeline);
     }
 
     // Build the menu fresh each time it opens, so it always shows the live state.
@@ -97,6 +116,8 @@ sealed class TrayApp : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
 
         var s = new ToolStripMenuItem(Permissions.MicrophoneOn ? "Settings" : "Settings  ⚠");
+        s.DropDownItems.Add(Item("Blocked Apps & Sites…", () => BlockedAppsForm.ShowFor(settings)));
+        s.DropDownItems.Add(new ToolStripSeparator());
         s.DropDownItems.Add(ShortcutMenu());
         s.DropDownItems.Add(ScreenshotSizeMenu());
         s.DropDownItems.Add(LookMenu());
@@ -130,6 +151,9 @@ sealed class TrayApp : ApplicationContext
         {
             try { Settings.LaunchAtLogin = !Settings.LaunchAtLogin; } catch (Exception e) { Log.Write($"launch at login failed: {e.Message}"); }
         }));
+        s.DropDownItems.Add(new ToolStripSeparator());
+        s.DropDownItems.Add(Item("Show Tutorial", ShowTutorial));
+        s.DropDownItems.Add(Item("Run Setup Again…", ShowSetup));
         menu.Items.Add(s);
         menu.Items.Add(Item("Quit OpenRewind", Quit));
     }
@@ -445,6 +469,8 @@ sealed class TrayApp : ApplicationContext
 
     void UpdateIcon()
     {
+        // The constructor turns recording on before the tray icon exists; it calls this again once it does.
+        if (icon is null) return;
         // NotifyIcon tooltips are limited to 127 characters.
         var tip = PausedUntil is DateTime until ? $"OpenRewind — {Pause.Text(until, DateTime.UtcNow)}"
             : $"OpenRewind — {(engine.ScreenOn ? "Screen on" : "Screen off")} · {(engine.AudioOn ? "Audio on" : "Audio off")}";
