@@ -56,7 +56,7 @@
   }
 
   // Timeline bar: app segments and audio runs.
-  const colors = ["#6d4aff", "#22c55e", "#f97316", "#0ea5e9", "#ec4899", "#eab308", "#94a3b8"];
+  const colors = ["#0c5afa", "#22c55e", "#f97316", "#0ea5e9", "#ec4899", "#eab308", "#94a3b8"];
   const segs = document.getElementById("tl-segs");
   const audio = document.getElementById("tl-audio");
   let seed = 7;

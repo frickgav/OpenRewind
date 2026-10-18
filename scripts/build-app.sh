@@ -24,11 +24,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/OpenRewind"
 sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" packaging/Info.plist > "$APP/Contents/Info.plist"
 
-ICONSET="$DIST/AppIcon.iconset"
-rm -rf "$ICONSET"
-swift scripts/make-icon.swift "$ICONSET"
-iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
-rm -rf "$ICONSET"
+# Icon PNGs come from branding/logo.png via scripts/make-icons.py.
+iconutil -c icns packaging/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
 
 # Signing: Developer ID if present (needed for downloads), else Apple Development, else ad-hoc.
 if [ -z "${SIGN_IDENTITY:-}" ]; then
