@@ -419,6 +419,13 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openPermission(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let p = Permission(rawValue: raw) else { return }
+        if !p.granted {
+            // Each update replaces the app, and macOS ties the switch to the exact build it was turned
+            // on for. So the switch can show on in System Settings while this build is still refused.
+            // Clear OpenRewind's row first; the request below adds a fresh one for this build.
+            p.reset()
+            log("reset \(p.title) permission so it can be turned on for this version")
+        }
         p.request()
         NSWorkspace.shared.open(p.settingsURL)
     }
@@ -707,6 +714,24 @@ enum Permission: String, CaseIterable {
         case .microphone: return AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         case .accessibility: return Accessibility.isTrusted
         }
+    }
+
+    /// Name tccutil uses for this permission.
+    private var service: String {
+        switch self {
+        case .screen: return "ScreenCapture"
+        case .microphone: return "Microphone"
+        case .accessibility: return "Accessibility"
+        }
+    }
+
+    /// Remove OpenRewind's row for this permission, including one left from an older build.
+    func reset() {
+        guard let id = Bundle.main.bundleIdentifier else { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        p.arguments = ["reset", service, id]
+        do { try p.run(); p.waitUntilExit() } catch { log("cannot run tccutil: \(error.localizedDescription)") }
     }
 
     /// Ask macOS to show its prompt, so OpenRewind is in the list in System Settings.
