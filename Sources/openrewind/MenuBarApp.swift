@@ -438,8 +438,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openPermission(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let p = Permission(rawValue: raw) else { return }
-        p.request()
-        NSWorkspace.shared.open(p.settingsURL)
+        PermissionHelper.shared.show(p)
     }
 
     @objc private func openPrivacySettings() {
@@ -662,8 +661,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openScreenSettings() {
-        Capture.requestScreenPermission()
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+        PermissionHelper.shared.show(.screen)
     }
 
     @objc private func openTimeline() { overlay.show() }
