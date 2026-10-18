@@ -12,6 +12,7 @@ sealed class TrayApp : ApplicationContext
     readonly NotifyIcon icon;
     readonly ContextMenuStrip menu = new();
     readonly OverlayForm overlay;
+    readonly TimelineModel timeline;
     readonly HotKey hotKey;
     readonly RetentionJob retention;
     /// Last measured size of the data folder; measured in the background when the menu opens.
@@ -22,7 +23,9 @@ sealed class TrayApp : ApplicationContext
     {
         this.engine = engine;
         settings = Settings.Load(engine.Config.Home);
-        overlay = new OverlayForm(new TimelineModel(engine.Db));
+        Blocklist.Current = settings.ToBlocklist();
+        timeline = new TimelineModel(engine.Db);
+        overlay = new OverlayForm(timeline);
         _ = overlay.Handle;  // create it on the UI thread now
 
         if (settings.LocalSearchServer) StartServer();
@@ -40,7 +43,19 @@ sealed class TrayApp : ApplicationContext
         icon.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) overlay.Toggle(); };
         BuildMenu();
         UpdateIcon();
+        if (!settings.OnboardingDone) ShowSetup();
     }
+
+    /// The first-run setup; ends in the guided tour if the user asks for it.
+    void ShowSetup()
+    {
+        if (setup is { IsDisposed: false }) { setup.Activate(); return; }
+        setup = new OnboardingForm(settings, tour => { if (tour) ShowTutorial(); });
+        setup.Show();
+    }
+    OnboardingForm? setup;
+
+    void ShowTutorial() => TutorialCoach.Start(overlay, timeline);
 
     // Build the menu fresh each time it opens, so it always shows the live state.
     void BuildMenu()
@@ -66,6 +81,8 @@ sealed class TrayApp : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
 
         var s = new ToolStripMenuItem("Settings");
+        s.DropDownItems.Add(Item("Blocked Apps & Sites…", () => BlockedAppsForm.ShowFor(settings)));
+        s.DropDownItems.Add(new ToolStripSeparator());
         s.DropDownItems.Add(KeepMenu("Keep Screen Recordings For", screen: true));
         s.DropDownItems.Add(KeepMenu("Keep Audio Recordings For", screen: false));
         s.DropDownItems.Add(new ToolStripSeparator());
@@ -87,6 +104,9 @@ sealed class TrayApp : ApplicationContext
         {
             try { Settings.LaunchAtLogin = !Settings.LaunchAtLogin; } catch (Exception e) { Log.Write($"launch at login failed: {e.Message}"); }
         }));
+        s.DropDownItems.Add(new ToolStripSeparator());
+        s.DropDownItems.Add(Item("Show Tutorial", ShowTutorial));
+        s.DropDownItems.Add(Item("Run Setup Again…", ShowSetup));
         menu.Items.Add(s);
         menu.Items.Add(Item("Quit OpenRewind", Quit));
     }
