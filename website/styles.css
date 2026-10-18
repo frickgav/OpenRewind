@@ -217,6 +217,8 @@ mark { background: #fde68a; color: inherit; border-radius: 3px; padding: 0 2px; 
 .card h3 { margin: 22px 0 8px; font-size: 20px; font-weight: 600; letter-spacing: -.2px; color: var(--ink); }
 .card p { margin: 0; color: var(--graphite); font-size: 15.5px; }
 .card-lg { grid-column: span 2; }
+.card-wide { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 32px; align-items: center; }
+.card-wide h3 { margin-top: 0; }
 .card-art {
   position: relative; height: 180px; border-radius: 12px; background: var(--plaster);
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
@@ -254,13 +256,11 @@ kbd {
 .seg span { font-size: 12.5px; padding: 6px 10px; border-radius: 9999px; color: var(--graphite); }
 .seg .on { background: var(--ink); color: #fff; }
 
-.art-files code, .art-api code {
+.art-files code {
   font: 13px/1.7 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   color: var(--slate); background: #fff; border: 1px solid var(--mist);
   border-radius: 10px; padding: 14px 16px; width: 92%;
 }
-.art-api .m { color: var(--violet); font-weight: 600; }
-.art-api .d { color: var(--pewter); }
 
 /* Open source block */
 .open {
@@ -375,6 +375,8 @@ kbd {
   .wrap { padding: 0 16px; }
   .grid, .steps, .dl-grid { grid-template-columns: 1fr; }
   .card-lg { grid-column: auto; }
+  .card-wide { grid-template-columns: 1fr; gap: 0; }
+  .card-wide h3 { margin-top: 22px; }
   .hero { padding-top: 48px; }
   .lede { font-size: 18px; }
   .section { padding-top: 88px; }
