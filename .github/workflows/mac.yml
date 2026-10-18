@@ -1,0 +1,22 @@
+name: Mac app
+
+on:
+  push:
+    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icon.swift", ".github/workflows/mac.yml"]
+  pull_request:
+    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icon.swift", ".github/workflows/mac.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build, sign (ad hoc) and package
+        run: scripts/build-app.sh
+      - name: Check the CLI starts
+        run: dist/OpenRewind.app/Contents/MacOS/OpenRewind help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenRewind-mac
+          path: dist/*.dmg
