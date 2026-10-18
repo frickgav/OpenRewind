@@ -92,8 +92,25 @@ final class OverlayController {
             return true
         }
         let shift = e.modifierFlags.contains(.shift)
+        let cmd = e.modifierFlags.contains(.command)
+        let typing = panel?.firstResponder is NSTextView  // the search box is focused
+
+        if cmd && e.keyCode == UInt16(kVK_ANSI_F) { model.focusSearchToken += 1; model.showResults = !model.query.isEmpty; return true }
+        if cmd && e.keyCode == UInt16(kVK_ANSI_G) { model.nextHit(older: !shift); return true }
+        if typing {
+            switch Int(e.keyCode) {
+            case kVK_Escape:
+                // First Esc closes the list / leaves the box, second Esc closes the overlay.
+                if model.showResults { model.showResults = false } else { panel?.makeFirstResponder(nil) }
+                return true
+            case kVK_DownArrow where model.showResults: model.moveSelection(1); return true
+            case kVK_UpArrow where model.showResults: model.moveSelection(-1); return true
+            default: return false  // let the text field have it
+            }
+        }
+        if !cmd && e.charactersIgnoringModifiers == "/" { model.focusSearchToken += 1; return true }
         switch Int(e.keyCode) {
-        case kVK_Escape: hide()
+        case kVK_Escape: if model.showResults { model.showResults = false } else { hide() }
         case kVK_LeftArrow: shift ? model.jump(to: model.playhead.addingTimeInterval(-60)) : model.step(-1)
         case kVK_RightArrow: shift ? model.jump(to: model.playhead.addingTimeInterval(60)) : model.step(1)
         case kVK_UpArrow: model.jump(to: model.playhead.addingTimeInterval(-600))

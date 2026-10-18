@@ -4,19 +4,133 @@ import SwiftUI
 struct TimelineView: View {
     @ObservedObject var model: TimelineModel
     var close: () -> Void
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         ZStack {
             Color.black.opacity(0.9).ignoresSafeArea()
             VStack(spacing: 14) {
                 header
-                screenshot
+                searchBar
+                ZStack(alignment: .top) {
+                    screenshot
+                    if model.showResults { results }
+                }
                 footer
             }
             .padding(.horizontal, 28)
             .padding(.vertical, 20)
         }
         .foregroundColor(.white)
+        .onChange(of: model.focusSearchToken) { _ in searchFocused = true }
+    }
+
+    // MARK: search
+
+    private var searchBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass").foregroundColor(.white.opacity(0.6))
+            TextField("Search what you saw or heard…", text: $model.query)
+                .textFieldStyle(.plain)
+                .font(.system(size: 16))
+                .focused($searchFocused)
+                .onChange(of: model.query) { _ in model.queryChanged() }
+                .onSubmit { model.openSelected(); searchFocused = false }
+            if !model.query.isEmpty {
+                if !model.hits.isEmpty && !model.showResults {
+                    Text("\(model.selectedHit + 1) of \(model.hits.count)")
+                        .font(.system(size: 12)).foregroundColor(.white.opacity(0.6)).monospacedDigit()
+                    Button { model.nextHit(older: false) } label: { Image(systemName: "chevron.up") }
+                        .buttonStyle(.plain).help("Newer match (⇧⌘G)")
+                    Button { model.nextHit(older: true) } label: { Image(systemName: "chevron.down") }
+                        .buttonStyle(.plain).help("Older match (⌘G)")
+                    Button("List") { model.showResults = true; searchFocused = true }
+                        .buttonStyle(.plain).font(.system(size: 12))
+                } else if model.hits.isEmpty && !model.showResults {
+                    Text("No matches").font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+                }
+                Button { model.clearSearch() } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.plain).foregroundColor(.white.opacity(0.5))
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 9)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(searchFocused ? 0.14 : 0.08)))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(searchFocused ? 0.35 : 0.12)))
+        .frame(maxWidth: 720)
+    }
+
+    private var results: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if model.hits.isEmpty {
+                Text("No matches for “\(model.query)”").foregroundColor(.white.opacity(0.6)).padding(16)
+            } else {
+                Text("\(model.hits.count) moment\(model.hits.count == 1 ? "" : "s") · ↑ ↓ to choose · return to go")
+                    .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
+                    .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 4)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            ForEach(Array(model.hits.enumerated()), id: \.element.id) { i, h in
+                                hitRow(h, selected: i == model.selectedHit)
+                                    .id(i)
+                                    .onTapGesture { model.selectedHit = i; model.openSelected(); searchFocused = false }
+                            }
+                        }
+                        .padding(6)
+                    }
+                    .onChange(of: model.selectedHit) { i in withAnimation(.easeOut(duration: 0.1)) { proxy.scrollTo(i) } }
+                }
+            }
+        }
+        .frame(maxWidth: 720, maxHeight: 420, alignment: .top)
+        .fixedSize(horizontal: false, vertical: model.hits.count < 6)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(white: 0.11)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.12)))
+        .shadow(color: .black.opacity(0.5), radius: 20)
+    }
+
+    private func hitRow(_ h: SearchHit, selected: Bool) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: h.kind == .audio ? "waveform" : "display")
+                .frame(width: 18).foregroundColor(h.kind == .audio ? .green : .white.opacity(0.7))
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text(h.title).font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    Text(h.time, format: .dateTime.month(.abbreviated).day().hour().minute().second())
+                        .font(.system(size: 11)).foregroundColor(.white.opacity(0.5)).monospacedDigit()
+                }
+                highlighted(h.snippet).font(.system(size: 12)).foregroundColor(.white.opacity(0.8)).lineLimit(2)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 8).fill(selected ? Color.accentColor.opacity(0.35) : Color.clear))
+        .contentShape(Rectangle())
+    }
+
+    /// Bold + yellow the searched words inside a snippet.
+    private func highlighted(_ text: String) -> Text {
+        let words = model.query.lowercased().split(separator: " ").map(String.init).filter { !$0.isEmpty }
+        var out = Text("")
+        var rest = Substring(text)
+        while !rest.isEmpty {
+            let lower = rest.lowercased()
+            var best: (Range<String.Index>, Int)? = nil
+            for w in words {
+                if let r = lower.range(of: w) {
+                    let d = lower.distance(from: lower.startIndex, to: r.lowerBound)
+                    if best == nil || d < best!.1 { best = (r, d) }
+                }
+            }
+            guard let (r, d) = best else { out = out + Text(String(rest)); break }
+            let len = lower.distance(from: r.lowerBound, to: r.upperBound)
+            let a = rest.index(rest.startIndex, offsetBy: d)
+            let b = rest.index(a, offsetBy: len)
+            out = out + Text(String(rest[..<a])) + Text(String(rest[a..<b])).bold().foregroundColor(.yellow)
+            rest = rest[b...]
+        }
+        return out
     }
 
     // MARK: header
@@ -105,7 +219,7 @@ struct TimelineView: View {
                 Button { zoom(2) } label: { Image(systemName: "minus.magnifyingglass") }.buttonStyle(.plain)
             }
             TimelineBar(model: model).frame(height: 62)
-            Text("Scroll or ← → to move  ·  ⇧ for 1 minute  ·  drag the bar  ·  space plays audio  ·  + − zoom  ·  N now  ·  esc close")
+            Text("/ or ⌘F search  ·  ⌘G next match  ·  scroll or ← → to move  ·  ⇧ for 1 minute  ·  drag the bar  ·  space plays audio  ·  + − zoom  ·  N now  ·  esc close")
                 .font(.system(size: 11)).foregroundColor(.white.opacity(0.4))
         }
     }
@@ -161,6 +275,11 @@ struct TimelineBar: View {
                         let y: CGFloat = a.isInput ? 40 : 48
                         ctx.fill(Path(roundedRect: CGRect(x: ax, y: y, width: max(2, bx - ax), height: 6), cornerRadius: 3),
                                  with: .color(a.isInput ? Color.orange.opacity(0.8) : Color.green.opacity(0.8)))
+                    }
+                    // Search matches.
+                    for h in model.hits where h.time >= start && h.time <= end {
+                        let hx = x(h.time)
+                        ctx.fill(Path(CGRect(x: hx - 1.5, y: 0, width: 3, height: 8)), with: .color(.yellow))
                     }
                     // Playhead.
                     ctx.fill(Path(CGRect(x: size.width / 2 - 1, y: 0, width: 2, height: size.height)), with: .color(.white))
