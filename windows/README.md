@@ -130,9 +130,11 @@ The code:
 
 ## Code signing
 
-Unsigned downloads get the SmartScreen "Windows protected your PC" warning. The GitHub
-Actions build signs `OpenRewind.exe` with [Azure Trusted Signing](https://learn.microsoft.com/azure/trusted-signing/)
-once these repository secrets are set (Settings → Secrets and variables → Actions):
+Unsigned downloads get the SmartScreen "Windows protected your PC" warning. The Release
+workflow signs `OpenRewind.exe` with [Azure Trusted Signing](https://learn.microsoft.com/azure/trusted-signing/)
+once these secrets are set on the `release` environment (Settings → Environments → release; see
+"Signing" in the main README for how that environment is locked down). Branch and PR builds stay
+unsigned so they never see the secrets:
 
 | Secret | What it is |
 | --- | --- |
