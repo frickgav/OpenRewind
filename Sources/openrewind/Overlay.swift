@@ -135,6 +135,7 @@ final class OverlayController {
         case kVK_DownArrow: model.jump(to: model.playhead.addingTimeInterval(600))
         case kVK_Space: model.toggleAudio()
         case kVK_ANSI_N, kVK_End: model.jumpToNow()
+        case kVK_ANSI_O where !cmd: model.openInBrowser?()
         case kVK_ANSI_Equal, kVK_ANSI_KeypadPlus: model.span = max(60, model.span / 2)
         case kVK_ANSI_Minus, kVK_ANSI_KeypadMinus: model.span = min(12 * 3600, model.span * 2)
         default: return false
