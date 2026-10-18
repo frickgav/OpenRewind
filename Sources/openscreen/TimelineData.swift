@@ -1,0 +1,80 @@
+import Foundation
+import SQLite3
+
+struct TimelineFrame {
+    var id: Int64
+    var time: Date
+    var appName: String
+    var windowName: String
+    var path: String
+}
+
+struct TimelineAudio {
+    var id: Int64
+    var start: Date
+    var duration: Double
+    var device: String
+    var isInput: Bool
+    var path: String
+    var end: Date { start.addingTimeInterval(duration) }
+}
+
+struct TimelineCaption {
+    var start: Double
+    var end: Double
+    var text: String
+}
+
+/// Light reads for the timeline overlay. Rows come back oldest first.
+extension Database {
+    func timelineFrames(since: Date) -> [TimelineFrame] {
+        lock.lock(); defer { lock.unlock() }
+        var st: OpaquePointer?
+        let sql = "SELECT id, timestamp, app_name, window_name, snapshot_path FROM frames WHERE timestamp >= ? ORDER BY timestamp ASC"
+        guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(st) }
+        bind(st, 1, Time.iso.string(from: since))
+        var out: [TimelineFrame] = []
+        while sqlite3_step(st) == SQLITE_ROW {
+            guard let t = Time.iso.date(from: col(st, 1)) else { continue }
+            out.append(TimelineFrame(id: sqlite3_column_int64(st, 0), time: t, appName: col(st, 2),
+                                     windowName: col(st, 3), path: col(st, 4)))
+        }
+        return out
+    }
+
+    func timelineAudio(since: Date) -> [TimelineAudio] {
+        lock.lock(); defer { lock.unlock() }
+        var st: OpaquePointer?
+        // Start a little earlier so a chunk that began before `since` but is still playing is included.
+        let sql = "SELECT id, timestamp, device, is_input, file_path FROM audio_chunks WHERE timestamp >= ? ORDER BY timestamp ASC"
+        guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(st) }
+        bind(st, 1, Time.iso.string(from: since.addingTimeInterval(-120)))
+        var out: [TimelineAudio] = []
+        while sqlite3_step(st) == SQLITE_ROW {
+            guard let t = Time.iso.date(from: col(st, 1)) else { continue }
+            let path = col(st, 4)
+            // 16 kHz mono 16-bit WAV: 32,000 bytes per second after the 44-byte header.
+            let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int) ?? 0
+            guard size > 44 else { continue }
+            out.append(TimelineAudio(id: sqlite3_column_int64(st, 0), start: t, duration: Double(size - 44) / 32_000,
+                                     device: col(st, 2), isInput: sqlite3_column_int(st, 3) != 0, path: path))
+        }
+        return out
+    }
+
+    func captions(chunkId: Int64) -> [TimelineCaption] {
+        lock.lock(); defer { lock.unlock() }
+        var st: OpaquePointer?
+        let sql = "SELECT start_time, end_time, transcription FROM audio_transcriptions WHERE audio_chunk_id = ? ORDER BY start_time"
+        guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(st) }
+        sqlite3_bind_int64(st, 1, chunkId)
+        var out: [TimelineCaption] = []
+        while sqlite3_step(st) == SQLITE_ROW {
+            out.append(TimelineCaption(start: sqlite3_column_double(st, 0), end: sqlite3_column_double(st, 1), text: col(st, 2)))
+        }
+        return out
+    }
+}
