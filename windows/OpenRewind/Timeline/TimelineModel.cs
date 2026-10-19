@@ -5,7 +5,7 @@ namespace OpenRewind;
 
 /// State behind the timeline overlay: which moment is shown, its screenshot, and audio at that moment.
 /// All times are UTC; the view turns them into local time.
-sealed class TimelineModel
+sealed partial class TimelineModel
 {
     public readonly Database Db;
     /// The screenshots shown: all of them, or only those of the filtered app.
@@ -194,12 +194,13 @@ sealed class TimelineModel
 
     void Show(int i)
     {
-        if (Frames.Count == 0) { Image = null; Notify(); return; }
+        if (Frames.Count == 0) { Image = null; RefreshText(); Notify(); return; }
         Index = Math.Clamp(i, 0, Frames.Count - 1);
         var f = Frames[Index];
         Playhead = f.Time;
         Image = LoadImage(f);
         RefreshHighlights();
+        RefreshText();
         UpdateCaption();
         // Warm the cache for the next scroll step either way.
         foreach (var j in new[] { Index - 1, Index + 1 }) if (j >= 0 && j < Frames.Count) LoadImage(Frames[j]);
@@ -383,6 +384,7 @@ sealed class TimelineModel
             Index = i;
             Image = LoadImage(Frames[i]);
             RefreshHighlights();
+            RefreshText();
         }
         UpdateCaption();
         Notify();
