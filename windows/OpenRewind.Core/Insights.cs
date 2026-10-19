@@ -6,7 +6,8 @@ namespace OpenRewind;
 public enum InsightsRange { Day, Week }
 
 /// A stretch of time with one app, window and address in front and no break in it. Start and End are UTC.
-public sealed record ActivitySpan(DateTime Start, DateTime End, string App, string Window, string Url)
+/// Blocked: saved while a blocked window or site was in front (left out of Insights).
+public sealed record ActivitySpan(DateTime Start, DateTime End, string App, string Window, string Url, bool Blocked = false)
 {
     public double Seconds => (End - Start).TotalSeconds;
 }
@@ -57,8 +58,11 @@ public static class Insights
     public static readonly TimeSpan IdleCutoff = TimeSpan.FromMinutes(2);
     /// A screen that does not change gets one frame a minute. A gap this long means nothing changed.
     public static readonly TimeSpan StillGap = TimeSpan.FromSeconds(50);
-    /// After this long without any change on screen, the rest counts as away.
+    /// After this long without any change on screen, the rest counts as away, unless audio was
+    /// recorded then (a call, a video): that counts as present.
     public static readonly TimeSpan StillLimit = TimeSpan.FromMinutes(5);
+    /// Length of a recorded audio clip (the default; `--chunk` changes it).
+    public static readonly TimeSpan AudioChunk = TimeSpan.FromSeconds(30);
     /// The newest frame of all counts this long.
     public static readonly TimeSpan LastFrame = TimeSpan.FromSeconds(2);
     /// A focus session survives a look at another app (or a pause) this long.
@@ -115,14 +119,17 @@ public static class Insights
         if (nowUtc < r.End && nowUtc > r.Start)
         {
             r.SoFar = true;
+            // By the clock: the same time of day, that many days into the previous period.
             var nowLocal = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, tz);
             r.PreviousEnd = ToUtc(pls + (nowLocal - ls), tz);
         }
 
-        // Blocked frames are left out entirely; ask once per app, window and address.
+        // Blocked frames are left out entirely: marked when saved, or blocked now (ask once per app,
+        // window and address).
         var verdicts = new Dictionary<(string, string, string), bool>();
         var kept = spans.Where(s =>
         {
+            if (s.Blocked) return false;
             var key = (s.App, s.Window, s.Url);
             if (!verdicts.TryGetValue(key, out var hidden)) verdicts[key] = hidden = hides(s.App, s.Window, s.Url);
             return !hidden;
@@ -155,13 +162,15 @@ public static class Insights
 
     /// Frames (oldest first) to spans. Each frame counts until the next one, except: after a break
     /// longer than IdleCutoff it counts LastFrame, and once nothing has changed on screen for
-    /// StillLimit (only the once-a-minute frames), it stops counting until something changes.
-    /// Frames in a row with the same app, window and address and no break between them are joined.
-    public static List<ActivitySpan> Spans(IEnumerable<ActivityRow> rows)
+    /// StillLimit (only the once-a-minute frames), it stops counting until something changes or
+    /// audio is recorded (`audio`: start times of recorded clips, oldest first).
+    /// Frames in a row with the same app, window, address and blocked mark and no break between them are joined.
+    public static List<ActivitySpan> Spans(IEnumerable<ActivityRow> rows, IReadOnlyList<DateTime>? audio = null)
     {
         var out_ = new List<ActivitySpan>();
         ActivityRow? prev = null;
         double still = 0;
+        int a = 0;
         foreach (var row in rows)
         {
             if (prev != null) Add(prev, (row.Time - prev.Time).TotalSeconds);
@@ -170,18 +179,30 @@ public static class Insights
         if (prev != null) Add(prev, LastFrame.TotalSeconds);
         return out_;
 
+        // True when a clip overlaps [from, to). Frames come in time order, so `a` only moves forward.
+        bool Heard(DateTime from, DateTime to)
+        {
+            if (audio == null) return false;
+            while (a < audio.Count && audio[a] + AudioChunk <= from) a++;
+            return a < audio.Count && audio[a] < to;
+        }
+
         void Add(ActivityRow f, double gap)
         {
             double active;
             if (gap > IdleCutoff.TotalSeconds) { active = LastFrame.TotalSeconds; still = 0; }
-            else if (gap >= StillGap.TotalSeconds) { active = Math.Max(0, Math.Min(gap, StillLimit.TotalSeconds - still)); still += gap; }
+            else if (gap >= StillGap.TotalSeconds && !Heard(f.Time, f.Time.AddSeconds(gap)))
+            {
+                active = Math.Max(0, Math.Min(gap, StillLimit.TotalSeconds - still));
+                still += gap;
+            }
             else { active = gap; still = 0; }
             if (active <= 0) return;
             var end = f.Time.AddSeconds(active);
             if (out_.Count > 0 && out_[^1] is var last && last.App == f.App && last.Window == f.Window && last.Url == f.Url
-                && last.End >= f.Time.AddMilliseconds(-1))
+                && last.Blocked == f.Blocked && last.End >= f.Time.AddMilliseconds(-1))
                 out_[^1] = last with { End = end };
-            else out_.Add(new ActivitySpan(f.Time, end, f.App, f.Window, f.Url));
+            else out_.Add(new ActivitySpan(f.Time, end, f.App, f.Window, f.Url, f.Blocked));
         }
     }
 
@@ -267,14 +288,15 @@ public static class Insights
     }
 
     /// Splits [start, end) at local hour boundaries: each piece's local start and length in seconds.
+    /// Steps by wall-clock minutes to the next hour from the current offset, so the hour repeated
+    /// when clocks go back gets its own piece in the right hour.
     public static IEnumerable<(DateTime Local, double Seconds)> ByLocalHour(DateTime start, DateTime end, TimeZoneInfo tz)
     {
         var t = start;
         while (t < end)
         {
             var local = TimeZoneInfo.ConvertTimeFromUtc(t, tz);
-            var nextLocal = local.Date.AddHours(local.Hour + 1);
-            var next = ToUtc(nextLocal, tz);
+            var next = t + (local.Date.AddHours(local.Hour + 1) - local);
             if (next <= t) next = t.AddHours(1);
             if (next > end) next = end;
             yield return (local, (next - t).TotalSeconds);
@@ -308,24 +330,33 @@ public static class Insights
 public sealed partial class Database
 {
     /// Unbroken stretches with one app, window and address in front, oldest first, from frames in
-    /// [from, to) (UTC). Reads only time, app, window and address, through idx_frames_activity, so the
-    /// screen text is never touched; the spans are worked out while reading (Insights.Spans).
-    /// Working out the gaps with SQLite window functions instead was several times slower.
+    /// [from, to) (UTC). Reads only time, app, window, address and the blocked mark, through
+    /// idx_frames_insights, so the screen text is never touched; the spans are worked out while
+    /// reading (Insights.Spans). Working out the gaps with SQLite window functions instead was
+    /// several times slower.
     public List<ActivitySpan> ActivitySpans(DateTime from, DateTime to)
     {
+        // Frames a little before and after, so the edges count the same as the middle.
+        var start = Time.Iso(from - Insights.StillLimit - Insights.IdleCutoff);
+        var stop = Time.Iso(to + Insights.IdleCutoff);
         lock (gate)
         {
-            // Frames a little before and after, so the edges count the same as the middle.
-            using var cmd = Cmd("SELECT julianday(timestamp), app_name, window_name, browser_url FROM frames WHERE timestamp >= ? AND timestamp < ? ORDER BY timestamp",
-                                Time.Iso(from - Insights.StillLimit - Insights.IdleCutoff), Time.Iso(to + Insights.IdleCutoff));
+            var audio = new List<DateTime>();
+            using (var a = Cmd("SELECT julianday(timestamp) FROM audio_chunks WHERE timestamp >= ? AND timestamp < ? AND status != 'silent' ORDER BY timestamp",
+                               Time.Iso(from - Insights.StillLimit - Insights.IdleCutoff - Insights.AudioChunk), stop))
+            using (var ar = a.ExecuteReader())
+                while (ar.Read()) if (!ar.IsDBNull(0)) audio.Add(FromJulian(ar.GetDouble(0)));
+            using var cmd = Cmd("SELECT julianday(timestamp), app_name, window_name, browser_url, blocked FROM frames WHERE timestamp >= ? AND timestamp < ? ORDER BY timestamp",
+                                start, stop);
             using var r = cmd.ExecuteReader();
-            return Insights.Spans(Rows(r));
+            return Insights.Spans(Rows(r), audio);
         }
 
         static IEnumerable<ActivityRow> Rows(SqliteDataReader r)
         {
             while (r.Read())
-                if (!r.IsDBNull(0)) yield return new ActivityRow(FromJulian(r.GetDouble(0)), r.GetString(1), r.GetString(2), r.GetString(3));
+                if (!r.IsDBNull(0))
+                    yield return new ActivityRow(FromJulian(r.GetDouble(0)), r.GetString(1), r.GetString(2), r.GetString(3), r.GetInt64(4) != 0);
         }
     }
 

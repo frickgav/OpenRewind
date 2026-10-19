@@ -140,12 +140,30 @@ Open it from the menu bar or tray (**Insights…**). Switch between **Day** and 
 Click an app to open the timeline showing only that app, at the first moment you used it that
 day or week. Click a website or a focus session to jump to it.
 
-Everything is worked out from the saved screenshots' app, window and address, on your computer;
-nothing is sent anywhere and no AI is used. Apps, sites and windows on your block list are left out
-entirely, including anything saved before you blocked them. Time counts from one screenshot to the
-next. A gap of more than 2 minutes (locked, asleep or paused) does not count, and once nothing has
-changed on screen for 5 minutes the rest does not count until something changes. The window follows
+Everything is worked out on your computer from what was saved with each screenshot (time, app,
+window title, address); nothing is sent anywhere and no AI is used. The window follows
 **Settings → Timeline Look**.
+
+**Blocked apps and sites.** Screenshots saved while a blocked app, window or site was in front are
+marked as blocked and left out entirely, as is anything that matches your block list now (by app
+name, window title or address). One gap: screenshots saved by an older version while a blocked
+*site* or *window* was in front kept only the browser's name, and ones from a helper app of a blocked
+app (Docker.app shows "Docker Desktop") kept the helper's name, so that older time can still show
+under the browser or the helper app. Block the helper's name too to hide it.
+
+**How time is counted.** Time counts from one screenshot to the next. A break of more than 2
+minutes (locked, asleep or paused) does not count. A screen whose text doesn't change only gets one
+screenshot a minute; after 5 minutes of that, the rest counts as away until something changes,
+unless speech was recorded at the time (a call or a video, with **Record Audio** on), which counts
+as being there. With audio recording off, a long call or video can count as away after 5
+minutes. If you record from the terminal with `--interval` of 50 seconds or more, every screenshot
+looks like a still screen and active time is undercounted; keep the interval under 50 seconds.
+Ask AI's activity summary counts every gap up to 2 minutes without the still-screen rule, so its
+totals can be a little higher than Insights'.
+
+The first launch after updating builds a database index for Insights in the background (seconds,
+or about a minute for a very large history on a slow disk). Until it is done, Insights still works,
+just more slowly.
 
 ## Use with Claude and other AI apps (MCP)
 

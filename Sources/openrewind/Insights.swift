@@ -6,12 +6,14 @@ import SwiftUI
 enum InsightsRange: String { case day, week }
 
 /// A stretch of time with one app, window and address in front and no break in it.
+/// `blocked`: saved while a blocked window or site was in front (left out of Insights).
 struct ActivitySpan {
     var start: Date
     var end: Date
     var app: String
     var window: String
     var url: String
+    var blocked = false
     var seconds: TimeInterval { end.timeIntervalSince(start) }
 }
 
@@ -74,8 +76,11 @@ enum Insights {
     static let idleCutoff: TimeInterval = 120
     /// A screen that does not change gets one frame a minute. A gap this long means nothing changed.
     static let stillGap: TimeInterval = 50
-    /// After this long without any change on screen, the rest counts as away.
+    /// After this long without any change on screen, the rest counts as away, unless audio was
+    /// recorded then (a call, a video): that counts as present.
     static let stillLimit: TimeInterval = 300
+    /// Length of a recorded audio clip (the default; `--chunk` changes it).
+    static let audioChunk: TimeInterval = 30
     /// The newest frame of all counts this long.
     static let lastFrame: TimeInterval = 2
     /// A focus session survives a look at another app (or a pause) this long.
@@ -119,13 +124,19 @@ enum Insights {
         // A period that is still going is compared with the same stretch of the one before.
         if now > start && now < end {
             r.soFar = true
-            let elapsed = cal.dateComponents([.day, .hour, .minute, .second], from: start, to: now)
-            r.previousEnd = cal.date(byAdding: elapsed, to: prevStart) ?? prevStart.addingTimeInterval(now.timeIntervalSince(start))
+            // By the clock: the same time of day, that many days into the previous period.
+            let days = cal.dateComponents([.day], from: start, to: cal.startOfDay(for: now)).day ?? 0
+            let clock = cal.dateComponents([.hour, .minute, .second], from: now)
+            let base = cal.date(byAdding: .day, value: days, to: prevStart) ?? prevStart
+            r.previousEnd = cal.date(bySettingHour: clock.hour ?? 0, minute: clock.minute ?? 0, second: clock.second ?? 0, of: base)
+                ?? prevStart.addingTimeInterval(now.timeIntervalSince(start))
         }
 
-        // Blocked frames are left out entirely; ask once per app, window and address.
+        // Blocked frames are left out entirely: marked when saved, or blocked now (ask once per app,
+        // window and address).
         var verdicts: [String: Bool] = [:]
         let kept = spans.filter { s in
+            if s.blocked { return false }
             let key = "\(s.app)\u{1}\(s.window)\u{1}\(s.url)"
             if let v = verdicts[key] { return !v }
             let v = hides(s.app, s.window, s.url)
@@ -170,23 +181,34 @@ enum Insights {
 
     /// Frames (oldest first) to spans. Each frame counts until the next one, except: after a break
     /// longer than idleCutoff it counts lastFrame, and once nothing has changed on screen for
-    /// stillLimit (only the once-a-minute frames), it stops counting until something changes.
-    /// Frames in a row with the same app, window and address and no break between them are joined.
-    static func spans<S: Sequence>(_ rows: S) -> [ActivitySpan] where S.Element == ActivityRow {
+    /// stillLimit (only the once-a-minute frames), it stops counting until something changes or
+    /// audio is recorded (`audio`: start times of recorded clips, oldest first).
+    /// Frames in a row with the same app, window, address and blocked mark and no break between them are joined.
+    static func spans<S: Sequence>(_ rows: S, audio: [Date] = []) -> [ActivitySpan] where S.Element == ActivityRow {
         var out: [ActivitySpan] = []
         var still: TimeInterval = 0
+        var a = 0
+        // True when a clip overlaps [from, to). Frames come in time order, so `a` only moves forward.
+        func heard(_ from: Date, _ to: Date) -> Bool {
+            while a < audio.count && audio[a].addingTimeInterval(audioChunk) <= from { a += 1 }
+            return a < audio.count && audio[a] < to
+        }
         func add(_ f: ActivityRow, _ gap: TimeInterval) {
             let active: TimeInterval
-            if gap > idleCutoff { active = lastFrame; still = 0 }
-            else if gap >= stillGap { active = max(0, min(gap, stillLimit - still)); still += gap }
-            else { active = gap; still = 0 }
+            if gap > idleCutoff {
+                active = lastFrame; still = 0
+            } else if gap >= stillGap && !heard(f.time, f.time.addingTimeInterval(gap)) {
+                active = max(0, min(gap, stillLimit - still)); still += gap
+            } else {
+                active = gap; still = 0
+            }
             guard active > 0 else { return }
             let end = f.time.addingTimeInterval(active)
-            if let last = out.last, last.app == f.app, last.window == f.window, last.url == f.url,
+            if let last = out.last, last.app == f.app, last.window == f.window, last.url == f.url, last.blocked == f.blocked,
                last.end >= f.time.addingTimeInterval(-0.001) {
                 out[out.count - 1].end = end
             } else {
-                out.append(ActivitySpan(start: f.time, end: end, app: f.app, window: f.window, url: f.url))
+                out.append(ActivitySpan(start: f.time, end: end, app: f.app, window: f.window, url: f.url, blocked: f.blocked))
             }
         }
         var prev: ActivityRow?
@@ -303,26 +325,45 @@ enum Insights {
 
 extension Database {
     /// Unbroken stretches with one app, window and address in front, oldest first, from frames in
-    /// [from, to). Reads only time, app, window and address, through idx_frames_activity, so the
-    /// screen text is never touched; the spans are worked out while reading (Insights.spans).
-    /// Working out the gaps with SQLite window functions instead was several times slower.
+    /// [from, to). Reads only time, app, window, address and the blocked mark, through
+    /// idx_frames_insights, so the screen text is never touched; the spans are worked out while
+    /// reading (Insights.spans), row by row. Working out the gaps with SQLite window functions
+    /// instead was several times slower.
     func activitySpans(from: Date, to: Date) -> [ActivitySpan] {
+        // Frames a little before and after, so the edges count the same as the middle.
+        let start = from.addingTimeInterval(-(Insights.stillLimit + Insights.idleCutoff))
+        let stop = Time.iso.string(from: to.addingTimeInterval(Insights.idleCutoff))
+        func date(_ st: OpaquePointer?) -> Date {
+            Date(timeIntervalSince1970: ((sqlite3_column_double(st, 0) - 2440587.5) * 86_400_000).rounded() / 1000)
+        }
         lock.lock(); defer { lock.unlock() }
+        var audio: [Date] = []
+        var a: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT julianday(timestamp) FROM audio_chunks WHERE timestamp >= ? AND timestamp < ? AND status != 'silent' ORDER BY timestamp",
+                              -1, &a, nil) == SQLITE_OK {
+            bind(a, 1, Time.iso.string(from: start.addingTimeInterval(-Insights.audioChunk)))
+            bind(a, 2, stop)
+            while sqlite3_step(a) == SQLITE_ROW {
+                if sqlite3_column_type(a, 0) != SQLITE_NULL { audio.append(date(a)) }
+            }
+        }
+        sqlite3_finalize(a)
         var st: OpaquePointer?
-        let sql = "SELECT julianday(timestamp), app_name, window_name, browser_url FROM frames WHERE timestamp >= ? AND timestamp < ? ORDER BY timestamp"
+        let sql = "SELECT julianday(timestamp), app_name, window_name, browser_url, blocked FROM frames WHERE timestamp >= ? AND timestamp < ? ORDER BY timestamp"
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); return [] }
         defer { sqlite3_finalize(st) }
-        // Frames a little before and after, so the edges count the same as the middle.
-        bind(st, 1, Time.iso.string(from: from.addingTimeInterval(-(Insights.stillLimit + Insights.idleCutoff))))
-        bind(st, 2, Time.iso.string(from: to.addingTimeInterval(Insights.idleCutoff)))
-        var rows: [ActivityRow] = []
-        while sqlite3_step(st) == SQLITE_ROW {
-            guard sqlite3_column_type(st, 0) != SQLITE_NULL else { continue }
-            let jd = sqlite3_column_double(st, 0)
-            let t = Date(timeIntervalSince1970: ((jd - 2440587.5) * 86_400_000).rounded() / 1000)
-            rows.append(ActivityRow(time: t, app: col(st, 1), window: col(st, 2), url: col(st, 3)))
+        bind(st, 1, Time.iso.string(from: start))
+        bind(st, 2, stop)
+        // Rows go straight into the span builder, one at a time.
+        let rows = AnyIterator<ActivityRow> {
+            while sqlite3_step(st) == SQLITE_ROW {
+                guard sqlite3_column_type(st, 0) != SQLITE_NULL else { continue }
+                return ActivityRow(time: date(st), app: self.col(st, 1), window: self.col(st, 2), url: self.col(st, 3),
+                                   blocked: sqlite3_column_int(st, 4) != 0)
+            }
+            return nil
         }
-        return Insights.spans(rows)
+        return Insights.spans(rows, audio: audio)
     }
 }
 
@@ -410,12 +451,12 @@ final class InsightsModel: ObservableObject {
 
     func reload() {
         loadID += 1
-        let id = loadID, r = range, d = day, db = db
+        let id = loadID, r = range, d = day, store = self.db
         loading = true
         // Same rule as Ask AI: app name, private-window title, blocked site, or a blocked word in the title or address.
         let list = BlocklistStore.shared.current
         DispatchQueue.global(qos: .userInitiated).async {
-            let rep = Insights.load(db: db, range: r, day: d, hides: { a, w, u in
+            let rep = Insights.load(db: store, range: r, day: d, hides: { a, w, u in
                 list.blocksFrame(appName: a, windowName: w, url: u) || Blocklist.hasKeyword(u, list.keywords)
             })
             DispatchQueue.main.async { [weak self] in
@@ -472,7 +513,7 @@ struct InsightsView: View {
                         if !r.sites.isEmpty { section("Websites") { bars(r.sites, color: .teal, app: false) } }
                         section(model.range == .day ? "When you were active" : "When you were active, by day") { heat(r) }
                         section("Focus sessions") { focus(r) }
-                        Text("Worked out on this Mac from your recordings, without AI. Blocked apps and sites are left out. Time counts while the screen changes; time locked, asleep, paused, or with nothing changing on screen for 5 minutes does not. Click an app, site or focus session to see it in the timeline.")
+                        Text("Worked out on this Mac from your recordings, without AI. Blocked apps and sites are left out. Time counts from one screenshot to the next. Breaks over 2 minutes (locked, asleep, paused) don't count, and after 5 minutes with nothing changing on screen and no audio recorded, the rest counts as away. Click an app, site or focus session to see it in the timeline.")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                             .fixedSize(horizontal: false, vertical: true)

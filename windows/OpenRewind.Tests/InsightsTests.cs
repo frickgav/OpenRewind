@@ -214,4 +214,113 @@ public class InsightsTests : IDisposable
         Assert.Equal("+3", Insights.Change(10, 7));
         Assert.Equal("−2", Insights.Change(5, 7));
     }
+
+    [Fact]
+    public void FramesMarkedBlockedAreLeftOutAndDoNotStretchTheAppBefore()
+    {
+        Use(T0, 10, "Code");
+        // A blocked site in Chrome: saved with only the app name, marked blocked.
+        for (double s = 0; s < 600; s += 2)
+            db.Insert(new Frame(0, Time.Iso(T0.AddMinutes(10).AddSeconds(s)), "Google Chrome", "", true, "", "", "ocr", 0, "", Blocked: true));
+        Use(T0.AddMinutes(20), 10, "Code");
+        var r = Day(T0.AddDays(1));
+        Assert.Equal(new[] { "Code" }, r.Apps.Select(a => a.Name));
+        Assert.Equal(20 * 60, r.TotalSeconds, 0);
+        Assert.Equal(0, r.Switches);
+    }
+
+    [Fact]
+    public void RecordedAudioCountsAsPresentOnAStillScreen()
+    {
+        // A 30 minute call: the screen's text doesn't change, so only one frame a minute is saved.
+        Use(T0, 30, "Zoom", every: 60);
+        Use(T0.AddMinutes(30), 2, "Zoom");
+        for (int i = 0; i < 60; i++) db.InsertChunk("", Time.Iso(T0.AddSeconds(i * 30)), "mic", true, "transcribed");
+        // Music with no speech does not count.
+        db.InsertChunk("", Time.Iso(T0.AddHours(3)), "system", false, "silent");
+        Use(T0.AddHours(3), 20, "Code", every: 60);
+        var r = Day(T0.AddDays(1));
+        Assert.Equal(32 * 60, r.Apps.Single(a => a.Name == "Zoom").Seconds, 0);
+        Assert.Equal(5 * 60 + 2, r.Apps.Single(a => a.Name == "Code").Seconds, 0);  // the newest frame counts 2 s
+    }
+
+    [Fact]
+    public void TheInsightsIndexIsBuiltInTheBackgroundAndReplacesTheTimeIndex()
+    {
+        var path = Path.Combine(home, "db.sqlite");
+        Assert.Contains("idx_frames_ts", Indexes(path));
+        Database.BuildSlowIndexesInBackground(path).Wait();
+        var after = Indexes(path);
+        Assert.Contains("idx_frames_insights", after);
+        Assert.DoesNotContain("idx_frames_ts", after);
+        // Reopening does not bring the old index back.
+        using (new Database(path)) { }
+        Assert.DoesNotContain("idx_frames_ts", Indexes(path));
+        // A failure is logged, not thrown.
+        Database.BuildSlowIndexesInBackground(Path.Combine(home, "missing", "db.sqlite")).Wait();
+    }
+
+    static List<string> Indexes(string path)
+    {
+        using var c = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path};Pooling=False");
+        c.Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT name FROM sqlite_master WHERE type = 'index'";
+        using var r = cmd.ExecuteReader();
+        var out_ = new List<string>();
+        while (r.Read()) out_.Add(r.GetString(0));
+        return out_;
+    }
+
+    static TimeZoneInfo Zone(string iana, string windows)
+    {
+        try { return TimeZoneInfo.FindSystemTimeZoneById(iana); }
+        catch (TimeZoneNotFoundException) { return TimeZoneInfo.FindSystemTimeZoneById(windows); }
+    }
+
+    static readonly TimeZoneInfo NewYork = Zone("America/New_York", "Eastern Standard Time");
+
+    [Fact]
+    public void TheRepeatedHourWhenClocksGoBackStaysInItsHour()
+    {
+        // 2026-11-01: 01:00–02:00 happens twice in New York (05:00–06:00 and 06:00–07:00 UTC).
+        var start = new DateTime(2026, 11, 1, 5, 30, 0, DateTimeKind.Utc);  // 01:30 EDT
+        var parts = Insights.ByLocalHour(start, start.AddHours(1), NewYork).ToList();
+        Assert.All(parts, p => Assert.Equal(1, p.Local.Hour));
+        Assert.Equal(3600, parts.Sum(p => p.Seconds), 0);
+        var span = new ActivitySpan(start, start.AddHours(1), "Code", "", "");
+        var r = Insights.Build(new[] { span }, InsightsRange.Day, new DateTime(2026, 11, 1), start.AddDays(2), NothingHidden, NewYork, DayOfWeek.Sunday);
+        Assert.Equal(3600, r.Hours[1], 0);
+        Assert.Equal(25 * 3600, (r.End - r.Start).TotalSeconds, 0);
+    }
+
+    [Fact]
+    public void ADayWhenClocksGoForwardIsComparedByTheClock()
+    {
+        // 2026-03-08: New York skips 02:00–03:00. At 10:00 local, compare with 10:00 the day before.
+        var day = new DateTime(2026, 3, 8);
+        var now = Insights.ToUtc(day.AddHours(10), NewYork);
+        var r = Insights.Build(Array.Empty<ActivitySpan>(), InsightsRange.Day, day, now, NothingHidden, NewYork, DayOfWeek.Sunday);
+        Assert.True(r.SoFar);
+        Assert.Equal(23 * 3600, (r.End - r.Start).TotalSeconds, 0);
+        Assert.Equal(Insights.ToUtc(day.AddDays(-1).AddHours(10), NewYork), r.PreviousEnd);
+        // A span across the skipped hour lands in hours 1 and 3.
+        var span = new ActivitySpan(Insights.ToUtc(day.AddHours(1.5), NewYork), Insights.ToUtc(day.AddHours(3.5), NewYork), "Code", "", "");
+        r = Insights.Build(new[] { span }, InsightsRange.Day, day, day.AddDays(3), NothingHidden, NewYork, DayOfWeek.Sunday);
+        Assert.Equal(1800, r.Hours[1], 0);
+        Assert.Equal(0, r.Hours[2], 0);
+        Assert.Equal(1800, r.Hours[3], 0);
+    }
+
+    [Fact]
+    public void AHalfHourTimeZoneBucketsByLocalHour()
+    {
+        var india = Zone("Asia/Kolkata", "India Standard Time");
+        // 09:00–10:00 UTC is 14:30–15:30 in India.
+        var span = new ActivitySpan(T0, T0.AddHours(1), "Code", "", "");
+        var r = Insights.Build(new[] { span }, InsightsRange.Week, new DateTime(2026, 10, 19), T0.AddDays(30), NothingHidden, india, DayOfWeek.Monday);
+        Assert.Equal(1800, r.Hours[14], 0);
+        Assert.Equal(1800, r.Hours[15], 0);
+        Assert.Equal(3600, r.DayHours[0].Sum(), 0);
+    }
 }

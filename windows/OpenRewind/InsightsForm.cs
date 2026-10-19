@@ -279,7 +279,7 @@ sealed class InsightsView : Control
         y = FocusList(g, r, x, y, w) + S(18);
 
         var note = "Worked out on this PC from your recordings, without AI. Blocked apps and sites are left out. " +
-                   "Time counts while the screen changes; time locked, asleep, paused, or with nothing changing on screen for 5 minutes does not. " +
+                   "Time counts from one screenshot to the next. Breaks over 2 minutes (locked, asleep, paused) don't count, and after 5 minutes with nothing changing on screen and no audio recorded, the rest counts as away. " +
                    "Click an app, site or focus session to see it in the timeline.";
         var nh = WrapHeight(g, note, F(11), w);
         Wrap(g, note, F(11), Faint, new RectangleF(x, y, w, nh + S(4)));

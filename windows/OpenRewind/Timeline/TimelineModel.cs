@@ -134,13 +134,27 @@ sealed class TimelineModel
     /// `keepApp`: keep the app filter (opening an older search result); a fresh open shows every app.
     public void Reload(double hours = 24, bool keepApp = false)
     {
+        var at = DateTime.UtcNow;
+        var since = at.AddHours(-hours);
+        var keep = keepApp ? AppFilterName : null;
+        Apply(at, since, Db.TimelineFrames(since), Db.TimelineAudio(since));
+        if (keep != null && allFrames.Any(f => f.AppName == keep)) { AppFilterName = keep; ApplyFilter(); Show(Frames.Count - 1); }
+    }
+
+    /// Bumped by every load, so a slower background load that finishes later is dropped.
+    int loadToken;
+
+    /// Show freshly read history (all apps), at its newest screenshot.
+    void Apply(DateTime loadedAt, DateTime since, List<TimelineFrame> frames, List<TimelineAudio> audio)
+    {
+        loadToken++;
         StopAudio();
         targetFor = null;
-        LoadedAt = DateTime.UtcNow;
-        LoadedSince = LoadedAt.AddHours(-hours);
-        allFrames = Db.TimelineFrames(LoadedSince);
-        Audio = Db.TimelineAudio(LoadedSince);
-        if (!keepApp || !allFrames.Any(f => f.AppName == AppFilterName)) AppFilterName = null;
+        LoadedAt = loadedAt;
+        LoadedSince = since;
+        allFrames = frames;
+        Audio = audio;
+        AppFilterName = null;
         ApplyFilter();
         Show(Frames.Count - 1);
     }
@@ -180,17 +194,40 @@ sealed class TimelineModel
 
     public void JumpToNow() { StopAudio(); Show(Frames.Count - 1); }
 
-    /// Go to a moment, loading enough history, showing only `app` when given (Insights).
+    /// Go to a moment, showing only `app` when given (Insights). History back to that moment is read
+    /// off the UI thread; the timeline shows what it has until then.
     public void OpenAt(DateTime date, string? app)
     {
-        if (date < LoadedSince) Reload((DateTime.UtcNow - date).TotalHours + 1);
-        if (app == null) SetAppFilter(null);
-        else if (app != AppFilterName && allFrames.Any(f => f.AppName == app))
+        if (app == "") app = null;
+        if (date >= LoadedSince) { Finish(); return; }
+        var token = ++loadToken;
+        var since = date.AddHours(-1);
+        var at = DateTime.UtcNow;
+        var ui = SynchronizationContext.Current;
+        ShowNotice("Loading older recordings…");
+        Task.Run(() => (Frames: Db.TimelineFrames(since), Audio: Db.TimelineAudio(since))).ContinueWith(t =>
         {
-            SetAppFilter(app);
-            ShowNotice($"Only showing {app}. Press A for all apps.");
+            void Done()
+            {
+                if (token != loadToken) return;  // something newer was opened meanwhile
+                if (t.IsFaulted) { Log.Write($"could not load the timeline: {t.Exception?.GetBaseException().Message}"); return; }
+                Apply(at, since, t.Result.Frames, t.Result.Audio);
+                Finish();
+            }
+            if (ui != null) ui.Post(_ => Done(), null); else Done();
+        });
+
+        void Finish()
+        {
+            // An app that is not in the loaded history (or "Unknown app") shows every app.
+            if (app == null || !allFrames.Any(f => f.AppName == app)) SetAppFilter(null);
+            else if (app != AppFilterName)
+            {
+                SetAppFilter(app);
+                ShowNotice($"Only showing {app}. Press A for all apps.");
+            }
+            Jump(date);
         }
-        Jump(date);
     }
 
     /// Last frame at or before `date` (binary search; frames are sorted by time).

@@ -43,6 +43,7 @@ sealed class TrayApp : ApplicationContext
         resumeTimer.Tick += (_, _) => CheckPause();
         retention = new RetentionJob(engine.Db, settings.Screen, settings.Audio);
         retention.Start();
+        _ = Database.BuildSlowIndexesInBackground(engine.Config.DbPath);
 
         updater = new Updater(settings) { QuitApp = Quit };
         updater.Changed += () => { if (overlay.Visible) overlay.Invalidate(); };

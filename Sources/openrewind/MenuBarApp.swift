@@ -96,6 +96,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let until = pausedUntil { schedulePause(until) } else { applyRecordingPrefs() }
         retention = RetentionJob(db: engine.db, screen: keep(keepScreenKey), audio: keep(keepAudioKey))
         retention.start()
+        Database.buildSlowIndexesInBackground(path: engine.config.dbPath)
 
         // ⌥⌘T (or the shortcut picked in Settings) opens the timeline from anywhere.
         registerHotKey(Shortcut.load(defaults))

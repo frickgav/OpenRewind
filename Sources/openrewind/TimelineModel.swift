@@ -205,13 +205,29 @@ final class TimelineModel: ObservableObject {
 
     /// `keepApp`: keep the app filter (opening an older search result); a fresh open shows every app.
     func reload(hours: Double = 24, keepApp: Bool = false) {
+        let at = Date(), since = at.addingTimeInterval(-hours * 3600)
+        let keep = keepApp ? appFilter : nil
+        apply(now: at, since: since, frames: db.timelineFrames(since: since), audio: db.timelineAudio(since: since))
+        if let keep, allFrames.contains(where: { $0.appName == keep }) {
+            appFilter = keep
+            applyFilter()
+            show(frames.count - 1)
+        }
+    }
+
+    /// Bumped by every load, so a slower background load that finishes later is dropped.
+    private var loadToken = 0
+
+    /// Show freshly read history (all apps), at its newest screenshot.
+    private func apply(now at: Date, since: Date, frames loaded: [TimelineFrame], audio heard: [TimelineAudio]) {
+        loadToken += 1
         stopAudio()
-        now = Date()
-        loadedSince = now.addingTimeInterval(-hours * 3600)
-        allFrames = db.timelineFrames(since: loadedSince)
+        now = at
+        loadedSince = since
+        allFrames = loaded
         apps = AppFilter.apps(allFrames)
-        audio = db.timelineAudio(since: loadedSince)
-        if !keepApp || !allFrames.contains(where: { $0.appName == appFilter }) { appFilter = nil }
+        audio = heard
+        appFilter = nil
         applyFilter()
         show(frames.count - 1)
     }
@@ -249,15 +265,33 @@ final class TimelineModel: ObservableObject {
     func jumpToNow() { stopAudio(); show(frames.count - 1) }
 
     /// Go to a moment, loading enough history, showing only `app` when given (Insights).
+    /// History back to that moment is read in the background; the timeline shows what it has until then.
     func open(at date: Date, app: String?) {
-        if date < loadedSince { reload(hours: Date().timeIntervalSince(date) / 3600 + 1) }
-        if app == nil {
-            setAppFilter(nil)
-        } else if let app, app != appFilter, allFrames.contains(where: { $0.appName == app }) {
-            setAppFilter(app)
-            show(notice: "Only showing \(app). Press A for all apps.")
+        let app = app?.isEmpty == true ? nil : app
+        func finish() {
+            // An app that is not in the loaded history (or "Unknown app") shows every app.
+            if let app, allFrames.contains(where: { $0.appName == app }) {
+                if app != appFilter {
+                    setAppFilter(app)
+                    show(notice: "Only showing \(app). Press A for all apps.")
+                }
+            } else {
+                setAppFilter(nil)
+            }
+            jump(to: date)
         }
-        jump(to: date)
+        guard date < loadedSince else { finish(); return }
+        loadToken += 1
+        let token = loadToken, store = self.db, at = Date(), since = date.addingTimeInterval(-3600)
+        show(notice: "Loading older recordings…")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let frames = store.timelineFrames(since: since), audio = store.timelineAudio(since: since)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, token == self.loadToken else { return }  // something newer was opened meanwhile
+                self.apply(now: at, since: since, frames: frames, audio: audio)
+                finish()
+            }
+        }
     }
 
     /// Last frame at or before `date` (binary search; frames are sorted by time).
