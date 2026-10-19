@@ -29,6 +29,11 @@ struct Meeting: Identifiable, Equatable {
     var segments = 0
     /// The notes were made again once, after late transcripts.
     var redone = false
+    /// The user's answer to "Take notes?" (MeetingChoice).
+    var choice = ""
+
+    /// Not This Time: hidden from the Meetings window and Ask AI, never summarized.
+    var skipped: Bool { choice == MeetingChoice.skip }
 
     /// The window title, or "Zoom call" when the window had none.
     var name: String { title.isEmpty ? "\(app) call" : title }
@@ -47,6 +52,71 @@ struct Meeting: Identifiable, Equatable {
 
 enum MeetingStatus {
     static let live = "live", ended = "ended", summarized = "summarized", failed = "failed"
+}
+
+/// What the user said about taking notes for one meeting: "" (not asked or not answered yet),
+/// "take" (Take Notes) or "skip" (Not This Time).
+enum MeetingChoice {
+    static let undecided = "", take = "take", skip = "skip"
+}
+
+enum MeetingAsk { case take, skip, ask }
+
+/// The "Meeting detected. Take notes?" popup: when to show it, and what it says.
+/// Windows: MeetingPrompt in Meetings.cs.
+enum MeetingPrompt {
+    /// Remembered per app ("Zoom", "Google Meet", …) when the user ticks "Remember for <App>".
+    static let always = "always", never = "never"
+    /// A popup nobody answered goes away this long after its meeting ended.
+    static let staysAfterEnd: TimeInterval = 15 * 60
+
+    /// Take or skip without asking when the user already chose for this meeting or this app, or
+    /// turned asking off. Blocked meetings are never offered (and are not found in the first place).
+    static func decide(_ m: Meeting, askFirst: Bool, remembered: [String: String], blocked: Blocklist) -> MeetingAsk {
+        if MeetingDetector.hides(blocked, m) { return .skip }
+        if m.choice == MeetingChoice.take { return .take }
+        if m.choice == MeetingChoice.skip { return .skip }
+        if remembered[m.app] == always { return .take }
+        if remembered[m.app] == never { return .skip }
+        return askFirst ? .ask : .take
+    }
+
+    /// What one run of the watcher does with meetings nobody chose for yet: the choices it can make
+    /// by itself, and the meetings in progress to ask about.
+    static func plan(_ meetings: [Meeting], askFirst: Bool, remembered: [String: String], blocked: Blocklist)
+        -> (decided: [(id: Int64, choice: String)], ask: [Meeting]) {
+        var decided: [(id: Int64, choice: String)] = [], ask: [Meeting] = []
+        for m in meetings where m.choice == MeetingChoice.undecided {
+            switch decide(m, askFirst: askFirst, remembered: remembered, blocked: blocked) {
+            case .take: decided.append((m.id, MeetingChoice.take))
+            case .skip: decided.append((m.id, MeetingChoice.skip))
+            // Only while it is going on; a call found after the fact stays listed, without notes by AI.
+            case .ask: if m.isLive { ask.append(m) }
+            }
+        }
+        return (decided, ask)
+    }
+
+    /// Whether an open popup should go: its meeting is gone, was answered, or ended a while ago.
+    static func closes(_ m: Meeting?, now: Date) -> Bool {
+        guard let m else { return true }
+        return m.choice != MeetingChoice.undecided || (!m.isLive && now.timeIntervalSince(m.end) > staysAfterEnd)
+    }
+
+    static func title(_ m: Meeting) -> String { "Meeting detected in \(m.app)" }
+
+    /// `summarizer`: the provider that will write the summary (the user agreed to it), or nil.
+    static func body(_ summarizer: String?) -> String {
+        if let summarizer {
+            return "Take notes for this call? You get its transcript and, when it ends, a summary and action items from \(summarizer) (uses your key)."
+        }
+        return "Take notes for this call? You get its transcript in Meetings, kept on this computer."
+    }
+
+    static let help = "Not This Time leaves this call out of Meetings and Ask AI, and it is not summarized. "
+        + "Audio is still recorded as usual under your settings."
+
+    static func remember(_ m: Meeting) -> String { "Remember for \(m.app)" }
 }
 
 /// Which apps and sites are calls. Windows: MeetingApps in Meetings.cs.
@@ -453,7 +523,7 @@ enum MeetingNotes {
     /// Whether a meeting gets notes by itself: the setting is on, the meeting ended after it was turned
     /// on, the provider is the one the user agreed to, and nothing about the meeting is blocked.
     static func autoSummarizes(_ m: Meeting, on: Bool, since: Date?, consent: String?, ai: AISettings, blocked: Blocklist) -> Bool {
-        guard on, let since, m.end >= since, consent == consentKey(ai), ai.isReady else { return false }
+        guard m.choice == MeetingChoice.take, on, let since, m.end >= since, consent == consentKey(ai), ai.isReady else { return false }
         return !MeetingDetector.hides(blocked, m)
     }
 
@@ -625,13 +695,15 @@ extension Database {
         """)
         // titles: every window title seen, one per line. segments: transcript segments the notes were
         // made from. redone: the notes were made again once, after late transcripts.
-        for (col, type) in [("titles", "TEXT NOT NULL DEFAULT ''"), ("segments", "INTEGER NOT NULL DEFAULT 0"), ("redone", "INTEGER NOT NULL DEFAULT 0")]
+        // choice: the user's answer to "Take notes?" (MeetingChoice).
+        for (col, type) in [("titles", "TEXT NOT NULL DEFAULT ''"), ("segments", "INTEGER NOT NULL DEFAULT 0"),
+                            ("redone", "INTEGER NOT NULL DEFAULT 0"), ("choice", "TEXT NOT NULL DEFAULT ''")]
         where scalarInt("SELECT COUNT(*) FROM pragma_table_info('meetings') WHERE name = '\(col)'", []) == 0 {
             try exec("ALTER TABLE meetings ADD COLUMN \(col) \(type)")
         }
     }
 
-    private static let meetingCols = "id, start_time, end_time, app, app_name, title, url, status, summary, decisions, action_items, ai_model, tokens_in, tokens_out, cost, error, titles, segments, redone"
+    private static let meetingCols = "id, start_time, end_time, app, app_name, title, url, status, summary, decisions, action_items, ai_model, tokens_in, tokens_out, cost, error, titles, segments, redone, choice"
 
     private func meetingRows(_ tail: String, _ args: [Arg]) -> [Meeting] {
         lock.lock(); defer { lock.unlock() }
@@ -651,7 +723,7 @@ extension Database {
                                tokensOut: Int(sqlite3_column_int64(st, 13)),
                                cost: sqlite3_column_type(st, 14) == SQLITE_NULL ? nil : sqlite3_column_double(st, 14),
                                error: col(st, 15), titles: col(st, 16), segments: Int(sqlite3_column_int64(st, 17)),
-                               redone: sqlite3_column_int64(st, 18) != 0))
+                               redone: sqlite3_column_int64(st, 18) != 0, choice: col(st, 19)))
         }
         return out
     }
@@ -721,6 +793,15 @@ extension Database {
     func meetingFailed(_ id: Int64, _ error: String, segments: Int = 0) {
         meetingWrite("UPDATE meetings SET status = ?, error = ?, segments = ? WHERE id = ? AND status != ?",
                      [MeetingStatus.failed, error, segments, id, MeetingStatus.summarized])
+    }
+
+    func setMeetingChoice(_ id: Int64, _ choice: String) {
+        meetingWrite("UPDATE meetings SET choice = ? WHERE id = ?", [choice, id])
+    }
+
+    /// Meetings the user did not turn down (Not This Time), newest first: for the Meetings window.
+    func shownMeetings(limit: Int = 500) -> [Meeting] {
+        meetingRows("WHERE choice != ? ORDER BY start_time DESC LIMIT ?", [.text(MeetingChoice.skip), .int(Int64(limit))])
     }
 
     /// The one new summary after late transcripts is used up.
@@ -867,6 +948,20 @@ final class MeetingCenter: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: providerKey) }
     }
 
+    private static let askKey = "askBeforeMeetingNotes", choicesKey = "meetingChoices"
+
+    /// Show "Meeting detected. Take notes?" when a call starts. On by default.
+    static var askFirst: Bool {
+        get { UserDefaults.standard.object(forKey: askKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: askKey) }
+    }
+
+    /// Answers remembered per meeting app ("Zoom" → "always" or "never"), from the popup.
+    static var choices: [String: String] {
+        get { UserDefaults.standard.dictionary(forKey: choicesKey) as? [String: String] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: choicesKey) }
+    }
+
     /// Summaries are on but AI Settings now use another provider than the one agreed to.
     static var needsNewConsent: Bool {
         let ai = AISettings.load()
@@ -901,11 +996,22 @@ final class MeetingCenter: ObservableObject {
             let ended = MeetingTracker.update(db: db, blocked: blocked, now: now, chunkSeconds: chunk, transcribing: whisper)
             for m in ended { log("meeting ended: \(m.app), \(AITime.label(m.start))–\(MeetingTranscript.clock(m.end))") }
             let late = lookLate ? MeetingTracker.late(db: db, now: now) : []
+            let recent = db.meetings(overlapping: now.addingTimeInterval(-86_400), to: now)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.running = false
+                // Take or skip what the user already chose for; ask about calls going on now.
+                let plan = MeetingPrompt.plan(recent, askFirst: Self.askFirst, remembered: Self.choices, blocked: BlocklistStore.shared.current)
+                for d in plan.decided { db.setMeetingChoice(d.id, d.choice) }
+                for m in plan.ask { self.ask(m) }
+                for (id, panel) in self.prompts where MeetingPrompt.closes(db.meeting(id: id), now: now) {
+                    self.prompts[id] = nil
+                    panel.close()
+                }
                 NotificationCenter.default.post(name: Self.changed, object: nil)
-                for m in ended where self.autoSummarizes(m) { self.summarize(m) { _ in } }
+                for m in ended {
+                    if let fresh = db.meeting(id: m.id), self.autoSummarizes(fresh) { self.summarize(fresh) { _ in } }
+                }
                 // Transcripts that came in after the notes were made: make them again, once.
                 for m in late where !self.summarizing.contains(m.id) && self.autoSummarizes(m) {
                     db.markMeetingRedone(m.id)
@@ -913,6 +1019,60 @@ final class MeetingCenter: ObservableObject {
                     self.summarize(m) { _ in }
                 }
             }
+        }
+    }
+
+    private var prompts: [Int64: NSPanel] = [:]
+
+    /// Shows "Meeting detected. Take notes?" once per meeting, without taking focus from the call.
+    private func ask(_ m: Meeting) {
+        guard prompts[m.id] == nil else { return }
+        let ai = AISettings.load()
+        let summarizer = Self.autoSummarize && Self.consent == MeetingNotes.consentKey(ai) && ai.isReady ? ai.kind.title : nil
+        let view = MeetingPromptView(meeting: m, summarizer: summarizer) { [weak self] take, remember in
+            self?.answer(m, take: take, remember: remember)
+        }
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 380, height: 200),
+                            styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView], backing: .buffered, defer: false)
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.hidesOnDeactivate = false
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.standardWindowButton(.closeButton)?.isHidden = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        let host = NSHostingView(rootView: view)
+        panel.contentView = host
+        panel.setContentSize(host.fittingSize)
+        // Top right, under the menu bar; later popups stack downwards.
+        if let screen = NSScreen.main?.visibleFrame {
+            let size = panel.frame.size
+            panel.setFrameOrigin(NSPoint(x: screen.maxX - size.width - 12,
+                                         y: screen.maxY - (size.height + 12) * CGFloat(prompts.count + 1)))
+        }
+        prompts[m.id] = panel
+        log("meeting detected: \(m.app), asking about notes")
+        panel.orderFrontRegardless()
+    }
+
+    /// The user answered the popup.
+    private func answer(_ m: Meeting, take: Bool, remember: Bool) {
+        prompts.removeValue(forKey: m.id)?.close()
+        db.setMeetingChoice(m.id, take ? MeetingChoice.take : MeetingChoice.skip)
+        if remember {
+            var c = Self.choices
+            c[m.app] = take ? MeetingPrompt.always : MeetingPrompt.never
+            Self.choices = c
+        }
+        log("meeting \(m.id): \(take ? "take notes" : "not this time")\(remember ? ", remembered for \(m.app)" : "")")
+        NotificationCenter.default.post(name: Self.changed, object: nil)
+        // Answered after the call ended: summarize now, as it would have been when it ended.
+        if take, let fresh = db.meeting(id: m.id), fresh.status == MeetingStatus.ended, autoSummarizes(fresh) {
+            summarize(fresh) { _ in }
         }
     }
 
@@ -1001,7 +1161,7 @@ final class MeetingsModel: ObservableObject {
 
     func reload() {
         let blocked = BlocklistStore.shared.current
-        let fresh = db.meetings().filter { !MeetingDetector.hides(blocked, $0) }
+        let fresh = db.shownMeetings().filter { !MeetingDetector.hides(blocked, $0) }
         if fresh != meetings { meetings = fresh }
         if selected == nil || !meetings.contains(where: { $0.id == selected }) { selected = meetings.first?.id }
         let newLines = current.map { db.meetingTranscriptLines($0) } ?? []
@@ -1047,7 +1207,7 @@ struct MeetingsView: View {
         VStack(spacing: 14) {
             Image(systemName: "person.2.wave.2").font(.system(size: 30)).foregroundColor(SetupTheme.accent)
             Text("No meetings yet").font(.system(size: 18, weight: .semibold))
-            Text("When a Zoom, Teams, Google Meet, Webex, FaceTime or Slack huddle call is in front and there is sound, it shows up here with its transcript.\n\nTurn on Settings → Summarize Meetings with AI to get a summary and action items after each call, using your own AI key.")
+            Text("When a Zoom, Teams, Google Meet, Webex, FaceTime or Slack huddle call starts, OpenRewind asks whether to take notes. Calls you take notes for show up here with their transcript.\n\nTurn on Settings → Summarize Meetings with AI to also get a summary and action items after each one, using your own AI key.")
                 .font(.system(size: 13)).foregroundColor(SetupTheme.dim).multilineTextAlignment(.center)
                 .frame(maxWidth: 440).fixedSize(horizontal: false, vertical: true)
         }
@@ -1213,6 +1373,36 @@ struct MeetingsView: View {
         f.dateStyle = .full
         f.timeStyle = .none
         return f.string(from: d)
+    }
+}
+
+/// "Meeting detected in Zoom. Take notes?" Shown in a panel that never takes focus from the call.
+struct MeetingPromptView: View {
+    let meeting: Meeting
+    let summarizer: String?
+    let answer: (_ take: Bool, _ remember: Bool) -> Void
+    @State private var remember = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "person.2.wave.2").foregroundColor(SetupTheme.accent)
+                Text(MeetingPrompt.title(meeting)).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+            }
+            Text(MeetingPrompt.body(summarizer)).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+            Text(MeetingPrompt.help).font(.system(size: 11)).foregroundColor(SetupTheme.dim).fixedSize(horizontal: false, vertical: true)
+            Toggle(MeetingPrompt.remember(meeting), isOn: $remember).toggleStyle(.checkbox).font(.system(size: 12))
+            HStack(spacing: 8) {
+                Spacer()
+                Button("Not This Time") { answer(false, remember) }.buttonStyle(SmallPill())
+                Button("Take Notes") { answer(true, remember) }.buttonStyle(SmallPill(primary: true))
+            }
+        }
+        .padding(16)
+        .frame(width: 380, alignment: .leading)
+        .background(SetupTheme.bg)
+        .foregroundColor(.white)
+        .preferredColorScheme(.dark)
     }
 }
 

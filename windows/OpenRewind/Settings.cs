@@ -66,6 +66,10 @@ sealed class Settings
     /// The provider and server the user agreed to send transcripts to (MeetingNotes.ConsentKey).
     /// Summaries pause, and the user is asked again, when AI Settings point somewhere else.
     public string? SummarizeMeetingsProvider { get; set; }
+    /// Show "Meeting detected. Take notes?" when a call starts. On by default.
+    public bool AskBeforeMeetingNotes { get; set; } = true;
+    /// Answers remembered per meeting app ("Zoom" → "always" or "never"), from the popup.
+    public Dictionary<string, string> MeetingChoices { get; set; } = new();
 
     string path = "";
 

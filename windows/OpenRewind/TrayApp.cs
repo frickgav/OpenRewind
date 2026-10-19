@@ -85,7 +85,7 @@ sealed class TrayApp : ApplicationContext
 
     /// What turning on meeting summaries sends, and where. Same words as the Mac app.
     static string MeetingConsentText(string provider) =>
-        $"After each meeting ends, OpenRewind sends its whole transcript (what was said and heard during the call) to {provider} "
+        $"After each call you take notes for ends, OpenRewind sends its whole transcript (what was said and heard during the call) to {provider} "
         + "using your key, to write a summary, decisions and action items.\n\n"
         + $"This costs tokens on your account, and {provider}'s privacy terms apply. Calls in blocked apps and sites never become "
         + "meetings, but the transcript is not filtered by app: anything said or played during a call is sent, even while a blocked "
@@ -197,9 +197,24 @@ sealed class TrayApp : ApplicationContext
         var s = new ToolStripMenuItem(Permissions.MicrophoneOn ? "Settings" : "Settings  ⚠");
         s.DropDownItems.Add(Item("Blocked Apps & Sites…", () => BlockedAppsForm.ShowFor(settings, engine.Db)));
         s.DropDownItems.Add(Item("AI Settings…", () => AiSettingsForm.ShowFor(settings)));
+        var ask = Toggle("Ask Before Taking Meeting Notes", settings.AskBeforeMeetingNotes, () =>
+        {
+            settings.AskBeforeMeetingNotes = !settings.AskBeforeMeetingNotes;
+            settings.Save();
+        });
+        ask.ToolTipText = "When a call starts, ask whether to take notes for it. Off: notes are taken for every call (except apps you said Never for).";
+        s.DropDownItems.Add(ask);
         var summaries = Toggle("Summarize Meetings with AI", settings.SummarizeMeetings, ToggleMeetingSummaries);
-        summaries.ToolTipText = "Off by default. When on, each meeting's transcript is sent to your AI provider after it ends, for a summary and action items. This uses your key and costs tokens.";
+        summaries.ToolTipText = "Off by default. When on, the transcript of each call you take notes for is sent to your AI provider after it ends, for a summary and action items. This uses your key and costs tokens.";
         s.DropDownItems.Add(summaries);
+        if (settings.MeetingChoices.Count > 0)
+        {
+            var remembered = string.Join(", ", settings.MeetingChoices.OrderBy(c => c.Key)
+                .Select(c => $"{c.Key}: {(c.Value == MeetingPrompt.Always ? "always" : "never")}"));
+            var forget = Item("Forget Remembered Meeting Choices", () => { settings.MeetingChoices.Clear(); settings.Save(); });
+            forget.ToolTipText = $"Ask again for every app. Remembered now: {remembered}.";
+            s.DropDownItems.Add(forget);
+        }
         s.DropDownItems.Add(new ToolStripSeparator());
         s.DropDownItems.Add(ShortcutMenu());
         s.DropDownItems.Add(ScreenshotSizeMenu());

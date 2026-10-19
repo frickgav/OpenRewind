@@ -281,14 +281,67 @@ public class MeetingTranscriptTests
         Assert.Equal("- Me: file: report", n.ActionItems);
     }
 
+    static readonly Blocklist NoBlocks = new(Array.Empty<BlockedApp>(), Array.Empty<string>(), false);
+
+    static Meeting Live(long id, string app = "Zoom", string choice = "") =>
+        new(id, T0, T0.AddMinutes(5), app, "zoom.us", "", "", MeetingStatus.Live, Choice: choice);
+
+    [Fact]
+    public void AsksAboutEachCallUnlessTheUserAlreadyChose()
+    {
+        var always = new Dictionary<string, string> { ["Microsoft Teams"] = MeetingPrompt.Always, ["Google Meet"] = MeetingPrompt.Never };
+        Assert.Equal(MeetingAsk.Ask, MeetingPrompt.Decide(Live(1), true, always, NoBlocks));
+        Assert.Equal(MeetingAsk.Take, MeetingPrompt.Decide(Live(1, "Microsoft Teams"), true, always, NoBlocks));
+        Assert.Equal(MeetingAsk.Skip, MeetingPrompt.Decide(Live(1, "Google Meet"), true, always, NoBlocks));
+        // Asking turned off: notes for every call, except apps the user said Never for.
+        Assert.Equal(MeetingAsk.Take, MeetingPrompt.Decide(Live(1), false, null, NoBlocks));
+        Assert.Equal(MeetingAsk.Skip, MeetingPrompt.Decide(Live(1, "Google Meet"), false, always, NoBlocks));
+        // An answer for this meeting wins over what is remembered for its app.
+        Assert.Equal(MeetingAsk.Take, MeetingPrompt.Decide(Live(1, "Google Meet", MeetingChoice.Take), true, always, NoBlocks));
+        Assert.Equal(MeetingAsk.Skip, MeetingPrompt.Decide(Live(1, "Microsoft Teams", MeetingChoice.Skip), true, always, NoBlocks));
+        // Never offered for something blocked.
+        var zoom = new Blocklist(new[] { new BlockedApp("us.zoom.xos", "zoom.us") }, Array.Empty<string>(), false);
+        Assert.Equal(MeetingAsk.Skip, MeetingPrompt.Decide(Live(1), true, null, zoom));
+    }
+
+    [Fact]
+    public void PlansWhatToDoWithEachMeeting()
+    {
+        var ended = Live(4) with { Status = MeetingStatus.Ended };
+        var plan = MeetingPrompt.PlanFor(new[] { Live(1), Live(2, "Microsoft Teams"), Live(3, choice: MeetingChoice.Skip), ended }, true,
+                                         new Dictionary<string, string> { ["Microsoft Teams"] = MeetingPrompt.Never }, NoBlocks);
+        Assert.Equal(new[] { (2L, MeetingChoice.Skip) }, plan.Decided);
+        // Only calls going on now are asked about; one found after the fact just stays listed.
+        Assert.Equal(new[] { 1L }, plan.Ask.Select(m => m.Id));
+
+        Assert.True(MeetingPrompt.Closes(null, T0));
+        Assert.False(MeetingPrompt.Closes(Live(1), T0.AddHours(1)));
+        Assert.True(MeetingPrompt.Closes(Live(1, choice: MeetingChoice.Take), T0));
+        Assert.False(MeetingPrompt.Closes(ended, ended.End + MeetingPrompt.StaysAfterEnd));
+        Assert.True(MeetingPrompt.Closes(ended, ended.End + MeetingPrompt.StaysAfterEnd + TimeSpan.FromSeconds(1)));
+    }
+
+    [Fact]
+    public void ThePopupSaysWhatHappens()
+    {
+        Assert.Equal("Meeting detected in Zoom", MeetingPrompt.Title(Live(1)));
+        Assert.Contains("Anthropic", MeetingPrompt.Body("Anthropic"));
+        Assert.Contains("kept on this computer", MeetingPrompt.Body(null));
+        Assert.Contains("still recorded", MeetingPrompt.Help);
+        Assert.Equal("Remember for Zoom", MeetingPrompt.Remember(Live(1)));
+    }
+
     [Fact]
     public void SummarizesByItselfOnlyWithConsentForThisProvider()
     {
         var none = new Blocklist(Array.Empty<BlockedApp>(), Array.Empty<string>(), false);
         var ai = new AiSettings(AiProviderKind.Anthropic, "claude-x", "", "key");
         var key = MeetingNotes.ConsentKey(ai);
-        var m = new Meeting(1, T0, T0.AddMinutes(30), "Zoom", "zoom.us", "Launch", "", MeetingStatus.Ended);
+        var m = new Meeting(1, T0, T0.AddMinutes(30), "Zoom", "zoom.us", "Launch", "", MeetingStatus.Ended, Choice: MeetingChoice.Take);
         Assert.True(MeetingNotes.AutoSummarizes(m, true, T0, key, ai, none));
+        // Not unless the user chose Take Notes for it.
+        Assert.False(MeetingNotes.AutoSummarizes(m with { Choice = MeetingChoice.Undecided }, true, T0, key, ai, none));
+        Assert.False(MeetingNotes.AutoSummarizes(m with { Choice = MeetingChoice.Skip }, true, T0, key, ai, none));
         Assert.False(MeetingNotes.AutoSummarizes(m, false, T0, key, ai, none));
         Assert.False(MeetingNotes.AutoSummarizes(m, true, null, key, ai, none));
         // Ended before the setting was turned on.
@@ -536,6 +589,13 @@ public class MeetingStoreTests : IDisposable
         Assert.Contains("Ship Friday", text);
         Assert.Contains("Me: send the deck", text);
         Assert.Contains("openrewind://t/", text);
+
+        // Not This Time hides it from the AI, and from the Meetings window.
+        db.SetMeetingChoice(m.Id, MeetingChoice.Skip);
+        Assert.StartsWith("No meetings", tools.Run(new AiToolCall("3", "list_meetings", new JsonObject { ["start"] = "today" })));
+        Assert.Empty(db.ShownMeetings());
+        db.SetMeetingChoice(m.Id, MeetingChoice.Take);
+        Assert.Single(db.ShownMeetings());
 
         // Blocking Zoom later hides its meetings from the AI.
         tools.Blocked = new Blocklist(new[] { new BlockedApp("zoom", "zoom.us") }, Array.Empty<string>(), false);

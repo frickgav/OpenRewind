@@ -84,7 +84,8 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
   with your own key: Anthropic, OpenAI, Gemini, OpenRouter (any model it offers), or any
   OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
 - **Meetings** (menu bar or tray → Meetings…) lists your Zoom, Teams, Meet, Webex, FaceTime and
-  Slack huddle calls with their transcript, and can summarize them with your AI key. See [Meetings](#meetings).
+  Slack huddle calls with their transcript, and can summarize them with your AI key. When a call
+  starts, a small popup asks whether to take notes for it. See [Meetings](#meetings).
 - **Claude, Cursor and other AI apps** can search your history too, through MCP, once you turn
   it on. See [Use with Claude and other AI apps (MCP)](#use-with-claude-and-other-ai-apps-mcp).
 
@@ -127,12 +128,27 @@ unencrypted.
 ## Meetings
 
 OpenRewind finds your calls in what it already records; nothing extra runs during a call.
-A meeting starts when Zoom, Microsoft Teams, Webex, FaceTime or a Slack huddle is the app in front,
-or the browser in front shows Google Meet, Teams, Zoom or Webex, and there is sound. It goes on while
-that app is in front or you talk; other sound alone (a video) keeps it going for at most 15 minutes
-after the app was last in front. It ends after 3 minutes with none of these, and calls in the same app
-less than 10 minutes apart (a dropped call, a rejoin) become one. It shows up a few minutes after it
-starts, marked In progress until it ends. Blocked apps and sites never become meetings.
+A meeting starts when Zoom, Microsoft Teams, Webex, FaceTime or a Slack huddle is the app in front
+(not its chat, calendar or home window), or the browser in front shows Google Meet, Teams, Zoom or
+Webex, and other people can be heard (system audio). It goes on while that app is in front; after you
+switch away, your microphone keeps it going for up to 30 minutes (say, while you share slides) and
+other sound for up to 15. It ends after 3 minutes with none of these, and calls in the same app less
+than 10 minutes apart (a dropped call, a rejoin) become one. Blocked apps and sites never become
+meetings. Without Whisper, audio waiting to be transcribed does not count as sound.
+
+**Take notes?** A minute or two into a call, a small popup asks "Meeting detected in Zoom. Take
+notes?" in the corner of the screen. It does not take focus from the call.
+
+- **Take Notes** keeps the call in Meetings with its transcript and, if summaries are on (below),
+  sends it for a summary when it ends.
+- **Not This Time** leaves the call out of Meetings and Ask AI, and it is never summarized. Audio is
+  still recorded as usual under your recording settings; delete it from **Delete Recordings** if you
+  want it gone.
+- **Remember for Zoom** answers the same way for that app from then on. **Settings → Forget Remembered
+  Meeting Choices** asks again for every app.
+- **Settings → Ask Before Taking Meeting Notes** (on by default): turn it off to take notes for every
+  call without asking (apps you said Never for are still skipped). If you don't answer, the call is
+  listed but not summarized by itself; you can still press **Summarize**.
 
 **Meetings…** in the menu bar or tray lists them by day. Each one shows its transcript, built from the
 audio transcripts of that time: lines from your microphone are **Me**, lines from system audio are
@@ -140,11 +156,19 @@ audio transcripts of that time: lines from your microphone are **Me**, lines fro
 **Copy as Markdown** and **Save as Markdown…** export the notes and transcript.
 
 **Summaries are off by default.** They use your Ask AI provider and key, cost tokens, and send the
-meeting's transcript to that provider. Turn on **Settings → Summarize Meetings with AI** to have each
-meeting summarized when it ends (only meetings that end after you turn it on), or press **Summarize** on
-one meeting. You get a short summary, decisions and action items, with the tokens and cost it used, as
-in Ask AI. Ask AI can read them too: "what did we decide in my 2pm call?" Deleting audio recordings
-deletes the meetings in that time.
+call's whole transcript to that provider. The transcript is not filtered by app: anything said or
+played during the call is sent, even while a blocked app or site was in front. Turn on **Settings →
+Summarize Meetings with AI** to have each call you take notes for summarized when it ends (only calls
+that end after you turn it on), or press **Summarize** on one meeting. Summaries go only to the
+provider you agreed to; if you switch providers in AI Settings, OpenRewind asks again and pauses
+summaries until you answer. If Whisper is still catching up when a call ends, OpenRewind waits up to
+2 hours, and makes the notes once more if more of the call is transcribed afterwards.
+
+You get a short summary, decisions and action items, with the tokens and cost it used, as in Ask AI.
+Notes never contain web links (only links into your timeline), since the AI writes them from what
+other people said. Ask AI can read them too: "what did we decide in my 2pm call?" Deleting audio
+recordings deletes the meetings in that time, and they are not found again from what is left;
+deleting screen recordings clears the window titles they kept.
 
 ## Use with Claude and other AI apps (MCP)
 

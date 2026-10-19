@@ -140,6 +140,14 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    @objc private func toggleAskBeforeMeetingNotes() {
+        MeetingCenter.askFirst.toggle()
+    }
+
+    @objc private func forgetMeetingChoices() {
+        MeetingCenter.choices = [:]
+    }
+
     /// Turning it on says plainly what it sends and that it costs tokens.
     @objc private func toggleMeetingSummaries() {
         if MeetingCenter.autoSummarize {
@@ -169,7 +177,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// What turning on meeting summaries sends, and where. Same words as the Windows app.
     static func meetingConsentText(_ provider: String) -> String {
-        "After each meeting ends, OpenRewind sends its whole transcript (what was said and heard during the call) to \(provider) "
+        "After each call you take notes for ends, OpenRewind sends its whole transcript (what was said and heard during the call) to \(provider) "
             + "using your key, to write a summary, decisions and action items.\n\n"
             + "This costs tokens on your account, and \(provider)'s privacy terms apply. Calls in blocked apps and sites never become "
             + "meetings, but the transcript is not filtered by app: anything said or played during a call is sent, even while a blocked "
@@ -349,10 +357,22 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let m = NSMenu()
         m.addItem(action("Blocked Apps & Sites…", #selector(showBlockedApps)))
         m.addItem(action("AI Settings…", #selector(showAISettings)))
+        let ask = action("Ask Before Taking Meeting Notes", #selector(toggleAskBeforeMeetingNotes))
+        ask.state = MeetingCenter.askFirst ? .on : .off
+        ask.toolTip = "When a call starts, ask whether to take notes for it. Off: notes are taken for every call (except apps you said Never for)."
+        m.addItem(ask)
         let summaries = action("Summarize Meetings with AI", #selector(toggleMeetingSummaries))
         summaries.state = MeetingCenter.autoSummarize ? .on : .off
-        summaries.toolTip = "Off by default. When on, each meeting's transcript is sent to your AI provider after it ends, for a summary and action items. This uses your key and costs tokens."
+        summaries.toolTip = "Off by default. When on, the transcript of each call you take notes for is sent to your AI provider after it ends, for a summary and action items. This uses your key and costs tokens."
         m.addItem(summaries)
+        let remembered = MeetingCenter.choices
+        if !remembered.isEmpty {
+            let forget = action("Forget Remembered Meeting Choices", #selector(forgetMeetingChoices))
+            forget.toolTip = "Ask again for every app. Remembered now: "
+                + remembered.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value == MeetingPrompt.always ? "always" : "never")" }
+                    .joined(separator: ", ") + "."
+            m.addItem(forget)
+        }
         m.addItem(.separator())
         let sc = Shortcut.load(defaults)
         let shortcut = NSMenuItem(title: "Timeline Shortcut: \(sc.label)", action: nil, keyEquivalent: "")

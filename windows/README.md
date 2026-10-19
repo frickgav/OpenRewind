@@ -38,8 +38,10 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   when the local search server is on.
 - **Ask AI…** answers questions about your history with your own key, and **Meetings…** lists your
   calls with their transcripts (see [Ask AI](../README.md#ask-ai) and [Meetings](../README.md#meetings)).
-  **Settings → Summarize Meetings with AI** (off by default) sends each meeting's transcript to your AI
-  provider when it ends, for a summary and action items.
+  When a call starts, a popup above the tray asks whether to take notes (**Settings → Ask Before Taking
+  Meeting Notes**, on by default). **Settings → Summarize Meetings with AI** (off by default) sends the
+  transcript of each call you take notes for to your AI provider when it ends, for a summary and
+  action items.
 - **Settings → Timeline Shortcut**: **Change Shortcut…** waits for the new key combination
   (Ctrl, Alt or Win with a key, or an F-key alone); **Reset** goes back to Ctrl+Alt+T.
 - **Settings → Screenshot Resolution**: Full (100%), High (75%), Medium (50%, default) or

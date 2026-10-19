@@ -217,7 +217,8 @@ public sealed class AiTools
         var start = AiTime.Parse(a["start"]) ?? DateTime.UtcNow.AddDays(-7);
         var end = AiTime.Parse(a["end"]) ?? DateTime.UtcNow;
         var list = Blocked ?? Blocklist.Current;
-        var rows = db.MeetingsBetween(start, end).Where(m => !MeetingDetector.Hides(list, m)).ToList();
+        // Calls the user said Not This Time to are not offered.
+        var rows = db.MeetingsBetween(start, end).Where(m => !m.Skipped && !MeetingDetector.Hides(list, m)).ToList();
         if (rows.Count == 0) return $"No meetings were found between {AiTime.Label(start)} and {AiTime.Label(end)}.";
         var shown = rows.Skip(Math.Max(0, rows.Count - 30)).ToList();
         var out_ = new StringBuilder($"{rows.Count} meetings, showing {shown.Count} (oldest first, local time):\n");

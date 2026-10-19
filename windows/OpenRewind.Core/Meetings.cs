@@ -9,8 +9,10 @@ namespace OpenRewind;
 public sealed record Meeting(long Id, DateTime Start, DateTime End, string App, string AppName, string Title, string Url,
                              string Status, string Summary = "", string Decisions = "", string ActionItems = "",
                              string AiModel = "", long TokensIn = 0, long TokensOut = 0, double? Cost = null, string Error = "",
-                             string Titles = "", int Segments = 0, bool Redone = false)
+                             string Titles = "", int Segments = 0, bool Redone = false, string Choice = "")
 {
+    /// Not This Time: hidden from the Meetings window and Ask AI, never summarized.
+    public bool Skipped => Choice == MeetingChoice.Skip;
     /// The window title, or "Zoom call" when the window had none.
     public string Name => Title.Length > 0 ? Title : $"{App} call";
     public bool IsLive => Status == MeetingStatus.Live;
@@ -25,6 +27,76 @@ public sealed record Meeting(long Id, DateTime Start, DateTime End, string App, 
 public static class MeetingStatus
 {
     public const string Live = "live", Ended = "ended", Summarized = "summarized", Failed = "failed";
+}
+
+/// What the user said about taking notes for one meeting: "" (not asked or not answered yet),
+/// "take" (Take Notes) or "skip" (Not This Time).
+public static class MeetingChoice
+{
+    public const string Undecided = "", Take = "take", Skip = "skip";
+}
+
+public enum MeetingAsk { Take, Skip, Ask }
+
+/// The "Meeting detected. Take notes?" popup: when to show it, and what it says.
+/// Mac: MeetingPrompt in Meetings.swift.
+public static class MeetingPrompt
+{
+    /// Remembered per app ("Zoom", "Google Meet", …) when the user ticks "Remember for <App>".
+    public const string Always = "always", Never = "never";
+    /// A popup nobody answered goes away this long after its meeting ended.
+    public static readonly TimeSpan StaysAfterEnd = TimeSpan.FromMinutes(15);
+
+    /// Take or skip without asking when the user already chose for this meeting or this app, or
+    /// turned asking off. Blocked meetings are never offered (and are not found in the first place).
+    public static MeetingAsk Decide(Meeting m, bool askFirst, IReadOnlyDictionary<string, string>? remembered, Blocklist blocked)
+    {
+        if (MeetingDetector.Hides(blocked, m)) return MeetingAsk.Skip;
+        if (m.Choice == MeetingChoice.Take) return MeetingAsk.Take;
+        if (m.Choice == MeetingChoice.Skip) return MeetingAsk.Skip;
+        if (remembered != null && remembered.TryGetValue(m.App, out var r))
+        {
+            if (r == Always) return MeetingAsk.Take;
+            if (r == Never) return MeetingAsk.Skip;
+        }
+        return askFirst ? MeetingAsk.Ask : MeetingAsk.Take;
+    }
+
+    /// What one run of the watcher does with meetings nobody chose for yet: the choices it can make
+    /// by itself, and the meetings in progress to ask about.
+    public sealed record Plan(List<(long Id, string Choice)> Decided, List<Meeting> Ask);
+
+    public static Plan PlanFor(IEnumerable<Meeting> meetings, bool askFirst, IReadOnlyDictionary<string, string>? remembered, Blocklist blocked)
+    {
+        var plan = new Plan(new(), new());
+        foreach (var m in meetings.Where(m => m.Choice == MeetingChoice.Undecided))
+            switch (Decide(m, askFirst, remembered, blocked))
+            {
+                case MeetingAsk.Take: plan.Decided.Add((m.Id, MeetingChoice.Take)); break;
+                case MeetingAsk.Skip: plan.Decided.Add((m.Id, MeetingChoice.Skip)); break;
+                // Only while it is going on; a call found after the fact stays listed, without notes by AI.
+                default: if (m.IsLive) plan.Ask.Add(m); break;
+            }
+        return plan;
+    }
+
+    /// Whether an open popup should go: its meeting is gone, was answered, or ended a while ago.
+    public static bool Closes(Meeting? m, DateTime now) =>
+        m == null || m.Choice != MeetingChoice.Undecided || (!m.IsLive && now - m.End > StaysAfterEnd);
+
+    public static string Title(Meeting m) => $"Meeting detected in {m.App}";
+
+    /// `summarizer`: the provider that will write the summary (the user agreed to it), or null.
+    public static string Body(string? summarizer) =>
+        summarizer != null
+            ? $"Take notes for this call? You get its transcript and, when it ends, a summary and action items from {summarizer} (uses your key)."
+            : "Take notes for this call? You get its transcript in Meetings, kept on this computer.";
+
+    public const string Help =
+        "Not This Time leaves this call out of Meetings and Ask AI, and it is not summarized. "
+        + "Audio is still recorded as usual under your settings.";
+
+    public static string Remember(Meeting m) => $"Remember for {m.App}";
 }
 
 /// Which apps and sites are calls. Mac: MeetingApps in Meetings.swift.
@@ -385,10 +457,12 @@ public static class MeetingNotes
         return $"{ai.Kind.Id()} {(b.Length == 0 ? ai.Kind.DefaultBaseUrl() : b)}";
     }
 
-    /// Whether a meeting gets notes by itself: the setting is on, the meeting ended after it was turned
-    /// on, the provider is the one the user agreed to, and nothing about the meeting is blocked.
+    /// Whether a meeting gets notes by itself: the user chose Take Notes for it (or for its app, or
+    /// turned asking off), the setting is on, the meeting ended after it was turned on, the provider
+    /// is the one the user agreed to, and nothing about the meeting is blocked.
     public static bool AutoSummarizes(Meeting m, bool on, DateTime? since, string? consent, AiSettings ai, Blocklist blocked) =>
-        on && since is DateTime s && m.End >= s && consent == ConsentKey(ai) && ai.IsReady && !MeetingDetector.Hides(blocked, m);
+        m.Choice == MeetingChoice.Take && on && since is DateTime s && m.End >= s && consent == ConsentKey(ai) && ai.IsReady
+        && !MeetingDetector.Hides(blocked, m);
 
     /// "2:00 PM–2:45 PM" style times are left to the UI; Markdown uses 24-hour local times.
     public static string Markdown(Meeting m, IReadOnlyList<TranscriptLine> lines)
@@ -529,12 +603,14 @@ public sealed partial class Database
         """);
         // titles: every window title seen, one per line. segments: transcript segments the notes were
         // made from. redone: the notes were made again once, after late transcripts.
-        foreach (var (col, type) in new[] { ("titles", "TEXT NOT NULL DEFAULT ''"), ("segments", "INTEGER NOT NULL DEFAULT 0"), ("redone", "INTEGER NOT NULL DEFAULT 0") })
+        // choice: the user's answer to "Take notes?" (MeetingChoice).
+        foreach (var (col, type) in new[] { ("titles", "TEXT NOT NULL DEFAULT ''"), ("segments", "INTEGER NOT NULL DEFAULT 0"),
+                                            ("redone", "INTEGER NOT NULL DEFAULT 0"), ("choice", "TEXT NOT NULL DEFAULT ''") })
             if (ScalarLong($"SELECT COUNT(*) FROM pragma_table_info('meetings') WHERE name = '{col}'") == 0)
                 Exec($"ALTER TABLE meetings ADD COLUMN {col} {type}");
     }
 
-    const string MeetingCols = "id, start_time, end_time, app, app_name, title, url, status, summary, decisions, action_items, ai_model, tokens_in, tokens_out, cost, error, titles, segments, redone";
+    const string MeetingCols = "id, start_time, end_time, app, app_name, title, url, status, summary, decisions, action_items, ai_model, tokens_in, tokens_out, cost, error, titles, segments, redone, choice";
 
     List<Meeting> MeetingRows(string tail, params object[] args)
     {
@@ -550,7 +626,7 @@ public sealed partial class Database
                     if (Time.ParseIso(r.GetString(1)) is not DateTime s || Time.ParseIso(r.GetString(2)) is not DateTime e) continue;
                     out_.Add(new Meeting(r.GetInt64(0), s, e, r.GetString(3), r.GetString(4), r.GetString(5), r.GetString(6), r.GetString(7),
                         r.GetString(8), r.GetString(9), r.GetString(10), r.GetString(11), r.GetInt64(12), r.GetInt64(13),
-                        r.IsDBNull(14) ? null : r.GetDouble(14), r.GetString(15), r.GetString(16), r.GetInt32(17), r.GetInt64(18) != 0));
+                        r.IsDBNull(14) ? null : r.GetDouble(14), r.GetString(15), r.GetString(16), r.GetInt32(17), r.GetInt64(18) != 0, r.GetString(19)));
                 }
                 return out_;
             }
@@ -596,6 +672,12 @@ public sealed partial class Database
 
     public void MeetingFailed(long id, string error, int segments = 0) =>
         Run("UPDATE meetings SET status = ?, error = ?, segments = ? WHERE id = ? AND status != ?", MeetingStatus.Failed, error, segments, id, MeetingStatus.Summarized);
+
+    public void SetMeetingChoice(long id, string choice) => Run("UPDATE meetings SET choice = ? WHERE id = ?", choice, id);
+
+    /// Meetings the user did not turn down (Not This Time), newest first: for the Meetings window.
+    public List<Meeting> ShownMeetings(int limit = 500) =>
+        MeetingRows("WHERE choice != ? ORDER BY start_time DESC LIMIT ?", MeetingChoice.Skip, limit);
 
     /// The one new summary after late transcripts is used up.
     public void MarkMeetingRedone(long id) => Run("UPDATE meetings SET redone = 1 WHERE id = ?", id);

@@ -209,7 +209,8 @@ struct AITools {
     private func listMeetings(_ a: [String: Any]) -> String {
         let start = AITime.parse(a["start"]) ?? Date().addingTimeInterval(-7 * 86_400)
         let end = AITime.parse(a["end"]) ?? Date()
-        let rows = db.meetings(overlapping: start, to: end).filter { !MeetingDetector.hides(blocklist, $0) }
+        // Calls the user said Not This Time to are not offered.
+        let rows = db.meetings(overlapping: start, to: end).filter { !$0.skipped && !MeetingDetector.hides(blocklist, $0) }
         if rows.isEmpty { return "No meetings were found between \(AITime.label(start)) and \(AITime.label(end))." }
         let shown = rows.suffix(30)
         var out = "\(rows.count) meetings, showing \(shown.count) (oldest first, local time):\n"

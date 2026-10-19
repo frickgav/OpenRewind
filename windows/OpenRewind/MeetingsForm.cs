@@ -38,10 +38,18 @@ sealed class MeetingWatcher : IDisposable
             var ended = MeetingTracker.Update(db, Blocklist.Current, now, chunkSeconds, transcribing());
             foreach (var m in ended) Log.Write($"meeting ended: {m.App}, {m.Start.ToLocalTime():t}–{m.End.ToLocalTime():t}");
             var late = settings.SummarizeMeetings ? MeetingTracker.Late(db, now) : new();
+            var recent = db.MeetingsBetween(now - TimeSpan.FromDays(1), now);
             ui(() =>
             {
+                // Take or skip what the user already chose for; ask about calls going on now.
+                var plan = MeetingPrompt.PlanFor(recent, settings.AskBeforeMeetingNotes, settings.MeetingChoices, Blocklist.Current);
+                foreach (var (id, choice) in plan.Decided) db.SetMeetingChoice(id, choice);
+                foreach (var m in plan.Ask) Ask(m);
+                foreach (var (id, form) in prompts.ToList())
+                    if (MeetingPrompt.Closes(db.MeetingById(id), now)) { prompts.Remove(id); form.Close(); }
                 Changed?.Invoke();
-                foreach (var m in ended) if (AutoSummarizes(m)) _ = Summarize(m);
+                foreach (var m in ended)
+                    if (db.MeetingById(m.Id) is Meeting fresh && AutoSummarizes(fresh)) _ = Summarize(fresh);
                 // Transcripts that came in after the notes were made: make them again, once.
                 foreach (var m in late)
                     if (!summarizing.Contains(m.Id) && AutoSummarizes(m))
@@ -54,6 +62,38 @@ sealed class MeetingWatcher : IDisposable
         }
         catch (Exception e) { Log.Write($"meeting check failed: {e.Message}"); }
         finally { Interlocked.Exchange(ref running, 0); }
+    }
+
+    readonly Dictionary<long, MeetingPromptForm> prompts = new();
+
+    /// Shows "Meeting detected. Take notes?" once per meeting, without taking focus from the call.
+    void Ask(Meeting m)
+    {
+        if (prompts.ContainsKey(m.Id)) return;
+        var ai = settings.Ai();
+        var summarizer = settings.SummarizeMeetings && settings.SummarizeMeetingsProvider == MeetingNotes.ConsentKey(ai) && ai.IsReady
+            ? ai.Kind.Title() : null;
+        var form = new MeetingPromptForm(m, summarizer, (take, remember) => Answer(m, take, remember));
+        prompts[m.Id] = form;
+        Log.Write($"meeting detected: {m.App}, asking about notes");
+        form.ShowNear(prompts.Count - 1);
+    }
+
+    /// The user answered the popup. Call on the UI thread.
+    void Answer(Meeting m, bool take, bool remember)
+    {
+        if (prompts.Remove(m.Id, out var form)) form.Close();
+        db.SetMeetingChoice(m.Id, take ? MeetingChoice.Take : MeetingChoice.Skip);
+        if (remember)
+        {
+            settings.MeetingChoices[m.App] = take ? MeetingPrompt.Always : MeetingPrompt.Never;
+            settings.Save();
+        }
+        Log.Write($"meeting {m.Id}: {(take ? "take notes" : "not this time")}{(remember ? $", remembered for {m.App}" : "")}");
+        Changed?.Invoke();
+        // Answered after the call ended: summarize now, as it would have been when it ended.
+        if (take && db.MeetingById(m.Id) is Meeting fresh && !fresh.IsLive && fresh.Status == MeetingStatus.Ended && AutoSummarizes(fresh))
+            _ = Summarize(fresh);
     }
 
     /// Only meetings that ended after the user turned the setting on (so turning it on does not spend
@@ -121,7 +161,74 @@ sealed class MeetingWatcher : IDisposable
         }
     }
 
-    public void Dispose() => timer?.Dispose();
+    public void Dispose()
+    {
+        timer?.Dispose();
+        foreach (var f in prompts.Values) f.Close();
+        prompts.Clear();
+    }
+}
+
+/// "Meeting detected in Zoom. Take notes?" in the corner above the tray. It never takes focus from
+/// the call: it shows without activating, and clicking it does not activate it either.
+sealed class MeetingPromptForm : Form
+{
+    readonly Action<bool, bool> answer;
+    readonly CheckBox remember;
+
+    protected override bool ShowWithoutActivation => true;
+
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var p = base.CreateParams;
+            p.ExStyle |= 0x08000000 /* WS_EX_NOACTIVATE */ | 0x00000080 /* WS_EX_TOOLWINDOW */ | 0x00000008 /* WS_EX_TOPMOST */;
+            return p;
+        }
+    }
+
+    public MeetingPromptForm(Meeting m, string? summarizer, Action<bool, bool> answer)
+    {
+        this.answer = answer;
+        var k = DeviceDpi / 96f;
+        Text = MeetingPrompt.Title(m);
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        TopMost = true;
+        StartPosition = FormStartPosition.Manual;
+        BackColor = Ui.Card;
+        ForeColor = Ui.Text;
+        Font = Ui.F(13 * k);
+        Padding = new Padding((int)(16 * k));
+        ClientSize = new Size((int)(380 * k), (int)(214 * k));
+
+        var title = new Label { Text = MeetingPrompt.Title(m), Font = Ui.F(15 * k, true), AutoSize = false, AutoEllipsis = true,
+                                Location = new Point((int)(16 * k), (int)(14 * k)), Size = new Size((int)(348 * k), (int)(26 * k)) };
+        var body = new Label { Text = MeetingPrompt.Body(summarizer), Font = Ui.F(12.5f * k), ForeColor = Ui.Text,
+                               Location = new Point((int)(16 * k), (int)(44 * k)), Size = new Size((int)(348 * k), (int)(54 * k)) };
+        var help = new Label { Text = MeetingPrompt.Help, Font = Ui.F(11 * k), ForeColor = Ui.Dim,
+                               Location = new Point((int)(16 * k), (int)(100 * k)), Size = new Size((int)(348 * k), (int)(36 * k)) };
+        remember = new CheckBox { Text = MeetingPrompt.Remember(m), Font = Ui.F(12 * k), ForeColor = Ui.Text, AutoSize = true,
+                                  Location = new Point((int)(16 * k), (int)(140 * k)) };
+        var take = new PillButton("Take Notes", true) { Font = Ui.F(12.5f * k, true), Size = new Size((int)(120 * k), (int)(32 * k)) };
+        var skip = new PillButton("Not This Time", false) { Font = Ui.F(12.5f * k, true), Size = new Size((int)(130 * k), (int)(32 * k)) };
+        take.Location = new Point(ClientSize.Width - (int)(16 * k) - take.Width, (int)(170 * k));
+        skip.Location = new Point(take.Left - (int)(8 * k) - skip.Width, (int)(170 * k));
+        take.Click += (_, _) => answer(true, remember.Checked);
+        skip.Click += (_, _) => answer(false, remember.Checked);
+        Controls.AddRange(new Control[] { title, body, help, remember, skip, take });
+        Paint += (_, e) => { using var pen = new Pen(Ui.Stroke); e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1); };
+    }
+
+    /// Bottom right of the screen with the tray, above any taskbar; later popups stack upwards.
+    public void ShowNear(int index)
+    {
+        var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 800);
+        var gap = (int)(12 * DeviceDpi / 96f);
+        Location = new Point(area.Right - Width - gap, area.Bottom - (Height + gap) * (index + 1));
+        Show();
+    }
 }
 
 /// Meetings: calls by day on the left; the selected one's notes and transcript on the right.
@@ -208,9 +315,9 @@ sealed class MeetingsForm : Form
         empty.Controls.Add(new Label
         {
             Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Ui.Dim, Font = Ui.F(14 * k),
-            Text = "No meetings yet.\n\nWhen a Zoom, Teams, Google Meet, Webex or Slack huddle call is in front and there is sound, "
-                 + "it shows up here with its transcript.\n\nTurn on Settings → Summarize Meetings with AI to get a summary and action items "
-                 + "after each call, using your own AI key.",
+            Text = "No meetings yet.\n\nWhen a Zoom, Teams, Google Meet, Webex or Slack huddle call starts, OpenRewind asks whether to take "
+                 + "notes. Calls you take notes for show up here with their transcript.\n\nTurn on Settings → Summarize Meetings with AI to "
+                 + "also get a summary and action items after each one, using your own AI key.",
         });
 
         Controls.Add(detail);
@@ -237,7 +344,7 @@ sealed class MeetingsForm : Form
         if (IsDisposed) return;
         var keep = shown?.Id;
         var blocked = Blocklist.Current;
-        var meetings = db.Meetings().Where(m => !MeetingDetector.Hides(blocked, m)).ToList();
+        var meetings = db.ShownMeetings().Where(m => !MeetingDetector.Hides(blocked, m)).ToList();
         list.BeginUpdate();
         list.Items.Clear();
         DateTime? day = null;
