@@ -83,6 +83,41 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
 - **Ask AI** (menu bar or tray → Ask AI…) answers questions like "what did I work on today?"
   with your own key: Anthropic, OpenAI, Gemini, OpenRouter (any model it offers), or any
   OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
+- **Search by Meaning** (off until you turn it on) finds moments by what they were about, not
+  only the exact words. It runs on your computer. See [Search by Meaning](#search-by-meaning).
+
+## Search by Meaning
+
+Keyword search finds the words you type. Search by Meaning also finds moments that are *about*
+the same thing in other words: "the flight I was booking" finds the airline page, "when we talked
+about hiring" finds the call where someone said "we need another engineer".
+
+Turn it on in **Settings → Search by Meaning**. OpenRewind then builds an index in the
+background: it goes through your old recordings first and then keeps up with new ones. It works
+slowly while you use the computer, slower still on battery (or in Low Power Mode on a Mac), and
+faster when you are away. The line under the switch shows how far it has got.
+
+Once it is on, the timeline's search box has a **Keyword | Meaning** switch. Meaning shows the
+closest moments first; click one to go there, as with keyword search. The browser search page and
+Ask AI (`search_by_meaning`) can use it too.
+
+How it works:
+
+- A "moment" is a stretch of one window (until the app, window or page changes, up to 10 minutes),
+  or one 30-second audio clip. Repeated text in a stretch is counted once.
+- Each moment gets a sentence vector made **on your computer**. The Mac uses the sentence model
+  that comes with macOS, so nothing is downloaded. Windows downloads one model the first time
+  (all-MiniLM-L6-v2, about 90 MB, from Hugging Face), checks it against a fixed SHA-256, and runs
+  it with ONNX Runtime. Your recordings are never uploaded.
+- Vectors are stored in the same database (table `meaning_moments`, about 0.5 KB per moment).
+- Blocked apps, sites and windows are never indexed, and are hidden from results if you block
+  them later. As with Ask AI, audio is not filtered by app. Apps you unblock are only indexed from
+  then on.
+- Deleting recordings (by hand or with Keep Recordings For) deletes their vectors too. Turning
+  Search by Meaning off deletes the whole index; Windows keeps the downloaded model so turning it
+  back on downloads nothing.
+- The Mac model and the Windows model are different, so their scores are not comparable. The Mac
+  uses your system language when macOS has a sentence model for it, otherwise English.
 
 ## Ask AI
 
@@ -103,6 +138,7 @@ send back capped, trimmed text:
 | `activity_summary` | Time per app, window and website, and a timeline of what was in front |
 | `search_screen` | Matching moments from the screen-text search, with a short snippet |
 | `search_audio` | Matching transcript lines (or all of them in a time range) |
+| `search_by_meaning` | The moments closest in meaning to a question, with a short snippet. Only offered while **Search by Meaning** is on |
 | `get_screen_text` | Screen text from a short time range, sampled and trimmed |
 | `view_screenshot` | One screenshot near a moment, as a JPEG. Only offered when you turn on **Let AI look at screenshots** (off by default) |
 
@@ -161,6 +197,9 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
 - **Settings → Local Search Server** turns on the API and browser search page at
   `http://127.0.0.1:3031`. Off by default. Only this Mac can connect. The terminal
   commands `record` and `serve` always start it.
+- **Settings → Search by Meaning** (off by default) indexes your recordings in the background
+  so you can search by meaning, with the model that comes with macOS. See
+  [Search by Meaning](#search-by-meaning).
 - **Settings → Launch at Login** starts it with your Mac.
 - The lock screen and screen saver are never recorded.
 - **Settings → Blocked Apps & Sites** picks apps to blur, plus words that hide a window when its
@@ -302,6 +341,11 @@ On when you run `record` or `serve` from the terminal, or after **Settings → L
 | `GET /audio/{chunk_id}` | Audio chunk WAV |
 
 `content_type`: `all` (screen + audio), `ocr` (screen only), `audio`.
+
+`mode=meaning` searches by meaning instead of words (only while **Search by Meaning** is on, else
+400; `/health` says `"search_by_meaning": true`). Results come best first, in the same shape plus a
+`score`, and leave out blocked apps and sites. A screen result is a moment: `timestamp` is where
+it starts and `text` is the moment's text.
 
 Response: `{"data":[{"type":"OCR","content":{"frame_id","text","timestamp","app_name","window_name","file_path","text_source"}},{"type":"Audio","content":{"chunk_id","transcription","timestamp","start_time","end_time","device_name","device_type"}}],"pagination":{"limit","offset","total"}}`
 

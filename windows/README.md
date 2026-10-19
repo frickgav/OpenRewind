@@ -52,6 +52,12 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
 - **Settings → Local Search Server** turns on the API and browser search page at
   http://127.0.0.1:3031. Off by default. Only this PC can connect. The terminal commands
   `record` and `serve` always start it.
+- **Settings → Search by Meaning** (off by default) indexes your recordings in the background so
+  the timeline's search box gets a **Keyword | Meaning** switch. Turning it on downloads a model once
+  (about 90 MB, all-MiniLM-L6-v2 from Hugging Face, checked against a fixed SHA-256) into
+  `%USERPROFILE%\.openrewind\models`; it runs on your PC with ONNX Runtime and nothing you record
+  is uploaded. The line under the switch shows the download and indexing progress, with **Try
+  Again** if the download fails. See [Search by Meaning](../README.md#search-by-meaning).
 - **Settings → Launch at Login** starts it when you sign in.
 - **Updates**: a newer release shows a banner at the top of the timeline (✕ hides it until the
   next version) and a row in the tray menu. **Settings → Download Updates Automatically** (on by
@@ -79,6 +85,7 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
 | Microphone | AVAudioEngine | WASAPI |
 | System audio | ScreenCaptureKit | WASAPI loopback (no permission needed) |
 | Speech to text | whisper.cpp `whisper-cli` | whisper.cpp `whisper-cli.exe` |
+| Search by Meaning | macOS sentence embedding (built in) | all-MiniLM-L6-v2 with ONNX Runtime (downloaded once) |
 | Database, API, search page | SQLite + FTS5, port 3031 | the same |
 | App | Menu bar, ⌥⌘T | Tray, Ctrl+Alt+T |
 
