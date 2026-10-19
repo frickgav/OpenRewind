@@ -104,6 +104,7 @@ struct TimelineView: View {
         ZStack {
             HStack(spacing: 10) {
                 searchBar.frame(maxWidth: 460)
+                if model.meaningAvailable { SearchModeSwitch(model: model) }
                 AppFilterMenu(model: model)
                 Spacer(minLength: 220)
                 if chat != nil { askAIButton }
@@ -158,10 +159,12 @@ struct TimelineView: View {
 
     // MARK: search
 
+    private var searchPrompt: String { model.searchingByMeaning ? "Describe what you saw or heard" : "Search what you saw or heard" }
+
     private var searchBar: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass").foregroundColor(theme.dim)
-            TextField("Search what you saw or heard", text: $model.query)
+            TextField(searchPrompt, text: $model.query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 15))
                 .focused($searchFocused)
@@ -179,7 +182,7 @@ struct TimelineView: View {
                         .buttonStyle(.plain).help("Older match (⌘G)")
                     Button("List") { model.showResults = true; searchFocused = true }
                         .buttonStyle(.plain).font(.system(size: 12, weight: .medium))
-                } else if model.hits.isEmpty && !model.showResults {
+                } else if model.hits.isEmpty && !model.showResults && !model.searching {
                     Text("No matches").font(.system(size: 12)).foregroundColor(theme.faint)
                 }
                 Button { model.clearSearch() } label: { Image(systemName: "xmark.circle.fill") }
@@ -196,10 +199,10 @@ struct TimelineView: View {
     private var results: some View {
         VStack(alignment: .leading, spacing: 0) {
             if model.hits.isEmpty {
-                Text("No matches for “\(model.query)”").foregroundColor(theme.dim).padding(16)
+                Text(model.searching ? "Searching by meaning…" : "No matches for “\(model.query)”").foregroundColor(theme.dim).padding(16)
             } else {
                 HStack(spacing: 6) {
-                    Text("\(model.hits.count) moment\(model.hits.count == 1 ? "" : "s")")
+                    Text("\(model.hits.count) moment\(model.hits.count == 1 ? "" : "s")" + (model.searchingByMeaning ? " · closest in meaning first" : ""))
                     Spacer()
                     Keycap("↑"); Keycap("↓"); Text("choose")
                     Keycap("return").padding(.leading, 6); Text("go")
@@ -256,7 +259,8 @@ struct TimelineView: View {
 
     /// Bold + yellow the searched words inside a snippet.
     private func highlighted(_ text: String) -> Text {
-        let words = model.query.lowercased().split(separator: " ").map(String.init).filter { !$0.isEmpty }
+        // A meaning match need not contain the typed words, so none are marked.
+        let words = model.searchingByMeaning ? [] : model.query.lowercased().split(separator: " ").map(String.init).filter { !$0.isEmpty }
         var out = Text("")
         var rest = Substring(text)
         while !rest.isEmpty {
@@ -593,6 +597,36 @@ struct Keycap: View {
             .frame(minWidth: large ? 24 : 18)
             .background(RoundedRectangle(cornerRadius: 4).fill(theme.surfaceHi))
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(theme.stroke))
+    }
+}
+
+/// "Keyword | Meaning" next to search, shown while Search by Meaning is on.
+struct SearchModeSwitch: View {
+    @Environment(\.colorScheme) private var scheme
+    private var theme: Theme { Theme(scheme) }
+    @ObservedObject var model: TimelineModel
+
+    var body: some View {
+        HStack(spacing: 0) {
+            segment("Keyword", on: !model.byMeaning) { model.setByMeaning(false) }
+            segment("Meaning", on: model.byMeaning) { model.setByMeaning(true) }
+        }
+        .padding(3)
+        .background(Capsule().fill(theme.surface))
+        .overlay(Capsule().stroke(theme.stroke))
+        .fixedSize()
+        .help("Keyword finds the exact words. Meaning finds moments about the same thing, even in other words.")
+    }
+
+    private func segment(_ title: String, on: Bool, _ act: @escaping () -> Void) -> some View {
+        Button(action: act) {
+            Text(title).font(.system(size: 12, weight: .semibold))
+                .foregroundColor(on ? theme.text : theme.dim)
+                .padding(.horizontal, 12).frame(height: 28)
+                .background(Capsule().fill(on ? Color.accentColor.opacity(0.35) : Color.clear))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 }
 

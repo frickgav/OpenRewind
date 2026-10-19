@@ -437,4 +437,13 @@ public class MeaningTests : IDisposable
         Assert.Null(hits[0].ChunkId);
         Assert.Equal(7, hits[1].ChunkId);
     }
+
+    [Fact]
+    public void SearchPageOffersMeaningOnlyWhenTheAppSaysSo()
+    {
+        // The switch starts hidden and /health's search_by_meaning shows it; a meaning search sends mode=meaning.
+        Assert.Contains("<select id=\"mode\" hidden", WebUI.Html);
+        Assert.Contains("h.search_by_meaning", WebUI.Html);
+        Assert.Contains("p.set('mode', 'meaning')", WebUI.Html);
+    }
 }

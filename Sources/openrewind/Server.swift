@@ -107,6 +107,8 @@ final class Server {
 struct API {
     let db: Database
     let config: Config
+    /// Search by Meaning (mode=meaning on /search); it answers only while it is on.
+    var meaning: MeaningService? = nil
 
     func handle(_ req: HTTPRequest) -> HTTPResponse {
         guard req.method == "GET" else { return .error("method not allowed", status: 405) }
@@ -126,6 +128,7 @@ struct API {
                 "screen_permission": Capture.hasScreenPermission,
                 "accessibility_permission": Accessibility.isTrusted,
                 "data_dir": config.home.path,
+                "search_by_meaning": meaning?.embedder != nil,
             ])
         case "/search":
             return search(req.query)
@@ -171,6 +174,9 @@ struct API {
         let wantScreen = type != "audio"
         // Audio has no app/window, so those filters mean "screen only".
         let wantAudio = (type == "audio" || type == "all") && (s.appName ?? "").isEmpty && (s.windowName ?? "").isEmpty
+        if q["mode"]?.lowercased() == "meaning" {
+            return searchByMeaning(s, screen: wantScreen, audio: wantAudio, offset: offset, limit: limit, clip: clip)
+        }
         // To page through a merged list: take the top (offset + limit) of each source, merge by time, then slice.
         let fetch = offset + limit
         var items: [(ts: String, item: [String: Any])] = []
@@ -200,6 +206,42 @@ struct API {
         items.sort { $0.ts > $1.ts }
         let page = items.dropFirst(offset).prefix(limit).map { $0.item }
         return .json(["data": Array(page), "pagination": ["limit": limit, "offset": offset, "total": total]])
+    }
+
+    /// mode=meaning: the moments closest in meaning to q, best first, in the same shape as the word search
+    /// plus a "score". Blocked apps and sites are left out.
+    private func searchByMeaning(_ s: SearchQuery, screen: Bool, audio: Bool, offset: Int, limit: Int, clip: (String) -> String) -> HTTPResponse {
+        guard let m = meaning, m.embedder != nil else { return .error("Search by Meaning is off", status: 400) }
+        let text = (s.q ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return .json(["data": [], "pagination": ["limit": limit, "offset": offset, "total": 0]]) }
+        func has(_ have: String, _ want: String?) -> Bool { (want ?? "").isEmpty || have.localizedCaseInsensitiveContains(want!) }
+        var mq = MeaningQuery()
+        mq.start = s.startTime; mq.end = s.endTime
+        mq.screen = screen; mq.audio = audio
+        mq.limit = min(200, offset + limit)
+        mq.match = { app, window in has(app, s.appName) && has(window, s.windowName) }
+        let hits = m.search(text, mq)
+        let page: [[String: Any]] = hits.dropFirst(offset).prefix(limit).map { h -> [String: Any] in
+            if h.isAudio {
+                let c = db.chunk(id: h.firstId)
+                var start = 0.0
+                if let c, let cs = Time.iso.date(from: c.timestamp), let hs = Time.iso.date(from: h.timestamp) { start = hs.timeIntervalSince(cs) }
+                return ["type": "Audio", "content": [
+                    "chunk_id": h.firstId, "transcription_id": h.id, "transcription": clip(h.text),
+                    "timestamp": h.timestamp, "start_time": start, "end_time": start,
+                    "device_name": c?.device ?? "", "device_type": c?.isInput == false ? "Output" : "Input",
+                    "file_path": c?.filePath ?? "", "speaker": NSNull(), "tags": [], "score": h.score,
+                ] as [String: Any]]
+            }
+            let f = db.frame(id: h.firstId)
+            return ["type": "OCR", "content": [
+                "frame_id": h.firstId, "text": clip(h.text), "timestamp": h.timestamp,
+                "app_name": h.appName, "window_name": h.windowName, "focused": f?.focused ?? true,
+                "file_path": f?.snapshotPath ?? "", "text_source": f?.textSource ?? "ocr", "offset_index": 0, "tags": [],
+                "score": h.score,
+            ] as [String: Any]]
+        }
+        return .json(["data": page, "pagination": ["limit": limit, "offset": offset, "total": hits.count]])
     }
 
     private func audioFile(_ idStr: String) -> HTTPResponse {

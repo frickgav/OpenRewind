@@ -16,6 +16,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let typingGapKey = "typingFrameGap"
     /// The local HTTP API + browser search page. Off unless the user turns it on in Settings.
     private let serverKey = "localSearchServer"
+    /// Search by Meaning: index moments in the background to find them by meaning. Off unless the user turns it on.
+    private let meaningKey = "searchByMeaning"
     private var retention: RetentionJob!
     /// Last measured size of the data folder; measured in the background when the menu opens.
     private var dataSize: Int64?
@@ -30,7 +32,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isPaused: Bool { pausedUntil != nil }
     /// The AI chat keeps its conversation while its window is closed.
     private lazy var aiChat: AIChatModel = {
-        let m = AIChatModel(db: engine.db)
+        let m = AIChatModel(db: engine.db, meaning: engine.meaning)
         m.openMoment = { [weak self] d in self?.overlay.show(at: d) }
         // AI Settings is a normal window, which would sit under the overlay.
         m.openSettings = { [weak self] in
@@ -45,7 +47,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         super.init()
         copyOldSettings()
         clearOldPermissions()
-        defaults.register(defaults: [screenKey: true, audioKey: true, serverKey: false,
+        defaults.register(defaults: [screenKey: true, audioKey: true, serverKey: false, meaningKey: false,
                                      keepScreenKey: KeepFor.forever.rawValue, keepAudioKey: KeepFor.forever.rawValue,
                                      typingGapKey: 2])
     }
@@ -85,6 +87,9 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         overlay = OverlayController(db: engine.db)
         overlay.chat = { [unowned self] in self.aiChat }
+        overlay.model.meaning = engine.meaning
+        engine.meaning.pace = { MeaningPace.now() }
+        if defaults.bool(forKey: meaningKey) { startMeaning() }
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
         menu.delegate = self
@@ -289,6 +294,17 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         del.submenu = dm
         m.addItem(del)
+        m.addItem(.separator())
+
+        let meaning = action("Search by Meaning", #selector(toggleMeaning))
+        meaning.state = defaults.bool(forKey: meaningKey) ? .on : .off
+        meaning.toolTip = "Find moments by what they were about, not only the exact words. Works on this Mac; nothing is sent anywhere."
+        m.addItem(meaning)
+        if defaults.bool(forKey: meaningKey) {
+            let line = NSMenuItem(title: "  " + meaningStatus(), action: nil, keyEquivalent: "")
+            line.isEnabled = false
+            m.addItem(line)
+        }
         m.addItem(.separator())
 
         let server = action("Local Search Server (127.0.0.1:\(engine.config.port))", #selector(toggleServer))
@@ -713,6 +729,55 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openData() { NSWorkspace.shared.open(engine.config.home) }
+
+    // MARK: search by meaning
+
+    /// Load Apple's sentence model (it comes with macOS) and start indexing in the background.
+    private func startMeaning() {
+        if engine.meaning.embedder == nil {
+            engine.meaning.embedder = AppleEmbedder.make()
+            if let e = engine.meaning.embedder { log("search by meaning: using \(e.modelId)") }
+            else { log("search by meaning: macOS has no sentence model for this language") }
+        }
+        engine.meaning.start()
+    }
+
+    private func meaningStatus() -> String {
+        guard engine.meaning.embedder != nil else { return "⚠︎ Not available: macOS has no sentence model for your language" }
+        let p = engine.meaning.progress()
+        let n = NumberFormatter.localizedString(from: NSNumber(value: p.moments), number: .decimal)
+        return p.upToDate ? "Up to date · \(n) moments" : "Indexing in the background… \(p.percent)% · \(n) moments"
+    }
+
+    @objc private func toggleMeaning() {
+        if !defaults.bool(forKey: meaningKey) {
+            NSApp.activate(ignoringOtherApps: true)
+            let a = NSAlert()
+            a.messageText = "Turn on Search by Meaning?"
+            a.informativeText = "Search by Meaning finds moments by what they were about, even when you don't remember the exact words. "
+                + "For example, “the flight I was booking” finds the airline page.\n\n"
+                + "OpenRewind will read your screen text and transcripts in the background to build an index on this Mac, "
+                + "using the language model that comes with macOS. Nothing is downloaded and nothing leaves this Mac. "
+                + "It works slowly while you use the Mac and on battery, and faster when you are away. "
+                + "Blocked apps and sites are never indexed."
+            a.addButton(withTitle: "Turn On")
+            a.addButton(withTitle: "Cancel")
+            guard a.runModal() == .alertFirstButtonReturn else { return }
+            defaults.set(true, forKey: meaningKey)
+            startMeaning()
+            log("search by meaning on")
+        } else {
+            guard confirm("Turn off Search by Meaning?",
+                          "The meaning index is deleted. Keyword search keeps working. Turning it back on builds the index again.",
+                          button: "Turn Off") else { return }
+            defaults.set(false, forKey: meaningKey)
+            engine.meaning.stop()
+            engine.meaning.embedder = nil
+            engine.db.clearMeaning()
+            overlay.model.setByMeaning(false)
+            log("search by meaning off")
+        }
+    }
 
     @objc private func toggleLogin() {
         do {

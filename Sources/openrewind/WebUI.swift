@@ -79,6 +79,10 @@ dialog::backdrop { background: rgba(0,0,0,.55); }
     <option value="audio">Audio only</option>
   </select>
   <select id="app"><option value="">All apps</option></select>
+  <select id="mode" hidden title="Keyword finds the exact words. Meaning finds moments about the same thing, even in other words.">
+    <option value="keyword">Keyword</option>
+    <option value="meaning">Meaning</option>
+  </select>
   <button class="primary" id="go">Search</button>
   <span id="status"></span>
 </header>
@@ -106,7 +110,9 @@ let rows = [], offset = 0, total = 0, current = -1, seq = 0;
 const PAGE = 40;
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-function words() { return $('q').value.trim().split(/\s+/).filter(Boolean); }
+// Search by Meaning (when it is on in the app): best match first, and the words need not appear.
+function byMeaning() { return !$('mode').hidden && $('mode').value === 'meaning'; }
+function words() { return byMeaning() ? [] : $('q').value.trim().split(/\s+/).filter(Boolean); }
 function highlight(text) {
   let h = esc(text);
   for (const w of words()) {
@@ -137,6 +143,10 @@ async function load(reset) {
   if ($('q').value.trim()) p.set('q', $('q').value.trim());
   if ($('app').value) p.set('app_name', $('app').value);
   p.set('content_type', $('type').value);
+  const meaning = byMeaning();
+  if (meaning) p.set('mode', 'meaning');
+  $('prev').textContent = meaning ? '← Better match' : '← Newer';
+  $('next').textContent = meaning ? 'Next match →' : 'Older →';
   const r = await fetch('/search?' + p).then(r => r.json());
   if (my !== seq) return;  // a newer search started; drop this result
   if (reset) { rows = []; $('grid').innerHTML = ''; }
@@ -145,8 +155,12 @@ async function load(reset) {
   const start = rows.length;
   rows = rows.concat(r.data.map(d => Object.assign({ kind: d.type }, d.content)));
   offset = rows.length;
-  $('meta').textContent = total + ' result' + (total === 1 ? '' : 's');
-  if (!rows.length) { $('grid').innerHTML = '<div class="empty">Nothing here yet. Keep OpenRewind running and come back.</div>'; }
+  $('meta').textContent = total + ' result' + (total === 1 ? '' : 's') + (meaning ? ', closest in meaning first' : '');
+  if (!rows.length) {
+    $('grid').innerHTML = meaning && !$('q').value.trim()
+      ? '<div class="empty">Describe what you are looking for, like \u201cthe flight I was booking\u201d.</div>'
+      : '<div class="empty">Nothing here yet. Keep OpenRewind running and come back.</div>';
+  }
   rows.slice(start).forEach((c, i) => {
     const el = document.createElement('div');
     el.className = 'card';
@@ -210,6 +224,9 @@ async function health() {
   if (!h.accessibility_permission) warn.push('OCR only');
   if (h.audio_chunks_pending) warn.push(h.audio_chunks_pending + ' audio pending');
   $('status').textContent = h.frames_total + ' frames · ' + h.audio_segments_total + ' audio' + (warn.length ? ' · ' + warn.join(' · ') : '');
+  const had = byMeaning();
+  $('mode').hidden = !h.search_by_meaning;
+  if (had && !byMeaning()) load(true);  // Search by Meaning was turned off in the app
 }
 
 let t;
@@ -223,6 +240,7 @@ $('next').onclick = async () => { if (current + 1 >= rows.length && rows.length 
 $('close').onclick = () => $('dlg').close();
 $('dlg').addEventListener('close', () => $('daudio').pause());
 $('type').onchange = () => load(true);
+$('mode').onchange = () => load(true);
 document.addEventListener('keydown', e => {
   if (!$('dlg').open) return;
   if (e.key === 'ArrowLeft') $('prev').click();

@@ -14,6 +14,8 @@ let package = Package(
                 .linkedFramework("Vision"),
                 .linkedFramework("AppKit"),
                 .linkedFramework("Network"),
+                .linkedFramework("NaturalLanguage"),
+                .linkedFramework("IOKit"),
             ]
         ),
     ]
