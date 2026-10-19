@@ -85,6 +85,8 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
   OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
 - **Search by Meaning** (off until you turn it on) finds moments by what they were about, not
   only the exact words. It runs on your computer. See [Search by Meaning](#search-by-meaning).
+- **Claude, Cursor and other AI apps** can search your history too, through MCP, once you turn
+  it on. See [Use with Claude and other AI apps (MCP)](#use-with-claude-and-other-ai-apps-mcp).
 
 ## Search by Meaning
 
@@ -147,12 +149,68 @@ back. Times in answers link back to that moment in the timeline. Each answer sho
 tokens it used and what they cost; the header shows the chat's total and AI Settings keeps a
 running total per provider. Prices are built in for Claude and GPT-6 models and come with
 OpenRouter's model list; for other models you can type the price. Lookups leave out every app,
-site and window on your block list, including anything saved before you blocked it; audio
+site and window on your block list, including anything saved before you blocked it (the activity
+summary still counts a blocked app's time, as "(blocked app)", without its name); audio
 transcripts are not filtered by app. Web links in an answer only open if you or a lookup
 supplied that address, so text on screen can't trick the AI into a link that sends your data
 elsewhere. With a local model (Ollama, LM Studio) nothing leaves your computer at all; a custom
 server reached over plain http on another network gets a warning, since your key would travel
 unencrypted.
+
+## Use with Claude and other AI apps (MCP)
+
+Claude Desktop, Claude Code, Cursor and other apps that support the
+[Model Context Protocol](https://modelcontextprotocol.io) can look things up in your history
+with the same lookups as Ask AI (the table above). Ask them "what was I reading about
+databases yesterday?" and they search OpenRewind on your computer.
+
+It is **off by default**. Turn on **Settings → Allow AI Apps to Read My History (MCP)**, then
+open **Settings → Connect AI Apps…**: it shows the setup for Claude Desktop, Claude Code and
+Cursor with this copy's path filled in, each with a **Copy** button. For Claude Desktop it looks
+like this (Mac path shown; on Windows it is the path of your `OpenRewind.exe`):
+
+```json
+{
+  "mcpServers": {
+    "openrewind": {
+      "command": "/Applications/OpenRewind.app/Contents/MacOS/OpenRewind",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+That goes in `~/Library/Application Support/Claude/claude_desktop_config.json` (Windows:
+`%APPDATA%\Claude\claude_desktop_config.json`); Cursor uses the same lines in `~/.cursor/mcp.json`.
+For Claude Code, run once:
+
+```bash
+claude mcp add --scope user openrewind /Applications/OpenRewind.app/Contents/MacOS/OpenRewind mcp
+```
+
+How it works:
+
+- The AI app starts `OpenRewind mcp` (Windows: `OpenRewind.exe mcp`, or `--mcp`) and talks to it
+  over stdin/stdout. It shows no icon or window, records nothing and never changes the database:
+  it opens it read-only, so it works whether or not OpenRewind is running.
+- Lookups are the same as in Ask AI and capped the same way. Blocked apps, sites and windows are
+  left out of screen text, searches and screenshots; in the activity summary a blocked app shows
+  only as "(blocked app)" with its time. **Audio transcripts are not filtered by app**, so a call
+  or video heard while a blocked app was open can show up in `search_audio`. One activity summary
+  covers at most 31 days. Screenshots are only shared when **Let AI look at screenshots** is on in
+  AI Settings.
+- Names you add with `OPENREWIND_EXCLUDE` are not applied here: the AI app starts OpenRewind with
+  its own environment. They are still never recorded; only frames saved before you added a name
+  can show up. Put apps on **Blocked Apps & Sites** to hide them everywhere.
+- Each moment comes with its exact local time (like `2026-10-18T14:30:05-07:00`), which the AI
+  can pass back to read more around it.
+- While the switch is off, the AI app still lists OpenRewind, but every lookup answers that you
+  need to turn it on. Turning it off takes effect on the next lookup.
+- What the AI app reads goes to that app's AI provider, like anything else you ask it.
+- Text on your screen (web pages, emails, messages) reaches the AI app as data. Unlike Ask AI,
+  OpenRewind cannot stop an AI app from opening a link or running a command that such text asks
+  for, and many AI apps (Claude Code, Cursor) can do both. OpenRewind tells the AI to treat it as
+  data only, but keep an eye on what it does with your history.
 
 ## Mac app
 
