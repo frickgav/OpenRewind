@@ -85,7 +85,9 @@ public sealed class Transcriber
         var sw = Stopwatch.StartNew();
         try
         {
-            var segments = Whisper(chunk.FilePath);
+            List<Segment> segments;
+            // whisper-cli needs a file it can read: a decrypted copy in the temp folder while it runs.
+            using (var plain = RecordingFile.PlainCopy(chunk.FilePath)) segments = Whisper(plain.Path);
             db.SaveTranscripts(chunk, segments);
             var words = segments.Sum(s => s.Text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length);
             Log.Write($"transcribed chunk {chunk.Id}: {segments.Count} segments, {words} words in {sw.Elapsed.TotalSeconds:0.0}s");

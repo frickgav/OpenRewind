@@ -76,7 +76,7 @@ public sealed partial class Database
         var dirs = new HashSet<string>();
         foreach (var p in paths.Where(p => p.Length > 0))
         {
-            try { File.Delete(p); } catch { }
+            RecordingFile.Delete(p);
             if (Path.GetDirectoryName(p) is string d) dirs.Add(d);
         }
         foreach (var d in dirs)

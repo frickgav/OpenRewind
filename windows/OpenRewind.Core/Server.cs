@@ -73,7 +73,7 @@ public sealed class Server : IDisposable
             }
             var head = Encoding.UTF8.GetString(data.GetBuffer(), 0, end);
             var r = Route(head);
-            var reason = r.Status switch { 400 => "Bad Request", 404 => "Not Found", 405 => "Method Not Allowed", 500 => "Internal Server Error", _ => "OK" };
+            var reason = r.Status switch { 400 => "Bad Request", 404 => "Not Found", 405 => "Method Not Allowed", 423 => "Locked", 500 => "Internal Server Error", _ => "OK" };
             var h = $"HTTP/1.1 {r.Status} {reason}\r\nContent-Type: {r.ContentType}\r\nContent-Length: {r.Body.Length}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
             await stream.WriteAsync(Encoding.ASCII.GetBytes(h)).ConfigureAwait(false);
             await stream.WriteAsync(r.Body).ConfigureAwait(false);
@@ -113,6 +113,10 @@ public sealed class Api
     readonly Config config;
     /// Platform facts for /health (permissions etc.).
     readonly Func<Dictionary<string, object?>> healthExtras;
+    /// True while the app lock is on and the timeline has not been unlocked: no history is served.
+    public Func<bool>? Locked { get; set; }
+
+    public const string LockedMessage = "OpenRewind is locked. Open the timeline to unlock it, then try again.";
 
     public Api(Database db, Config config, Func<Dictionary<string, object?>>? healthExtras = null)
     {
@@ -143,6 +147,10 @@ public sealed class Api
                 };
                 foreach (var kv in healthExtras()) h[kv.Key] = kv.Value;
                 return HttpResponse.Json(h);
+        }
+        if (Locked?.Invoke() == true) return HttpResponse.Error(LockedMessage, 423);
+        switch (req.Path)
+        {
             case "/search":
                 return Search(req.Query);
             case "/apps":
@@ -237,7 +245,8 @@ public sealed class Api
         var root = Path.GetFullPath(config.DataDir).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         var cmp = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         if (!full.StartsWith(root, cmp) || !File.Exists(full)) return HttpResponse.Error(missing, 404);
-        return new HttpResponse { ContentType = type, Body = File.ReadAllBytes(full) };
+        if (RecordingFile.TryRead(full) is not byte[] body) return HttpResponse.Error("cannot read the recording", 500);
+        return new HttpResponse { ContentType = type, Body = body };
     }
 }
 

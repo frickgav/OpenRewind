@@ -27,20 +27,25 @@ public class SearchQuery
 /// Thin SQLite wrapper with the exact schema the Mac app uses:
 /// `frames` + `frames_fts`, `audio_chunks` + `audio_transcriptions` + `audio_fts`.
 /// One connection, one lock: the app is small and writes are rare.
+/// The file is plain SQLite, or SQLCipher-encrypted with the data key (see Vault.cs).
 public sealed partial class Database : IDisposable
 {
-    readonly SqliteConnection conn;
+    SqliteConnection conn;
     readonly object gate = new();
+    readonly string path;
 
-    public Database(string path)
+    /// `key` opens an encrypted database; `createEncrypted` makes a new one encrypted with it.
+    public Database(string path, byte[]? key = null, bool createEncrypted = false)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-        conn = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadWriteCreate, Pooling = false }.ToString());
-        conn.Open();
+        this.path = Path.GetFullPath(path);
+        Directory.CreateDirectory(Path.GetDirectoryName(this.path)!);
+        RecoverSwap(this.path);
+        var encrypted = IsEncryptedFile(this.path) || (createEncrypted && key != null && !HasData(this.path));
+        conn = Connect(this.path, encrypted ? key ?? throw new DatabaseLockedException() : null);
         Exec("PRAGMA journal_mode=WAL;");
         Exec("PRAGMA busy_timeout=5000;");
         Migrate();
-        FinishHomeMove(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        FinishHomeMove(Path.GetDirectoryName(this.path)!);
     }
 
     /// After the data folder moved from ~/.openscreen (see Config), point the stored screenshot

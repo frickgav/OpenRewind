@@ -120,11 +120,13 @@ public sealed class ChunkWriter
 
 public static class Wav
 {
-    /// 16-bit PCM mono WAV.
-    public static void Write(float[] samples, int sampleRate, string path)
+    /// 16-bit PCM mono WAV, encrypted when Encrypt Recordings is on (see RecordingFile).
+    public static void Write(float[] samples, int sampleRate, string path) => RecordingFile.Write(path, Bytes(samples, sampleRate));
+
+    public static byte[] Bytes(float[] samples, int sampleRate)
     {
-        var tmp = path + ".tmp";
-        using (var w = new BinaryWriter(File.Create(tmp)))
+        var ms = new MemoryStream(44 + samples.Length * 2);
+        using (var w = new BinaryWriter(ms, System.Text.Encoding.ASCII, leaveOpen: true))
         {
             int bytes = samples.Length * 2;
             w.Write("RIFF"u8); w.Write(36 + bytes);
@@ -134,13 +136,13 @@ public static class Wav
             w.Write("data"u8); w.Write(bytes);
             foreach (var s in samples) w.Write((short)(Math.Clamp(s, -1f, 1f) * 32767));
         }
-        File.Move(tmp, path, overwrite: true);
+        return ms.ToArray();
     }
 
     /// Read a PCM WAV (8/16/24/32-bit int or 32-bit float, any rate and channel count) as 16 kHz mono.
     public static float[] Load16k(string path)
     {
-        using var r = new BinaryReader(File.OpenRead(path));
+        using var r = new BinaryReader(new MemoryStream(RecordingFile.Read(path)));
         if (new string(r.ReadChars(4)) != "RIFF") throw new InvalidDataException("not a WAV file");
         r.ReadInt32();
         if (new string(r.ReadChars(4)) != "WAVE") throw new InvalidDataException("not a WAV file");
