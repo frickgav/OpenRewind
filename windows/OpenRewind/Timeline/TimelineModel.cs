@@ -180,6 +180,19 @@ sealed class TimelineModel
 
     public void JumpToNow() { StopAudio(); Show(Frames.Count - 1); }
 
+    /// Go to a moment, loading enough history, showing only `app` when given (Insights).
+    public void OpenAt(DateTime date, string? app)
+    {
+        if (date < LoadedSince) Reload((DateTime.UtcNow - date).TotalHours + 1);
+        if (app == null) SetAppFilter(null);
+        else if (app != AppFilterName && allFrames.Any(f => f.AppName == app))
+        {
+            SetAppFilter(app);
+            ShowNotice($"Only showing {app}. Press A for all apps.");
+        }
+        Jump(date);
+    }
+
     /// Last frame at or before `date` (binary search; frames are sorted by time).
     public int FrameIndex(DateTime date)
     {

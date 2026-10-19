@@ -81,6 +81,13 @@ sealed class TrayApp : ApplicationContext
     /// The chat for the overlay; the same one the Ask AI window shows.
     AiChatPanel AiChat() => AiChatPanel.Get(settings, aiTools, aiConversation, OpenMoment, OpenAiSettings);
 
+    /// Where the time went; a click shows that app or moment in the timeline.
+    void ShowInsights() => InsightsForm.ShowFor(settings, engine.Db, (at, app) =>
+    {
+        if (!overlay.Visible) overlay.ShowOverlay();
+        timeline.OpenAt(at, app);
+    });
+
     void OpenMoment(DateTime at)
     {
         if (!overlay.Visible) overlay.ShowOverlay();
@@ -134,6 +141,7 @@ sealed class TrayApp : ApplicationContext
         // The browser page when the local server is on, else the timeline's own search box.
         menu.Items.Add(Item("Search…", () => { if (engine.ServerOn) Open($"http://127.0.0.1:{engine.Config.Port}/"); else overlay.ShowSearch(); }));
         menu.Items.Add(Item("Ask AI…", ShowAiChat));
+        menu.Items.Add(Item("Insights…", ShowInsights));
         menu.Items.Add(Item("Show Data Folder", () => Open(engine.Config.Home)));
         foreach (var line in StorageLines()) menu.Items.Add(new ToolStripMenuItem("   " + line) { Enabled = false });
         MeasureStorage();
