@@ -56,6 +56,10 @@ sealed class Settings
     public Dictionary<string, double[]> AiListedPrices { get; set; } = new();
     /// Everything used per provider (by AiProviders.Id) since the user last reset it.
     public Dictionary<string, AiTotal> AiTotals { get; set; } = new();
+    /// Journal: write each day's AI recap by itself. Off by default because it spends tokens.
+    public bool JournalAutoRecap { get; set; }
+    /// The day (yyyy-MM-dd) the automatic recap last ran for, so each day is written once.
+    public string? JournalLastAutoDay { get; set; }
 
     string path = "";
 
@@ -119,6 +123,15 @@ sealed class Settings
         t.Cost += cost ?? 0;
         if (cost == null) t.Unpriced = true;
         AiTotals[k.Id()] = t;
+        Save();
+    }
+
+    /// Turning it on starts with today: the days before were not asked for.
+    public void SetJournalAutoRecap(bool on)
+    {
+        if (on == JournalAutoRecap) return;
+        JournalAutoRecap = on;
+        if (on) JournalLastAutoDay = Journal.Key(DateTime.Today.AddDays(-1));
         Save();
     }
 

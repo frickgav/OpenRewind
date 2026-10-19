@@ -24,6 +24,11 @@ sealed class TrayApp : ApplicationContext
     /// The AI chat keeps its conversation while its window is closed.
     readonly AiConversation aiConversation = new();
     readonly AiTools aiTools;
+    /// The journal's own lookups, so it never offers screenshots the chat allowed.
+    readonly AiTools journalTools;
+    /// Checks every few minutes whether yesterday's recap is due (Write Each Day's Recap Automatically).
+    readonly System.Windows.Forms.Timer recapTimer = new() { Interval = 60_000 };
+    bool writingRecap;
 
     public TrayApp(Engine engine)
     {
@@ -33,6 +38,7 @@ sealed class TrayApp : ApplicationContext
         Blocklist.Current = settings.ToBlocklist();
         timeline = new TimelineModel(engine.Db);
         aiTools = new AiTools(engine.Db);
+        journalTools = new AiTools(engine.Db);
         overlay = new OverlayForm(timeline) { Look = settings.TimelineLook };
         _ = overlay.Handle;  // create it on the UI thread now
 
@@ -61,6 +67,9 @@ sealed class TrayApp : ApplicationContext
         // both paths end in UpdateIcon(), which sets the icon's tooltip and picture.
         if (PausedUntil is DateTime until) SchedulePause(until); else ApplyRecordingPrefs();
 
+        recapTimer.Tick += (_, _) => { recapTimer.Interval = 10 * 60_000; WriteDueRecap(); };
+        recapTimer.Start();
+
         BuildMenu();
         UpdateIcon();
         if (!settings.OnboardingDone) ShowSetup();
@@ -75,6 +84,35 @@ sealed class TrayApp : ApplicationContext
         setup.Show();
     }
     OnboardingForm? setup;
+
+    void ShowJournal() => JournalForm.ShowFor(settings, engine.Db, journalTools, OpenMoment, OpenAiSettings);
+
+    /// Write Each Day's Recap Automatically: yesterday's recap, once, the first time the app runs
+    /// after the day ended. Days with nothing recorded, or with a recap already, are skipped.
+    async void WriteDueRecap()
+    {
+        if (!settings.JournalAutoRecap || writingRecap) return;
+        var ai = settings.Ai();
+        if (!ai.IsReady || Journal.AutoRecapDay(DateTime.Now, settings.JournalLastAutoDay) is not string key || Journal.FromKey(key) is not DateTime day) return;
+        settings.JournalLastAutoDay = key;
+        settings.Save();
+        if (engine.Db.Recap(key) != null) return;
+        writingRecap = true;
+        try
+        {
+            var stats = await Task.Run(() => engine.Db.JournalStats(day, journalTools));
+            if (stats.IsEmpty) return;
+            var price = settings.AiPriceFor(ai.Model);
+            var r = await JournalWriter.Write(day, new AiClient(ai), journalTools, price);
+            settings.AddAiUsage(ai.Kind, r.Usage, r.Cost);
+            if (r.Error != null) { Log.Write($"automatic journal recap for {key} failed: {r.Error}"); return; }
+            engine.Db.SaveRecap(new JournalRecap(key, r.Text, DateTime.UtcNow, ai.Kind.Id(), ai.Model, r.Usage, r.Cost));
+            Log.Write($"wrote the journal recap for {key} ({r.Usage.Describe(price)})");
+            JournalForm.Reload();
+        }
+        catch (Exception e) { Log.Write($"automatic journal recap for {key} failed: {e.Message}"); }
+        finally { writingRecap = false; }
+    }
 
     void ShowAiChat() => AiChatForm.ShowFor(settings, aiTools, aiConversation, OpenMoment, OpenAiSettings);
 
@@ -134,6 +172,7 @@ sealed class TrayApp : ApplicationContext
         // The browser page when the local server is on, else the timeline's own search box.
         menu.Items.Add(Item("Search…", () => { if (engine.ServerOn) Open($"http://127.0.0.1:{engine.Config.Port}/"); else overlay.ShowSearch(); }));
         menu.Items.Add(Item("Ask AI…", ShowAiChat));
+        menu.Items.Add(Item("Journal…", ShowJournal));
         menu.Items.Add(Item("Show Data Folder", () => Open(engine.Config.Home)));
         foreach (var line in StorageLines()) menu.Items.Add(new ToolStripMenuItem("   " + line) { Enabled = false });
         MeasureStorage();
@@ -142,6 +181,13 @@ sealed class TrayApp : ApplicationContext
         var s = new ToolStripMenuItem(Permissions.MicrophoneOn ? "Settings" : "Settings  ⚠");
         s.DropDownItems.Add(Item("Blocked Apps & Sites…", () => BlockedAppsForm.ShowFor(settings, engine.Db)));
         s.DropDownItems.Add(Item("AI Settings…", () => AiSettingsForm.ShowFor(settings)));
+        var autoRecap = Toggle("Write Each Day's Recap Automatically", settings.JournalAutoRecap, () =>
+        {
+            settings.SetJournalAutoRecap(!settings.JournalAutoRecap);
+            JournalForm.Reload();
+        });
+        autoRecap.ToolTipText = "Off by default, since it spends tokens. Once a day, the AI provider in AI Settings writes the previous day's journal recap.";
+        s.DropDownItems.Add(autoRecap);
         s.DropDownItems.Add(new ToolStripSeparator());
         s.DropDownItems.Add(ShortcutMenu());
         s.DropDownItems.Add(ScreenshotSizeMenu());
@@ -548,6 +594,7 @@ sealed class TrayApp : ApplicationContext
         overlay.HideOverlay();
         hotKey.Dispose();
         resumeTimer.Dispose();
+        recapTimer.Dispose();
         retention.Dispose();
         updater.Dispose();
         engine.Shutdown();
