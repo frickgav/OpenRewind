@@ -231,7 +231,13 @@ sealed class Updater : IDisposable
             ZipFile.ExtractToDirectory(zip, stage);
             var fresh = Path.Combine(stage, "OpenRewind.exe");
             if (!File.Exists(fresh)) throw new IOException("the download has no OpenRewind.exe");
-            if (File.Exists(old)) File.Delete(old);
+            if (File.Exists(old))
+            {
+                // An AI app may still run the version before last from it (OpenRewind.exe mcp), which
+                // blocks deleting but not renaming. CleanUp removes it once that process has quit.
+                try { File.Delete(old); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException) { File.Move(old, $"{old}-{DateTime.UtcNow.Ticks}"); }
+            }
             File.Move(Exe, old);
             try { File.Move(fresh, Exe); }
             catch { File.Move(old, Exe); throw; }
@@ -273,6 +279,13 @@ sealed class Updater : IDisposable
             try { File.Delete(old); }
             catch { Thread.Sleep(300); }
         }
+        // Older copies moved aside while an AI app was still running them (see Install); best effort.
+        try
+        {
+            foreach (var f in Directory.GetFiles(Path.GetDirectoryName(Exe)!, Path.GetFileName(old) + "-*"))
+                try { File.Delete(f); } catch { }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 
     public void Dispose()

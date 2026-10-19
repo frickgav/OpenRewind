@@ -43,6 +43,14 @@ public sealed partial class Database : IDisposable
         FinishHomeMove(Path.GetDirectoryName(Path.GetFullPath(path))!);
     }
 
+    /// Read-only: no schema changes and no home move, which are the recording app's job (see OpenReadOnly).
+    Database(string path, bool readOnly)
+    {
+        conn = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
+        conn.Open();
+        Exec("PRAGMA busy_timeout=5000;");
+    }
+
     /// After the data folder moved from ~/.openscreen (see Config), point the stored screenshot
     /// and audio paths at the new folder. Runs again next launch if it is cut short.
     void FinishHomeMove(string home)
