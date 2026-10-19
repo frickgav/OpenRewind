@@ -25,6 +25,9 @@ public sealed class AiTools
         return list.BlocksWindow(app, app, window) || list.BlocksUrl(url) || list.HasKeyword(url);
     }
 
+    /// True for an app on the block list. The journal leaves such apps out of its lists entirely.
+    public bool HidesApp(string app) => (Blocked ?? Blocklist.Current).BlocksApp(app, app);
+
     /// Reads a frame's screenshot as a small JPEG. Set only while the user has turned on
     /// "Let AI look at screenshots"; null means view_screenshot is not offered at all.
     public Func<Frame, byte[]?>? Screenshots;
