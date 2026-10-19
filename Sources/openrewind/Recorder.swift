@@ -117,9 +117,13 @@ final class Recorder {
         if excluded.contains(win.appName.lowercased()) { return }
         let list = BlocklistStore.shared.current
         let app = NSRunningApplication(processIdentifier: win.pid)
-        // Blocked sites: which tab the browser in front shows, read just before the screenshot.
-        if !list.sites.isEmpty, BrowserTabs.isBrowser(app?.bundleIdentifier) {
-            siteWindows.saw(win.windowID, url: Accessibility.focusedURL(pid: win.pid))
+        // Blocked sites: which tab each browser window shows, read just before the screenshot.
+        // Without Accessibility no address can be read (Settings says so), so nothing is hidden by site.
+        if !list.sites.isEmpty, Accessibility.isTrusted {
+            readSites(front: win.windowID)
+            if BrowserTabs.isBrowser(app?.bundleIdentifier) {
+                siteWindows.saw(win.windowID, title: win.windowName, url: Accessibility.browserURL(pid: win.pid))
+            }
         }
         let windows = Redaction.windows(list, sites: siteWindows)
         let shot = try await Capture.capture(excluding: Set(windows.filter(\.blocked).map(\.id)))
@@ -133,6 +137,32 @@ final class Recorder {
         } else {
             _ = try ingest(image: image, window: win, pid: win.pid)
         }
+    }
+
+    /// Reads the address of each browser window that is new or whose title changed (a tab switch, a new
+    /// page), so a blocked page is hidden even when its window is not in front. The window in front is read
+    /// by tick() every time. At most a few changed windows are read per screenshot; new ones always are, so
+    /// none is shown before its address is known.
+    private func readSites(front: CGWindowID) {
+        guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return }
+        var browser: [pid_t: Bool] = [:]
+        var onScreen = Set<CGWindowID>()
+        var changed = 0
+        for w in info where (w[kCGWindowLayer as String] as? Int) == 0 {
+            guard let pid = w[kCGWindowOwnerPID as String] as? pid_t, let id = w[kCGWindowNumber as String] as? CGWindowID else { continue }
+            if browser[pid] == nil { browser[pid] = BrowserTabs.isBrowser(NSRunningApplication(processIdentifier: pid)?.bundleIdentifier) }
+            guard browser[pid] == true else { continue }
+            onScreen.insert(id)
+            // Untitled windows are a browser's popups and bubbles, and can't be told apart to read them.
+            let title = w[kCGWindowName as String] as? String ?? ""
+            guard id != front, !title.isEmpty, siteWindows.needsRead(id, title: title) else { continue }
+            if siteWindows.knows(id) {
+                guard changed < 3 else { continue }
+                changed += 1
+            }
+            siteWindows.saw(id, title: title, url: Accessibility.browserURL(pid: pid, title: title))
+        }
+        siteWindows.prune(keeping: onScreen)
     }
 
     /// Dedup, extract text, store snapshot, insert row. Returns the new frame id, or nil if skipped.
@@ -155,7 +185,7 @@ final class Recorder {
             url = w.url ?? ""
             // The tab changed to a blocked site after the check in tick(), so the screenshot is not blurred: drop it.
             if BlocklistStore.shared.current.blocksURL(url) {
-                siteWindows.saw(window.windowID, url: url)
+                siteWindows.saw(window.windowID, title: window.windowName, url: url)
                 return nil
             }
         }

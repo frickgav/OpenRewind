@@ -162,10 +162,11 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
 - The lock screen and screen saver are never recorded.
 - **Settings → Blocked Apps & Sites** picks apps to blur, plus words that hide a window when its
   title has them (a browser's title is the page title, so "PayPal" hides PayPal tabs). **Websites
-  and links** ("chase.com", or a full link to one page) are matched against the address of the
-  browser tab in front, read with Accessibility just before each screenshot; **Add Sites…** lists
-  the sites and pages you visited lately to tick. A window stays hidden after you click away from
-  it, until it is in front again showing another site. Private
+  and links** ("chase.com", or a full link to one page) are matched against the address each
+  browser window shows, read with Accessibility just before each screenshot: every time for the
+  window in front, and for windows behind it whenever their title changes (a tab switch or a new
+  page). A window whose address can't be read after it changed is hidden too. **Add Sites…** lists
+  the sites and pages you visited lately to tick. Private
   browsing windows are hidden when the browser names them in the title (Incognito, InPrivate,
   Private Browsing).
 - **Settings → Show Tutorial** walks through the timeline again; **Run Setup Again…** reopens
