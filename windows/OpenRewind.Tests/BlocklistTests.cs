@@ -111,6 +111,31 @@ public class SiteRuleTests
         Assert.True(SiteRules.Matches(video, "https://www.youtube.com/watch?v=abc&t=42"));
         Assert.False(SiteRules.Matches(video, "https://www.youtube.com/watch?v=abcd"));
         Assert.False(SiteRules.Matches(video, "https://www.youtube.com/watch?v=other"));
+        Assert.True(SiteRules.Matches(video, "https://www.youtube.com/watch?t=42&v=abc"));  // any order
+        Assert.False(SiteRules.Matches(video, "https://www.youtube.com/watch/more?v=abc"));
+        Assert.False(SiteRules.Matches(video, "https://www.youtube.com/watch"));
+    }
+
+    [Fact]
+    public void EscapedLettersMatchPlainOnes()
+    {
+        var rule = SiteRules.Normalize("github.com/acme/secret")!;
+        Assert.True(SiteRules.Matches(rule, "https://github.com/acme/%73ecret"));
+        Assert.True(SiteRules.Matches(rule, "https://github.com/acme/%53ECRET/issues"));
+        Assert.Equal("github.com/acme/secret", SiteRules.Normalize("https://github.com/acme/%73ecret/"));
+        Assert.Equal("example.com/a%2Fb", SiteRules.Normalize("example.com/a%2Fb"));  // an escaped "/" stays escaped
+        Assert.True(SiteRules.Matches(SiteRules.Normalize("youtube.com/watch?v=abc")!, "https://youtube.com/watch?v=%61bc"));
+    }
+
+    [Fact]
+    public void NonEnglishDomainsMatchHowBrowsersReportThem()
+    {
+        Assert.Equal("xn--bcher-kva.de", SiteRules.Normalize("bücher.de"));
+        Assert.Equal("xn--bcher-kva.de/konto", SiteRules.Normalize("https://www.BÜCHER.de/konto"));
+        Assert.True(SiteRules.Matches(SiteRules.Normalize("bücher.de")!, "https://xn--bcher-kva.de/"));
+        Assert.True(SiteRules.Matches(SiteRules.Normalize("bücher.de")!, "https://shop.bücher.de/"));
+        Assert.True(SiteRules.Matches("xn--bcher-kva.de", "https://bücher.de/"));
+        Assert.Equal("xn--bcher-kva.de", SiteRules.Host("bücher.de"));
     }
 
     [Fact]
@@ -152,22 +177,63 @@ public class SiteRuleTests
 
 public class SiteWindowsTests
 {
+    static readonly Blocklist Chase = new(Array.Empty<BlockedApp>(), Array.Empty<string>(), false, sites: new[] { "chase.com" });
+
     [Fact]
     public void RemembersEachWindowsLastAddress()
     {
-        var list = new Blocklist(Array.Empty<BlockedApp>(), Array.Empty<string>(), false, sites: new[] { "chase.com" });
         var w = new SiteWindows();
-        w.Saw(1, "https://chase.com/accounts");
-        w.Saw(2, "https://example.com");
-        Assert.True(w.Blocks(1, list));
-        Assert.False(w.Blocks(2, list));
-        Assert.False(w.Blocks(3, list));
-        w.Saw(1, null);  // could not read it this time
-        Assert.True(w.Blocks(1, list));
-        w.Saw(1, "https://example.com");
-        Assert.False(w.Blocks(1, list));
-        w.Saw(2, "https://secure.chase.com/");
+        w.Saw(1, "Accounts", "https://chase.com/accounts");
+        w.Saw(2, "Example", "https://example.com");
+        Assert.True(w.Blocks(1, Chase));
+        Assert.False(w.Blocks(2, Chase));
+        Assert.False(w.Blocks(3, Chase));
+        w.Saw(1, "Accounts", null);  // could not read it, same title: still the same page
+        Assert.True(w.Blocks(1, Chase));
+        w.Saw(1, "Example", "https://example.com");
+        Assert.False(w.Blocks(1, Chase));
+        w.Saw(2, "Chase", "https://secure.chase.com/");
         Assert.False(w.Blocks(2, new Blocklist(Array.Empty<BlockedApp>(), Array.Empty<string>(), false)));
+    }
+
+    [Fact]
+    public void ReadsAgainWhenTheTitleChanges()
+    {
+        var w = new SiteWindows();
+        Assert.True(w.NeedsRead(1, "Example"));
+        Assert.False(w.Knows(1));
+        w.Saw(1, "Example", "https://example.com");
+        Assert.True(w.Knows(1));
+        Assert.False(w.NeedsRead(1, "Example"));
+        Assert.True(w.NeedsRead(1, "Chase - Accounts"));  // switched tabs behind our back
+    }
+
+    [Fact]
+    public void AnUnreadableNewPageIsHidden()
+    {
+        var w = new SiteWindows();
+        w.Saw(1, "Example", "https://example.com");
+        w.Saw(1, "Chase - Accounts", null);  // new title, address unknown: hide it
+        Assert.True(w.Blocks(1, Chase));
+        Assert.False(w.NeedsRead(1, "Chase - Accounts"));  // tried; read again on the next title change
+        w.Saw(1, "Chase - Accounts", null);
+        Assert.True(w.Blocks(1, Chase));
+        w.Saw(1, "News", "https://example.com/news");
+        Assert.False(w.Blocks(1, Chase));
+        w.Saw(2, "New Tab", "chrome://newtab/");  // read fine, just not a web page
+        Assert.False(w.Blocks(2, Chase));
+        Assert.False(w.Blocks(1, new Blocklist(Array.Empty<BlockedApp>(), Array.Empty<string>(), false)));
+    }
+
+    [Fact]
+    public void ForgetsWindowsThatAreGone()
+    {
+        var w = new SiteWindows();
+        w.Saw(1, "Chase", "https://chase.com/");
+        w.Saw(2, "Chase", "https://chase.com/");
+        w.Prune(new long[] { 2 });
+        Assert.False(w.Knows(1));
+        Assert.True(w.Blocks(2, Chase));
     }
 }
 

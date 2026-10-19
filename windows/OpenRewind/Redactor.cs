@@ -47,6 +47,35 @@ static class Redactor
         return wins;
     }
 
+    /// Blocked sites: reads the address of each browser window that is new or whose title changed (a tab
+    /// switch, a new page), so a blocked page is hidden even when its window is not in front. The window in
+    /// front is read by the caller every time. At most a few changed windows are read per screenshot;
+    /// new ones always are, so none is shown before its address is known.
+    public static void ReadSites(SiteWindows sites, IntPtr front)
+    {
+        var browsers = new List<(IntPtr Hwnd, string Title)>();
+        var paths = new Dictionary<uint, string?>();
+        EnumWindows((hwnd, _) =>
+        {
+            if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) return true;
+            if (DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, out int cloaked, 4) == 0 && cloaked != 0) return true;
+            GetWindowThreadProcessId(hwnd, out var pid);
+            if (pid == myPid) return true;
+            if (!paths.TryGetValue(pid, out var path)) paths[pid] = path = Native.ProcessPath(pid);
+            if (UiaText.IsBrowser(path)) browsers.Add((hwnd, Native.WindowTitle(hwnd)));
+            return true;
+        }, IntPtr.Zero);
+        sites.Prune(browsers.Select(b => (long)b.Hwnd));
+        int changed = 0;
+        foreach (var (hwnd, title) in browsers)
+        {
+            // Untitled windows are a browser's popups and bubbles, not pages.
+            if (hwnd == front || title.Length == 0 || !sites.NeedsRead(hwnd, title)) continue;
+            if (sites.Knows(hwnd) && changed++ >= 3) continue;
+            sites.Saw(hwnd, title, UiaText.Url(hwnd));
+        }
+    }
+
     /// Blur the parts of `image` (a capture of `screen`) that blocked windows cover. Returns true if anything was hidden.
     public static bool Apply(Bitmap image, Rectangle screen, List<Win> wins)
     {
