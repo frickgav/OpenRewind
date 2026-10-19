@@ -21,6 +21,9 @@ sealed class TrayApp : ApplicationContext
     /// Last measured size of the data folder; measured in the background when the menu opens.
     long? dataSize;
     bool measuring;
+    /// The AI chat keeps its conversation while its window is closed.
+    readonly AiConversation aiConversation = new();
+    readonly AiTools aiTools;
 
     public TrayApp(Engine engine)
     {
@@ -29,6 +32,7 @@ sealed class TrayApp : ApplicationContext
         Program.RefreshIconIfNew(settings);
         Blocklist.Current = settings.ToBlocklist();
         timeline = new TimelineModel(engine.Db);
+        aiTools = new AiTools(engine.Db);
         overlay = new OverlayForm(timeline) { Look = settings.TimelineLook };
         _ = overlay.Handle;  // create it on the UI thread now
 
@@ -71,6 +75,10 @@ sealed class TrayApp : ApplicationContext
     }
     OnboardingForm? setup;
 
+    void ShowAiChat() => AiChatForm.ShowFor(settings, aiTools, aiConversation,
+        openMoment: at => { overlay.ShowOverlay(); timeline.Jump(at); },
+        openSettings: () => AiSettingsForm.ShowFor(settings));
+
     void ShowTutorial()
     {
         OnboardingForm.Hotkey = Shortcut.Label;
@@ -110,6 +118,7 @@ sealed class TrayApp : ApplicationContext
         menu.Items.Add(new ToolStripMenuItem("Open Timeline", null, (_, _) => overlay.ShowOverlay()) { ShortcutKeyDisplayString = Shortcut.Label });
         // The browser page when the local server is on, else the timeline's own search box.
         menu.Items.Add(Item("Search…", () => { if (engine.ServerOn) Open($"http://127.0.0.1:{engine.Config.Port}/"); else overlay.ShowSearch(); }));
+        menu.Items.Add(Item("Ask AI…", ShowAiChat));
         menu.Items.Add(Item("Show Data Folder", () => Open(engine.Config.Home)));
         foreach (var line in StorageLines()) menu.Items.Add(new ToolStripMenuItem("   " + line) { Enabled = false });
         MeasureStorage();
@@ -117,6 +126,7 @@ sealed class TrayApp : ApplicationContext
 
         var s = new ToolStripMenuItem(Permissions.MicrophoneOn ? "Settings" : "Settings  ⚠");
         s.DropDownItems.Add(Item("Blocked Apps & Sites…", () => BlockedAppsForm.ShowFor(settings, engine.Db)));
+        s.DropDownItems.Add(Item("AI Settings…", () => AiSettingsForm.ShowFor(settings)));
         s.DropDownItems.Add(new ToolStripSeparator());
         s.DropDownItems.Add(ShortcutMenu());
         s.DropDownItems.Add(ScreenshotSizeMenu());

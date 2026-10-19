@@ -188,6 +188,19 @@ final class Database {
         return (n, last)
     }
 
+    /// The saved frame closest to `t`, within 10 minutes.
+    func frame(near t: Date) -> Frame? {
+        let iso = Time.iso.string(from: t)
+        let before = query("SELECT \(Self.cols) FROM frames f WHERE f.timestamp <= ? ORDER BY f.timestamp DESC LIMIT 1", [.text(iso)]).first
+        let after = query("SELECT \(Self.cols) FROM frames f WHERE f.timestamp > ? ORDER BY f.timestamp ASC LIMIT 1", [.text(iso)]).first
+        func gap(_ f: Frame?) -> Double {
+            guard let f, let d = Time.iso.date(from: f.timestamp) else { return .greatestFiniteMagnitude }
+            return abs(d.timeIntervalSince(t))
+        }
+        let best = gap(before) <= gap(after) ? before : after
+        return gap(best) <= 600 ? best : nil
+    }
+
     // MARK: - helpers
 
     private static let cols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url"
