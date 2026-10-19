@@ -3,8 +3,15 @@ using Microsoft.Data.Sqlite;
 namespace OpenRewind;
 
 /// BrowserUrl is the address of the browser tab in this frame, or "".
+/// Display names the screen it was taken on. A frame's picture is either the still file at SnapshotPath,
+/// or (after Compress Older Recordings) frame VideoFrame of the video at VideoPath, VideoTime seconds in.
+/// Read it with the app's FrameImages, never from the paths directly.
 public record Frame(long Id, string Timestamp, string AppName, string WindowName, bool Focused,
-                    string SnapshotPath, string Text, string TextSource, long Hash, string BrowserUrl = "");
+                    string SnapshotPath, string Text, string TextSource, long Hash, string BrowserUrl = "",
+                    string Display = "", string VideoPath = "", int VideoFrame = 0, double VideoTime = 0)
+{
+    public FrameSource Source => new(SnapshotPath, VideoPath, VideoFrame, VideoTime);
+}
 
 public record AudioChunk(long Id, string FilePath, string Timestamp, string Device, bool IsInput, string Status);
 
@@ -55,7 +62,7 @@ public sealed partial class Database : IDisposable
         lock (gate)
         {
             using var tx = conn.BeginTransaction();
-            foreach (var (table, col) in new[] { ("frames", "snapshot_path"), ("audio_chunks", "file_path") })
+            foreach (var (table, col) in new[] { ("frames", "snapshot_path"), ("frames", "video_path"), ("video_segments", "path"), ("audio_chunks", "file_path") })
             {
                 using var cmd = Cmd($"UPDATE {table} SET {col} = ? || substr({col}, ?) WHERE substr({col}, 1, ?) = ?",
                                     fresh, old.EnumerateRunes().Count() + 1, old.EnumerateRunes().Count(), old);
@@ -135,9 +142,10 @@ public sealed partial class Database : IDisposable
             VALUES ('delete', old.id, old.transcription, old.device);
         END;
         """);
-        // Added later: older databases do not have this column yet.
+        // Added later: older databases do not have these columns yet. The Mac app adds the same ones.
         if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'browser_url'") == 0)
             Exec("ALTER TABLE frames ADD COLUMN browser_url TEXT NOT NULL DEFAULT ''");
+        MigrateVideo();
     }
 
     // MARK: frames
@@ -146,13 +154,13 @@ public sealed partial class Database : IDisposable
     {
         lock (gate)
         {
-            using var cmd = Cmd("INSERT INTO frames (timestamp, app_name, window_name, focused, snapshot_path, text, text_source, hash, browser_url) VALUES (?,?,?,?,?,?,?,?,?); SELECT last_insert_rowid();",
-                f.Timestamp, f.AppName, f.WindowName, f.Focused ? 1 : 0, f.SnapshotPath, f.Text, f.TextSource, f.Hash, f.BrowserUrl);
+            using var cmd = Cmd("INSERT INTO frames (timestamp, app_name, window_name, focused, snapshot_path, text, text_source, hash, browser_url, display) VALUES (?,?,?,?,?,?,?,?,?,?); SELECT last_insert_rowid();",
+                f.Timestamp, f.AppName, f.WindowName, f.Focused ? 1 : 0, f.SnapshotPath, f.Text, f.TextSource, f.Hash, f.BrowserUrl, f.Display);
             return (long)cmd.ExecuteScalar()!;
         }
     }
 
-    const string Cols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url";
+    const string Cols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, f.display, f.video_path, f.video_frame, f.video_time";
 
     public Frame? FrameById(long id) => Frames($"SELECT {Cols} FROM frames f WHERE f.id = ?", id).FirstOrDefault();
 
@@ -374,7 +382,8 @@ public sealed partial class Database : IDisposable
                 var out_ = new List<Frame>();
                 while (r.Read())
                     out_.Add(new Frame(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetInt64(4) != 0,
-                                       r.GetString(5), r.GetString(6), r.GetString(7), r.GetInt64(8), r.GetString(9)));
+                                       r.GetString(5), r.GetString(6), r.GetString(7), r.GetInt64(8), r.GetString(9),
+                                       r.GetString(10), r.GetString(11), (int)r.GetInt64(12), r.GetDouble(13)));
                 return out_;
             }
             catch (SqliteException e) { Log.Write($"sql error: {e.Message}"); return new(); }

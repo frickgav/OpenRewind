@@ -34,14 +34,41 @@ public static class KeepForInfo
 public sealed partial class Database
 {
     /// Delete frames with `from <= timestamp < to`. null = open end. Returns frames deleted.
+    /// A video left with no frames is deleted; one that still has frames outside the range is marked
+    /// for the compactor to write again without the deleted ones (see VideoCompactor.RunOnce).
     public int DeleteFrames(DateTime? from, DateTime? to)
     {
         var (where, args) = Range("timestamp", from, to);
-        var paths = Strings($"SELECT snapshot_path FROM frames {where}", args);
-        if (paths.Count == 0) return 0;
-        Run($"DELETE FROM frames {where}", args);  // FTS rows go with it (trigger frames_ad)
-        RemoveFiles(paths);
-        return paths.Count;
+        var and = where.Length == 0 ? "WHERE" : where + " AND";
+        List<string> stills, emptied = new();
+        bool partial = false;
+        int n;
+        // All in one go under the lock, so a compaction cannot commit a new video for these frames halfway through.
+        lock (gate)
+        {
+            n = (int)ScalarLong($"SELECT COUNT(*) FROM frames {where}", args);
+            if (n == 0) return 0;
+            stills = Strings($"SELECT snapshot_path FROM frames {where}", args);
+            var videos = Strings($"SELECT DISTINCT video_path FROM frames {and} video_path != ''", args);
+            Run($"DELETE FROM frames {where}", args);  // FTS rows go with it (trigger frames_ad)
+            foreach (var v in videos)
+            {
+                if (ScalarLong("SELECT COUNT(*) FROM frames WHERE video_path = ? AND video_path != ''", v) == 0)
+                {
+                    Run("DELETE FROM video_segments WHERE path = ?", v);
+                    emptied.Add(v);
+                }
+                else
+                {
+                    Run("UPDATE video_segments SET needs_rewrite = 1 WHERE path = ?", v);
+                    partial = true;
+                }
+            }
+        }
+        if (emptied.Count > 0) ReleasingVideos?.Invoke(emptied);
+        RemoveFiles(stills.Concat(emptied).ToList());
+        if (partial) VideosNeedRewrite?.Invoke();
+        return n;
     }
 
     /// Delete audio chunks with `from <= timestamp < to`, their transcripts and WAV files.

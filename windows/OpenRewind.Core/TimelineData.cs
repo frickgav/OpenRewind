@@ -2,7 +2,12 @@ namespace OpenRewind;
 
 /// Url is the browser tab's address in this frame, or "".
 /// End is set only while the timeline shows one app: when the next screenshot (of any app) was taken.
-public record TimelineFrame(long Id, DateTime Time, string AppName, string WindowName, string Path, string Url = "", DateTime? End = null);
+/// The picture is the still at Path, or a frame of the video at VideoPath (see Frame); load it with FrameImages.
+public record TimelineFrame(long Id, DateTime Time, string AppName, string WindowName, string Path, string Url = "", DateTime? End = null,
+                            string VideoPath = "", int VideoFrame = 0, double VideoTime = 0)
+{
+    public FrameSource Source => new(Path, VideoPath, VideoFrame, VideoTime);
+}
 
 public record TimelineAudio(long Id, DateTime Start, double Duration, string Device, bool IsInput, string Path)
 {
@@ -18,12 +23,13 @@ public sealed partial class Database
     {
         lock (gate)
         {
-            using var cmd = Cmd("SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url FROM frames WHERE timestamp >= ? ORDER BY timestamp ASC", Time.Iso(since));
+            using var cmd = Cmd("SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url, video_path, video_frame, video_time FROM frames WHERE timestamp >= ? ORDER BY timestamp ASC", Time.Iso(since));
             using var r = cmd.ExecuteReader();
             var out_ = new List<TimelineFrame>();
             while (r.Read())
                 if (Time.ParseIso(r.GetString(1)) is DateTime t)
-                    out_.Add(new TimelineFrame(r.GetInt64(0), t, r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5)));
+                    out_.Add(new TimelineFrame(r.GetInt64(0), t, r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5),
+                                               VideoPath: r.GetString(6), VideoFrame: (int)r.GetInt64(7), VideoTime: r.GetDouble(8)));
             return out_;
         }
     }
