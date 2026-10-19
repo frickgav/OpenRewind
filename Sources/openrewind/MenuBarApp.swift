@@ -32,7 +32,11 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var aiChat: AIChatModel = {
         let m = AIChatModel(db: engine.db)
         m.openMoment = { [weak self] d in self?.overlay.show(at: d) }
-        m.openSettings = { [weak self] in self?.showAISettings() }
+        // AI Settings is a normal window, which would sit under the overlay.
+        m.openSettings = { [weak self] in
+            if self?.overlay.isVisible == true { self?.overlay.hide() }
+            self?.showAISettings()
+        }
         return m
     }()
 
@@ -80,6 +84,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ note: Notification) {
         overlay = OverlayController(db: engine.db)
+        overlay.chat = { [unowned self] in self.aiChat }
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
         menu.delegate = self

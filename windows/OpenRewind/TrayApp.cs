@@ -47,6 +47,7 @@ sealed class TrayApp : ApplicationContext
         updater = new Updater(settings) { QuitApp = Quit };
         updater.Changed += () => { if (overlay.Visible) overlay.Invalidate(); };
         overlay.Updater = updater;
+        overlay.Chat = AiChat;
         updater.Start();
 
         // Ctrl+Alt+T (or the shortcut picked in Settings) opens the timeline from anywhere.
@@ -75,9 +76,23 @@ sealed class TrayApp : ApplicationContext
     }
     OnboardingForm? setup;
 
-    void ShowAiChat() => AiChatForm.ShowFor(settings, aiTools, aiConversation,
-        openMoment: at => { overlay.ShowOverlay(); timeline.Jump(at); },
-        openSettings: () => AiSettingsForm.ShowFor(settings));
+    void ShowAiChat() => AiChatForm.ShowFor(settings, aiTools, aiConversation, OpenMoment, OpenAiSettings);
+
+    /// The chat for the overlay; the same one the Ask AI window shows.
+    AiChatPanel AiChat() => AiChatPanel.Get(settings, aiTools, aiConversation, OpenMoment, OpenAiSettings);
+
+    void OpenMoment(DateTime at)
+    {
+        if (!overlay.Visible) overlay.ShowOverlay();
+        timeline.Jump(at);
+    }
+
+    /// AI Settings is a normal window, which would sit under the overlay.
+    void OpenAiSettings()
+    {
+        if (overlay.Visible) overlay.HideOverlay();
+        AiSettingsForm.ShowFor(settings);
+    }
 
     void ShowTutorial()
     {

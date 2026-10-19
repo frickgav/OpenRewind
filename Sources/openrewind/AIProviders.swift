@@ -208,7 +208,28 @@ struct AIPrice: Equatable {
 enum KeyStore {
     static let service = "ai.agilityresources.openrewind.ai"
 
+    /// Keys already read this launch. Every Keychain read can bring up the macOS password prompt,
+    /// so each key is read at most once per launch.
+    private static var cache: [String: String?] = [:]
+    private static let lock = NSLock()
+
     static func get(_ account: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        if let hit = cache[account] { return hit }
+        let value = read(account)
+        cache.updateValue(value, forKey: account)
+        if let value { takeOwnership(account, value) }
+        return value
+    }
+
+    /// nil or "" removes the key.
+    static func set(_ account: String, _ value: String?) {
+        lock.lock(); defer { lock.unlock() }
+        write(account, value)
+        cache.updateValue((value?.isEmpty ?? true) ? nil : value, forKey: account)
+    }
+
+    private static func read(_ account: String) -> String? {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                 kSecAttrAccount as String: account, kSecReturnData as String: true,
                                 kSecMatchLimit as String: kSecMatchLimitOne]
@@ -217,8 +238,7 @@ enum KeyStore {
         return String(data: data, encoding: .utf8)
     }
 
-    /// nil or "" removes the key.
-    static func set(_ account: String, _ value: String?) {
+    private static func write(_ account: String, _ value: String?) {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                 kSecAttrAccount as String: account]
         _ = SecItemDelete(q as CFDictionary)
@@ -228,6 +248,25 @@ enum KeyStore {
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let status = SecItemAdd(add as CFDictionary, nil)
         if status != errSecSuccess { log("could not save AI key to the Keychain (\(status))") }
+    }
+
+    /// macOS lets only the app build that saved a Keychain item read it without asking; a new build
+    /// (every update, as the app is not signed by Apple) gets the password prompt. After the first
+    /// read in a new build, save the key again so this build owns it and later launches stay quiet.
+    private static func takeOwnership(_ account: String, _ value: String) {
+        let build = buildID
+        let key = "aiKeychainOwner.\(account)"
+        guard UserDefaults.standard.string(forKey: key) != build else { return }
+        write(account, value)
+        UserDefaults.standard.set(build, forKey: key)
+    }
+
+    /// Changes whenever the app binary does.
+    private static var buildID: String {
+        let exe = Bundle.main.executableURL
+        let date = exe.flatMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate }
+        let version = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
+        return "\(version)-\(Int(date?.timeIntervalSince1970 ?? 0))"
     }
 }
 
