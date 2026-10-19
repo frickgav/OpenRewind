@@ -18,7 +18,8 @@ enum Redaction {
     }
 
     /// Windows on screen now, back to front. Our own windows are left out: they are never captured either.
-    static func windows(_ list: Blocklist) -> [Window] {
+    /// `sites` knows which browser windows show a blocked site.
+    static func windows(_ list: Blocklist, sites: SiteWindows? = nil) -> [Window] {
         guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return [] }
         let me = ProcessInfo.processInfo.processIdentifier
         var apps: [pid_t: (bundle: String, path: String)] = [:]
@@ -37,10 +38,13 @@ enum Redaction {
                 apps[pid] = (app?.bundleIdentifier ?? "", app?.bundleURL?.path ?? "")
             }
             let bundle = apps[pid]?.bundle ?? "", path = apps[pid]?.path ?? ""
-            let blocked = list.blocksWindow(bundleID: bundle, appName: owner, path: path, title: title)
+            let id = w[kCGWindowNumber as String] as? CGWindowID ?? 0
+            let site = sites?.blocks(id, list) == true
+            let blocked = site || list.blocksWindow(bundleID: bundle, appName: owner, path: path, title: title)
             let label = list.blocksApp(bundleID: bundle, name: owner, path: path) && !owner.isEmpty ? owner
+                : site ? "Blocked site"
                 : Blocklist.isPrivateTitle(title) ? "Private window" : "Hidden window"
-            out.append(Window(id: w[kCGWindowNumber as String] as? CGWindowID ?? 0, frame: frame, blocked: blocked,
+            out.append(Window(id: id, frame: frame, blocked: blocked,
                               occludes: layer == 0 && alpha >= 1, label: label))
         }
         return out.reversed()  // CGWindowList is front to back

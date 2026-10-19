@@ -16,6 +16,8 @@ struct Blocklist {
     let keywords: [String]
     /// Hide private / incognito browser windows.
     let privateWindows: Bool
+    /// Websites and links (see SiteRules): a browser tab showing one is hidden.
+    let sites: [String]
     /// Extra app names from OPENREWIND_EXCLUDE.
     let extraNames: [String]
     private let keys: Set<String>
@@ -23,10 +25,12 @@ struct Blocklist {
     /// their bundle (Docker.app runs "Docker Desktop.app"), so a process anywhere in here is blocked too.
     private let paths: [String]
 
-    init(apps: [App], keywords: [String], privateWindows: Bool, extraNames: [String] = []) {
+    init(apps: [App], keywords: [String], privateWindows: Bool, sites: [String] = [], extraNames: [String] = []) {
         self.apps = apps
         self.keywords = keywords
         self.privateWindows = privateWindows
+        var seen = Set<String>()
+        self.sites = sites.compactMap(SiteRules.normalize).filter { seen.insert($0).inserted }
         self.extraNames = extraNames
         keys = Set((apps.flatMap { [$0.id, $0.name] } + extraNames).map { $0.lowercased() }.filter { !$0.isEmpty })
         paths = apps.compactMap { $0.id.isEmpty ? nil : NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.id)?.path }
@@ -45,6 +49,17 @@ struct Blocklist {
         blocksApp(bundleID: bundleID, name: appName, path: path)
             || (privateWindows && Blocklist.isPrivateTitle(title))
             || Blocklist.hasKeyword(title, keywords)
+    }
+
+    /// True when the address is one of the blocked sites or links.
+    func blocksURL(_ url: String?) -> Bool {
+        !sites.isEmpty && sites.contains { SiteRules.matches($0, url) }
+    }
+
+    /// For something already recorded, where only the app name, window title and address are known
+    /// (search results, the timeline, anything that reads stored frames).
+    func blocksFrame(appName: String?, windowName: String?, url: String?) -> Bool {
+        blocksWindow(bundleID: nil, appName: appName, title: windowName) || blocksURL(url)
     }
 
     /// Browsers that mark private windows in the window title.
@@ -75,6 +90,136 @@ struct Blocklist {
     private static func isWordChar(_ c: Character?) -> Bool { c.map { $0.isLetter || $0.isNumber } ?? false }
 }
 
+/// Blocked websites and links. A rule is a site ("chase.com", which covers its subdomains too) or a
+/// link ("docs.google.com/document/d/abc", which covers that page and everything under it).
+/// Rules are stored without "https://" or "www.". The Windows app has the same rules in SiteRules.cs.
+enum SiteRules {
+    /// The rule for what the user typed or picked ("https://www.Chase.com/" → "chase.com"), or nil
+    /// when it is not a site. The fragment (#…) and a trailing "/" are dropped; a query is kept, since
+    /// it can be what tells one page from another ("youtube.com/watch?v=…").
+    static func normalize(_ raw: String?) -> String? {
+        var s = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty, !s.contains(where: { $0.isWhitespace }) else { return nil }
+        if !s.contains("://") { s = "https://" + s }
+        guard let c = URLComponents(string: s), isWeb(c) else { return nil }
+        let h = host(c.host ?? "")
+        guard !h.isEmpty, h.contains(".") || h == "localhost" else { return nil }
+        var path = c.percentEncodedPath
+        while path.hasSuffix("/") { path.removeLast() }
+        let query = pathQuery(c).query
+        if !query.isEmpty && path.isEmpty { path = "/" }
+        return h + path + query
+    }
+
+    /// True when the address is on the rule's site, or is the rule's page or below it.
+    static func matches(_ rule: String, _ url: String?) -> Bool {
+        guard let url, !url.isEmpty, !rule.isEmpty, let c = URLComponents(string: url), isWeb(c) else { return false }
+        let cut = rule.firstIndex { $0 == "/" || $0 == "?" }
+        let ruleHost = cut.map { String(rule[..<$0]) } ?? rule
+        let h = host(c.host ?? "")
+        guard h == ruleHost || h.hasSuffix("." + ruleHost) else { return false }
+        guard let cut else { return true }
+        // Percent-encoded, so plain ASCII: lower-casing keeps the lengths.
+        let rest = Array(rule[cut...].lowercased().utf8)
+        let pq = pathQuery(c)
+        let have = Array((pq.path + pq.query).lowercased().utf8)
+        guard have.starts(with: rest) else { return false }
+        // "/repo" covers "/repo/issues" and "/repo?tab=x", not "/repository".
+        if have.count == rest.count { return true }
+        return "/?&#".utf8.contains(have[rest.count])
+    }
+
+    /// The part of a rule people recognize: "chase.com" for both "chase.com" and "chase.com/login".
+    static func siteOf(_ rule: String) -> String {
+        rule.firstIndex { $0 == "/" || $0 == "?" }.map { String(rule[..<$0]) } ?? rule
+    }
+
+    /// Lower case, without "www.".
+    static func host(_ host: String) -> String {
+        var h = host.trimmingCharacters(in: .whitespaces).lowercased()
+        while h.hasSuffix(".") { h.removeLast() }
+        return h.hasPrefix("www.") ? String(h.dropFirst(4)) : h
+    }
+
+    private static func isWeb(_ c: URLComponents) -> Bool {
+        let scheme = c.scheme?.lowercased()
+        return scheme == "http" || scheme == "https"
+    }
+
+    /// The path ("/" when empty, like Windows' Uri) and "?query" or "".
+    private static func pathQuery(_ c: URLComponents) -> (path: String, query: String) {
+        let q = c.percentEncodedQuery ?? ""
+        return (c.percentEncodedPath.isEmpty ? "/" : c.percentEncodedPath, q.isEmpty ? "" : "?" + q)
+    }
+}
+
+/// Which browser windows show a blocked site. Only the window in front can be asked for its address,
+/// so each window keeps the last address seen while it was in front; that keeps a blocked tab hidden
+/// after you click away to another window. Checked against the current rules, so removing a site
+/// shows its windows again at once.
+final class SiteWindows {
+    private var lastURL: [CGWindowID: String] = [:]
+    private let lock = NSLock()
+
+    /// The window in front shows `url`. Nil means the address could not be read: keep what we knew.
+    func saw(_ window: CGWindowID, url: String?) {
+        guard window != 0, let url else { return }
+        lock.lock(); defer { lock.unlock() }
+        if lastURL.count > 500 { lastURL.removeAll() }  // closed windows; the ones in use are seen again soon
+        lastURL[window] = url
+    }
+
+    func blocks(_ window: CGWindowID, _ list: Blocklist) -> Bool {
+        guard !list.sites.isEmpty else { return false }
+        lock.lock(); let url = lastURL[window]; lock.unlock()
+        return list.blocksURL(url)
+    }
+}
+
+/// One page of a recent site: its address, the window title it had, and when it was last on screen.
+struct RecentPage: Hashable {
+    var url: String
+    var title: String
+    var lastSeen: String
+}
+
+/// A site in the user's history, for the "block from recent sites" picker.
+struct RecentSite: Identifiable {
+    var id: String { site }
+    var site: String
+    var lastSeen: String
+    var pages: [RecentPage]
+}
+
+enum RecentSites {
+    /// Groups pages (newest first) by site, newest site first. Pages that are not web addresses are skipped.
+    static func group(_ pages: [RecentPage], maxPagesPerSite: Int = 50) -> [RecentSite] {
+        var bySite: [String: [RecentPage]] = [:]
+        var order: [String] = []
+        for p in pages {
+            guard let c = URLComponents(string: p.url), ["http", "https"].contains(c.scheme?.lowercased() ?? "") else { continue }
+            let site = SiteRules.host(c.host ?? "")
+            guard !site.isEmpty else { continue }
+            if bySite[site] == nil { bySite[site] = []; order.append(site) }
+            if bySite[site]!.count < maxPagesPerSite { bySite[site]!.append(p) }
+        }
+        return order.map { RecentSite(site: $0, lastSeen: bySite[$0]![0].lastSeen, pages: bySite[$0]!) }
+    }
+
+    /// "Today", "Yesterday", "3 days ago" or "Oct 2" for a stored timestamp.
+    static func ago(_ iso: String, now: Date = Date()) -> String {
+        guard let t = Time.iso.date(from: iso) ?? ISO8601DateFormatter().date(from: iso) else { return "" }
+        let cal = Calendar.current
+        let days = cal.dateComponents([.day], from: cal.startOfDay(for: t), to: cal.startOfDay(for: now)).day ?? 0
+        if days <= 0 { return "Today" }
+        if days == 1 { return "Yesterday" }
+        if days < 7 { return "\(days) days ago" }
+        let f = DateFormatter()
+        f.setLocalizedDateFormatFromTemplate("MMMd")
+        return f.string(from: t)
+    }
+}
+
 /// Where the block list lives (UserDefaults, next to the menu settings) and the copy recording reads.
 final class BlocklistStore {
     static let shared = BlocklistStore()
@@ -83,7 +228,7 @@ final class BlocklistStore {
     private let defaults = UserDefaults.standard
     private let lock = NSLock()
     private var cached: Blocklist?
-    static let appsKey = "blockedApps", keywordsKey = "blockedKeywords", privateKey = "blockPrivateWindows"
+    static let appsKey = "blockedApps", keywordsKey = "blockedKeywords", privateKey = "blockPrivateWindows", sitesKey = "blockedSites"
     static let onboardingKey = "onboardingDone"
 
     /// What recording uses right now. Safe to call from any thread.
@@ -105,8 +250,9 @@ final class BlocklistStore {
         defaults.set(apps, forKey: Self.appsKey)
         defaults.set(list.keywords, forKey: Self.keywordsKey)
         defaults.set(list.privateWindows, forKey: Self.privateKey)
+        defaults.set(list.sites, forKey: Self.sitesKey)
         lock.lock(); cached = nil; lock.unlock()
-        log("block list: \(list.apps.count) apps, \(list.keywords.count) title words, private windows \(list.privateWindows ? "hidden" : "recorded")")
+        log("block list: \(list.apps.count) apps, \(list.keywords.count) title words, \(list.sites.count) sites, private windows \(list.privateWindows ? "hidden" : "recorded")")
         NotificationCenter.default.post(name: Self.changed, object: nil)
     }
 
@@ -120,8 +266,17 @@ final class BlocklistStore {
         }
         let keywords = defaults.stringArray(forKey: Self.keywordsKey) ?? []
         let priv = defaults.object(forKey: Self.privateKey) as? Bool ?? true
+        let sites = defaults.stringArray(forKey: Self.sitesKey) ?? []
         let extra = Config.env("EXCLUDE")?.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) } ?? []
-        return Blocklist(apps: apps, keywords: keywords, privateWindows: priv, extraNames: extra)
+        return Blocklist(apps: apps, keywords: keywords, privateWindows: priv, sites: sites, extraNames: extra)
+    }
+
+    /// Block these sites too (rules from the site picker), keeping everything else as it is.
+    func addSites(_ rules: [String]) {
+        let old = current
+        let add = rules.filter { r in !old.sites.contains { $0.caseInsensitiveCompare(r) == .orderedSame } }
+        guard !add.isEmpty else { return }
+        save(Blocklist(apps: old.apps, keywords: old.keywords, privateWindows: old.privateWindows, sites: old.sites + add, extraNames: old.extraNames))
     }
 }
 
@@ -160,6 +315,12 @@ enum BlockCatalog {
     static let bankingSites = [
         "Online Banking", "Bank of America", "Chase", "Wells Fargo", "Citibank", "Capital One", "PayPal", "Venmo",
         "Coinbase", "Robinhood", "Fidelity", "Charles Schwab", "Vanguard", "American Express", "Ally Bank",
+    ]
+
+    /// The same banks and money sites by address, so their tabs are hidden whatever the page title says.
+    static let bankingDomains = [
+        "bankofamerica.com", "chase.com", "wellsfargo.com", "citi.com", "capitalone.com", "paypal.com", "venmo.com",
+        "coinbase.com", "robinhood.com", "fidelity.com", "schwab.com", "vanguard.com", "americanexpress.com", "ally.com",
     ]
 
     static func apps(_ c: Category) -> [Blocklist.App] {

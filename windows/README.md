@@ -62,7 +62,9 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
 - **Settings → Blocked Apps & Sites**: blocked apps are blurred in every screenshot, wherever
   they are on screen, and their text is never saved. First launch asks what to block (password
   managers, money apps, private browsing windows and bank sites are ticked). Words in the list
-  hide any window whose title has them. `OPENREWIND_EXCLUDE` adds more app names.
+  hide any window whose title has them. Websites and links hide a browser window while its tab in
+  front shows them (Add sites… lists the sites and pages you visited lately).
+  `OPENREWIND_EXCLUDE` adds more app names.
 - **Settings → Show Tutorial** walks through the timeline again; **Run Setup Again…** reopens setup.
 - Log: `%USERPROFILE%\.openrewind\openrewind.log`.
 
