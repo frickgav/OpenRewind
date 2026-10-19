@@ -24,6 +24,9 @@ sealed class TrayApp : ApplicationContext
     /// The AI chat keeps its conversation while its window is closed.
     readonly AiConversation aiConversation = new();
     readonly AiTools aiTools;
+    readonly MeaningController meaning;
+    /// The Search by Meaning line in the open menu, updated while the model downloads.
+    ToolStripMenuItem? meaningStatus;
 
     public TrayApp(Engine engine)
     {
@@ -32,9 +35,17 @@ sealed class TrayApp : ApplicationContext
         Program.RefreshIconIfNew(settings);
         Blocklist.Current = settings.ToBlocklist();
         timeline = new TimelineModel(engine.Db);
-        aiTools = new AiTools(engine.Db);
+        aiTools = new AiTools(engine.Db) { Meaning = engine.Meaning };
+        timeline.Meaning = engine.Meaning;
         overlay = new OverlayForm(timeline) { Look = settings.TimelineLook };
         _ = overlay.Handle;  // create it on the UI thread now
+        meaning = new MeaningController(engine);
+        meaning.Changed += () => overlay.BeginInvoke(() =>
+        {
+            if (meaningStatus != null && settings.SearchByMeaning) meaningStatus.Text = "   " + meaning.StatusLine();
+            if (overlay.Visible) overlay.Invalidate();
+        });
+        if (settings.SearchByMeaning) meaning.Start();
 
         if (settings.LocalSearchServer) StartServer();
         engine.StartTranscriber();
@@ -161,6 +172,9 @@ sealed class TrayApp : ApplicationContext
         del.DropDownItems.Add(Item("Everything…", () => DeleteAll(screen: true, audio: true)));
         s.DropDownItems.Add(del);
         s.DropDownItems.Add(new ToolStripSeparator());
+        s.DropDownItems.Add(new ToolStripSeparator());
+        foreach (var item in MeaningItems()) s.DropDownItems.Add(item);
+        s.DropDownItems.Add(new ToolStripSeparator());
         var server = Toggle($"Local Search Server (127.0.0.1:{engine.Config.Port})", engine.ServerOn, ToggleServer);
         server.ToolTipText = "Search in the browser and let local scripts read your history through the API. Only this PC can connect.";
         s.DropDownItems.Add(server);
@@ -225,6 +239,50 @@ sealed class TrayApp : ApplicationContext
         item.DropDownItems.Add(new ToolStripSeparator());
         item.DropDownItems.Add(new ToolStripMenuItem("Higher looks sharper but uses more disk space") { Enabled = false });
         return item;
+    }
+
+    // MARK: search by meaning
+
+    IEnumerable<ToolStripItem> MeaningItems()
+    {
+        var toggle = Toggle("Search by Meaning", settings.SearchByMeaning, ToggleMeaning);
+        toggle.ToolTipText = "Find moments by what they were about, not only the exact words. Works on this PC; nothing is sent anywhere.";
+        yield return toggle;
+        meaningStatus = null;
+        if (!settings.SearchByMeaning) yield break;
+        meaningStatus = new ToolStripMenuItem("   " + meaning.StatusLine()) { Enabled = false };
+        yield return meaningStatus;
+        if (meaning.State == MeaningController.Phase.Failed) yield return Item("   Try Again", meaning.Retry);
+    }
+
+    void ToggleMeaning()
+    {
+        if (!settings.SearchByMeaning)
+        {
+            var download = meaning.ModelPresent ? ""
+                : $"\n\nTo do this it downloads a language model once (about {MiniLm.DownloadSize / 1_000_000} MB) from Hugging Face. " +
+                  "The model is checked before it is used. Your recordings are never uploaded.";
+            if (MessageBox.Show(
+                    "Search by Meaning finds moments by what they were about, even when you don't remember the exact words. " +
+                    "For example, \u201cthe flight I was booking\u201d finds the airline page.\n\n" +
+                    "OpenRewind will read your screen text and transcripts in the background to build an index on this PC. " +
+                    "It works slowly while you use the computer and on battery, and faster when you are away. " +
+                    "Blocked apps and sites are never indexed." + download,
+                    "Turn on Search by Meaning?", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK) return;
+            settings.SearchByMeaning = true;
+            settings.Save();
+            meaning.Start();
+            Log.Write("search by meaning on");
+        }
+        else
+        {
+            if (!Confirm("Turn off Search by Meaning?", "The meaning index is deleted. Keyword search keeps working. Turning it back on builds the index again.")) return;
+            settings.SearchByMeaning = false;
+            settings.Save();
+            meaning.Stop(deleteIndex: true);
+            timeline.SetByMeaning(false);
+            Log.Write("search by meaning off");
+        }
     }
 
     // MARK: timeline look
@@ -549,6 +607,7 @@ sealed class TrayApp : ApplicationContext
         hotKey.Dispose();
         resumeTimer.Dispose();
         retention.Dispose();
+        meaning.Dispose();
         updater.Dispose();
         engine.Shutdown();
         ExitThread();

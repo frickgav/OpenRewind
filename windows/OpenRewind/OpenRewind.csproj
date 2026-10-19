@@ -28,6 +28,8 @@
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
     <PackageReference Include="NAudio.WinMM" Version="2.2.1" />
     <PackageReference Include="Interop.UIAutomationClient" Version="10.19041.0" />
+    <!-- Search by Meaning: runs the all-MiniLM-L6-v2 sentence model on the CPU, on this PC. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.1" />
   </ItemGroup>
 
   <ItemGroup>

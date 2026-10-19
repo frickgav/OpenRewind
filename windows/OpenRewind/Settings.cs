@@ -17,6 +17,8 @@ sealed class Settings
     public int ScreenshotPercent { get; set; } = ScreenshotSizes.Default;
     /// The local HTTP API + browser search page. Off unless the user turns it on.
     public bool LocalSearchServer { get; set; } = false;
+    /// Search by Meaning: index moments in the background to find them by meaning. Off unless the user turns it on.
+    public bool SearchByMeaning { get; set; } = false;
     /// Apps that are blurred in screenshots and never have their text stored.
     public List<BlockedApp> BlockedApps { get; set; } =
         BlockCatalog.Windows.Where(a => a.Category == BlockCategory.PasswordManager).Select(a => new BlockedApp(a.Id, a.Name)).ToList();
