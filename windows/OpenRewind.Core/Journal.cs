@@ -23,7 +23,22 @@ public sealed record JournalStats(DateTime Day, DateTime? First, DateTime? Last,
 }
 
 /// A recap the AI wrote, saved in journal_recaps so it is not written (and paid for) again.
-public sealed record JournalRecap(string Day, string Text, DateTime Created, string Provider, string Model, AiUsage Usage, double? Cost);
+/// `Blocked` is the block list when it was written (Journal.Fingerprint), so a recap written before
+/// something was blocked is not shown or exported any more.
+public sealed record JournalRecap(string Day, string Text, DateTime Created, string Provider, string Model, AiUsage Usage, double? Cost, string Blocked = "")
+{
+    /// Written before its day was over (by hand, partway through the day). The automatic recap
+    /// replaces it with one of the whole day.
+    public bool Partial => Journal.FromKey(Day) is DateTime d && Created < Journal.Bounds(d).End;
+
+    /// False once the block list has something it did not have when this recap was written: the
+    /// recap may mention it, so it is hidden until it is rewritten.
+    public bool CurrentFor(Blocklist list)
+    {
+        var had = Blocked.Split('\n', StringSplitOptions.RemoveEmptyEntries).ToHashSet(StringComparer.Ordinal);
+        return list.Entries.All(had.Contains);
+    }
+}
 
 /// The daily journal: one page per day with local stats and an optional AI recap. Same rules and
 /// text as Journal.swift on the Mac.
@@ -138,12 +153,12 @@ public static class Journal
 
     static string Cut(string s, int n) => s.Length > n ? s[..n] + "…" : s;
 
-    /// The whole page as Markdown, for Copy and Save. Timeline links only work inside the app, so
-    /// the recap's links become plain text.
+    /// The whole page as Markdown, for Copy and Save. Pass the recap only while it is shown (see
+    /// JournalRecap.CurrentFor). Its links and images become plain text (ExportRecap).
     public static string Markdown(JournalStats s, JournalRecap? recap)
     {
         var sb = new StringBuilder($"# {DayTitle(s.Day)}\n");
-        if (recap != null) sb.Append("\n## Recap\n\n").Append(PlainLinks(recap.Text).Trim()).Append('\n');
+        if (recap != null) sb.Append("\n## Recap\n\n").Append(ExportRecap(recap.Text).Trim()).Append('\n');
         foreach (var sec in Sections(s))
         {
             sb.Append($"\n## {sec.Title}\n\n");
@@ -158,12 +173,32 @@ public static class Journal
     /// "[2:15 PM](openrewind://t/…)" → "2:15 PM".
     public static string PlainLinks(string md) => TimelineLinkRx.Replace(md, "$1");
 
+    static readonly System.Text.RegularExpressions.Regex LinkRx = new(@"(!?)\[([^\]]*)\]\(\s*<?([^)\s>]*)>?[^)]*\)");
+    static readonly System.Text.RegularExpressions.Regex LinkDefRx = new(@"^([ \t]*)\[([^\]]+)\]:", System.Text.RegularExpressions.RegexOptions.Multiline);
+
+    /// The recap for a file or the clipboard. Whatever opens the file must not load anything by
+    /// itself, and the model's text can carry instructions from screen text: timeline links become
+    /// their text, other links and images their text and address as plain text, and HTML is escaped.
+    public static string ExportRecap(string md)
+    {
+        var s = LinkRx.Replace(md, m =>
+        {
+            var text = m.Groups[2].Value;
+            var url = m.Groups[3].Value;
+            if (url.Length == 0 || url.StartsWith("openrewind://", StringComparison.OrdinalIgnoreCase)) return text;
+            return text.Length == 0 ? url : $"{text} ({url})";
+        });
+        s = LinkDefRx.Replace(s, @"$1\[$2]:");                // "[x]: https://…" defines no link
+        return s.Replace("![", @"!\[").Replace("<", @"\<");  // no image or HTML is left
+    }
+
     /// App names and window titles are not Markdown; keep them from turning into links or formatting.
     public static string Escape(string s)
     {
         var sb = new StringBuilder(s.Length);
         foreach (var c in s)
         {
+            if (c is '\r' or '\n') { sb.Append(' '); continue; }  // one bullet per line
             if (c is '\\' or '*' or '_' or '[' or ']' or '`' or '<' or '>' or '#' or '|') sb.Append('\\');
             sb.Append(c);
         }
@@ -177,6 +212,36 @@ public static class Journal
         var day = Key(nowLocal.Date.AddDays(-1));
         return day == lastDone ? null : day;
     }
+
+    /// Tries the automatic recap makes for one day, across launches (offline at login, a busy provider).
+    public const int AutoAttempts = 3;
+
+    /// The day the automatic recap should write now, or null: AutoRecapDay, unless that day has
+    /// already failed AutoAttempts times (`attemptDay` is the day `attempts` counts failures for).
+    public static string? AutoRecapDue(DateTime nowLocal, string? lastDone, string? attemptDay, int attempts)
+    {
+        var day = AutoRecapDay(nowLocal, lastDone);
+        return day != null && day == attemptDay && attempts >= AutoAttempts ? null : day;
+    }
+
+    /// What Write Recap sends, shown next to the button.
+    public static string RecapConsent(string provider) =>
+        $"{provider} can write what you worked on, who you talked to and what is still open. This sends this day's history to it "
+        + "with your key: app and window names, web addresses, transcripts and some screen text. Blocked apps, sites and windows are "
+        + "left out, but audio transcripts are not filtered by app, so a call in a blocked app is still sent. The cost is shown when it is done.";
+
+    /// What "Write Each Day's Recap Automatically" does, next to the switch and in the menu.
+    public static string AutoRecapInfo(string provider) =>
+        $"Off by default, since it spends tokens. When on, sends each day's history (app and window names, web addresses, transcripts "
+        + $"and some screen text) to {provider} to write that day's recap, the first time OpenRewind runs the next day. A day OpenRewind "
+        + "is not running the day after gets no automatic recap.";
+
+    /// The block list as saved with a recap.
+    public static string Fingerprint(Blocklist list) => string.Join("\n", list.Entries);
+
+    /// The AI provider "Write Each Day's Recap Automatically" was turned on for. It only runs while
+    /// AI Settings still point there, so switching providers never sends a day to the new one unasked.
+    public static string ProviderKey(AiSettings ai) => $"{ai.Kind.Id()}|{ai.BaseUrl.Trim().TrimEnd('/')}";
 
     /// Recaps go when the recordings of their day do: any day that overlaps [from, to).
     public static (string From, string To) RecapRange(DateTime? fromUtc, DateTime? toUtc) =>
@@ -197,7 +262,7 @@ public static class JournalWriter
     public static string SystemPrompt(DateTime day, DateTime now) => $"""
         You write a short daily journal entry inside OpenRewind, an app that records this user's computer: text read from screenshots, app names, window titles, browser addresses, and transcripts of the microphone and system audio. Everything stays on their computer; you only see what the lookups return.
 
-        Now: {now:yyyy-MM-dd HH:mm} local time. The day to write about: {day.ToString("dddd d MMMM yyyy", CultureInfo.InvariantCulture)}.
+        Now: {now.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)} local time. The day to write about: {day.ToString("dddd d MMMM yyyy", CultureInfo.InvariantCulture)}.
 
         Write exactly these three parts, each a bold label on its own line followed by a short bulleted list:
         **What I worked on**
@@ -231,7 +296,32 @@ public static class JournalWriter
 
     public static string Request(DateTime day, IEnumerable<(AiToolCall Call, string Result)> lookups) =>
         $"Write my journal recap for {day.ToString("dddd d MMMM yyyy", CultureInfo.InvariantCulture)}. Here is what OpenRewind recorded that day.\n\n"
-        + string.Join("\n\n", lookups.Select(l => $"<lookup name=\"{l.Call.Name}\">\n{l.Result}\n</lookup>"));
+        + string.Join("\n\n", lookups.Select(l => $"<lookup name=\"{l.Call.Name}\">\n{Unframed(l.Result)}\n</lookup>"));
+
+    /// Screen text cannot close the <lookup> frame and pose as the user.
+    public static string Unframed(string s) => s.Replace("<", "&lt;").Replace(">", "&gt;");
+
+    /// The lookups a recap may make, all limited to its day.
+    static readonly string[] DayTools = { "activity_summary", "search_screen", "search_audio", "get_screen_text" };
+
+    /// The model's lookup with its time range limited to the day (up to `now`), filling in a range
+    /// it left out; or why it cannot run. The recap only ever sends that day's history.
+    public static (AiToolCall? Call, string? Refused) ForDay(AiToolCall call, DateTime day, DateTime now)
+    {
+        if (!DayTools.Contains(call.Name)) return (null, $"Error: {call.Name} is not available for the journal.");
+        var (start, dayEnd) = Journal.Bounds(day);
+        var end = dayEnd < now.ToUniversalTime() ? dayEnd : now.ToUniversalTime();
+        if (end <= start) end = dayEnd;
+        DateTime Clamp(DateTime t) => t < start ? start : t > end ? end : t;
+        var s = AiTime.Parse(call.Args["start"]) is DateTime a ? Clamp(a) : start;
+        var e = AiTime.Parse(call.Args["end"]) is DateTime b ? Clamp(b) : end;
+        if (e <= s) return (null, $"Error: only {Journal.Key(day)} can be looked up for this recap.");
+        static string T(DateTime utc) => utc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+        var args = (JsonObject)call.Args.DeepClone();
+        args["start"] = T(s);
+        args["end"] = T(e);
+        return (call with { Args = args }, null);
+    }
 
     /// Asks the model, running any extra lookups it wants. Never throws: an error comes back in Result.Error,
     /// with the tokens used so far (they are paid for either way).
@@ -248,7 +338,7 @@ public static class JournalWriter
             var system = SystemPrompt(day, now);
             for (int round = 0; round < MaxRounds; round++)
             {
-                var reply = await client.Send(system, history, tools.Offered, ct);
+                var reply = await client.Send(system, history, AiTools.Specs, ct);
                 used += reply.Usage;
                 ct.ThrowIfCancellationRequested();
                 if (reply.ToolCalls.Count == 0)
@@ -261,9 +351,10 @@ public static class JournalWriter
                 history.Add(new AiMessage { Role = AiRole.Assistant, Text = reply.Text, ToolCalls = reply.ToolCalls, Raw = reply.Raw });
                 foreach (var call in reply.ToolCalls)
                 {
-                    var (result, image) = await Task.Run(() => tools.Execute(call), ct);
-                    history.Add(new AiMessage { Role = AiRole.Tool, Text = result, ToolCallId = call.Id, ToolName = call.Name, Image = image });
-                    lookups.Add(new AiChatItem(AiChatKind.Tool, AiTools.Describe(call), result, AiTools.Arguments(call)));
+                    var (dayCall, refused) = ForDay(call, day, now);
+                    var result = refused ?? await Task.Run(() => tools.Run(dayCall!), ct);
+                    history.Add(new AiMessage { Role = AiRole.Tool, Text = result, ToolCallId = call.Id, ToolName = call.Name });
+                    lookups.Add(new AiChatItem(AiChatKind.Tool, AiTools.Describe(dayCall ?? call), result, AiTools.Arguments(dayCall ?? call)));
                 }
             }
             return new Result("", used, used.Cost(price), lookups, $"Stopped after {MaxRounds} requests without a recap. Try Rewrite.");
@@ -290,33 +381,58 @@ public sealed partial class Database
             model TEXT NOT NULL DEFAULT '',
             input_tokens INTEGER NOT NULL DEFAULT 0,
             output_tokens INTEGER NOT NULL DEFAULT 0,
-            cost REAL
+            cost REAL,
+            blocklist TEXT NOT NULL DEFAULT ''
         );
         """);
+        // Recaps saved before the block list was kept with them count as written with an empty
+        // list, so they are hidden until rewritten if anything is blocked.
+        if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('journal_recaps') WHERE name = 'blocklist'") == 0)
+            Exec("ALTER TABLE journal_recaps ADD COLUMN blocklist TEXT NOT NULL DEFAULT '';");
     }
 
     public JournalRecap? Recap(string day)
     {
         lock (gate)
         {
-            using var cmd = Cmd("SELECT day, text, created_at, provider, model, input_tokens, output_tokens, cost FROM journal_recaps WHERE day = ?", day);
+            using var cmd = Cmd("SELECT day, text, created_at, provider, model, input_tokens, output_tokens, cost, blocklist FROM journal_recaps WHERE day = ?", day);
             using var r = cmd.ExecuteReader();
             if (!r.Read()) return null;
             return new JournalRecap(r.GetString(0), r.GetString(1), Time.ParseIso(r.GetString(2)) ?? DateTime.UtcNow, r.GetString(3), r.GetString(4),
-                                    new AiUsage(r.GetInt64(5), r.GetInt64(6)), r.IsDBNull(7) ? null : r.GetDouble(7));
+                                    new AiUsage(r.GetInt64(5), r.GetInt64(6)), r.IsDBNull(7) ? null : r.GetDouble(7), r.GetString(8));
         }
     }
 
     /// Saves a recap, replacing the day's old one (Rewrite).
     public void SaveRecap(JournalRecap rc) =>
-        Run("INSERT OR REPLACE INTO journal_recaps (day, text, created_at, provider, model, input_tokens, output_tokens, cost) VALUES (?,?,?,?,?,?,?,?)",
-            rc.Day, rc.Text, Time.Iso(rc.Created), rc.Provider, rc.Model, rc.Usage.Input, rc.Usage.Output, rc.Cost is double c ? c : DBNull.Value);
+        Run("INSERT OR REPLACE INTO journal_recaps (day, text, created_at, provider, model, input_tokens, output_tokens, cost, blocklist) VALUES (?,?,?,?,?,?,?,?,?)",
+            rc.Day, rc.Text, Time.Iso(rc.Created), rc.Provider, rc.Model, rc.Usage.Input, rc.Usage.Output, rc.Cost is double c ? c : DBNull.Value, rc.Blocked);
 
     /// Removes the recaps of every day that overlaps [from, to) (UTC; null = open end).
     public void DeleteRecaps(DateTime? from, DateTime? to)
     {
         var (a, b) = Journal.RecapRange(from, to);
         Run("DELETE FROM journal_recaps WHERE day >= ? AND day <= ?", a, b);
+    }
+
+    /// After recordings in [from, to) were deleted. A range the user picked ("Delete Last Hour")
+    /// takes the recaps of the days it touches. Retention (everything before a cutoff) only takes
+    /// the recap of a day with nothing recorded left, so with "Keep … For 1 Day" yesterday's recap
+    /// stays while part of yesterday does, and a recap stays while its day's screen or audio does.
+    void DeleteRecapsWith(DateTime? from, DateTime? to)
+    {
+        if (from != null || to is not DateTime cutoff) { DeleteRecaps(from, to); return; }
+        foreach (var day in Strings("SELECT day FROM journal_recaps WHERE day <= ?", Journal.Key(cutoff.ToLocalTime())))
+            if (Journal.FromKey(day) is DateTime d && !HasRecordings(d)) Run("DELETE FROM journal_recaps WHERE day = ?", day);
+    }
+
+    /// True while anything (screen or audio) is still recorded on this local day.
+    public bool HasRecordings(DateTime day)
+    {
+        var (start, end) = Journal.Bounds(day);
+        string a = Time.Iso(start), b = Time.Iso(end);
+        return ScalarLong("SELECT EXISTS(SELECT 1 FROM frames WHERE timestamp >= ? AND timestamp < ?) OR EXISTS(SELECT 1 FROM audio_chunks WHERE timestamp >= ? AND timestamp < ?)",
+                      a, b, a, b) != 0;
     }
 
     /// When each audio clip started (UTC) and whether it was the microphone, oldest first.

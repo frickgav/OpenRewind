@@ -87,28 +87,31 @@ sealed class TrayApp : ApplicationContext
 
     void ShowJournal() => JournalForm.ShowFor(settings, engine.Db, journalTools, OpenMoment, OpenAiSettings);
 
-    /// Write Each Day's Recap Automatically: yesterday's recap, once, the first time the app runs
-    /// after the day ended. Days with nothing recorded, or with a recap already, are skipped.
+    /// Write Each Day's Recap Automatically: yesterday's recap, the first time the app runs after
+    /// the day ended, for the AI provider it was turned on for. A failed try is retried on the next
+    /// check, up to Journal.AutoAttempts times. Days with nothing recorded, or with a recap of the
+    /// whole day already, are skipped; a recap written by hand partway through the day is replaced.
     async void WriteDueRecap()
     {
-        if (!settings.JournalAutoRecap || writingRecap) return;
         var ai = settings.Ai();
-        if (!ai.IsReady || Journal.AutoRecapDay(DateTime.Now, settings.JournalLastAutoDay) is not string key || Journal.FromKey(key) is not DateTime day) return;
-        settings.JournalLastAutoDay = key;
-        settings.Save();
-        if (engine.Db.Recap(key) != null) return;
+        if (writingRecap || !ai.IsReady || !settings.JournalAutoRecapOn(ai)) return;
+        if (Journal.AutoRecapDue(DateTime.Now, settings.JournalLastAutoDay, settings.JournalAutoAttemptDay, settings.JournalAutoAttempts) is not string key
+            || Journal.FromKey(key) is not DateTime day || JournalJobs.IsWriting(key)) return;
+        void Done() { settings.JournalLastAutoDay = key; settings.Save(); }
+        if (engine.Db.Recap(key) is { Partial: false }) { Done(); return; }
         writingRecap = true;
         try
         {
             var stats = await Task.Run(() => engine.Db.JournalStats(day, journalTools));
-            if (stats.IsEmpty) return;
-            var price = settings.AiPriceFor(ai.Model);
-            var r = await JournalWriter.Write(day, new AiClient(ai), journalTools, price);
-            settings.AddAiUsage(ai.Kind, r.Usage, r.Cost);
-            if (r.Error != null) { Log.Write($"automatic journal recap for {key} failed: {r.Error}"); return; }
-            engine.Db.SaveRecap(new JournalRecap(key, r.Text, DateTime.UtcNow, ai.Kind.Id(), ai.Model, r.Usage, r.Cost));
-            Log.Write($"wrote the journal recap for {key} ({r.Usage.Describe(price)})");
-            JournalForm.Reload();
+            if (stats.IsEmpty) { Done(); return; }
+            // Counted before the request, so one that never comes back still counts.
+            settings.JournalAutoAttempts = settings.JournalAutoAttemptDay == key ? settings.JournalAutoAttempts + 1 : 1;
+            settings.JournalAutoAttemptDay = key;
+            settings.Save();
+            var r = await JournalJobs.Write(day, settings, engine.Db, journalTools, auto: true);
+            if (r == null) return;
+            if (r.Error == null) { Done(); Log.Write($"wrote the journal recap for {key} ({r.Usage.Describe(settings.AiPriceFor(ai.Model))})"); }
+            else Log.Write($"automatic journal recap for {key} failed (try {settings.JournalAutoAttempts} of {Journal.AutoAttempts}): {r.Error}");
         }
         catch (Exception e) { Log.Write($"automatic journal recap for {key} failed: {e.Message}"); }
         finally { writingRecap = false; }
@@ -181,12 +184,13 @@ sealed class TrayApp : ApplicationContext
         var s = new ToolStripMenuItem(Permissions.MicrophoneOn ? "Settings" : "Settings  ⚠");
         s.DropDownItems.Add(Item("Blocked Apps & Sites…", () => BlockedAppsForm.ShowFor(settings, engine.Db)));
         s.DropDownItems.Add(Item("AI Settings…", () => AiSettingsForm.ShowFor(settings)));
-        var autoRecap = Toggle("Write Each Day's Recap Automatically", settings.JournalAutoRecap, () =>
+        var ai = settings.Ai();
+        var autoRecap = Toggle("Write Each Day's Recap Automatically", settings.JournalAutoRecapOn(ai), () =>
         {
-            settings.SetJournalAutoRecap(!settings.JournalAutoRecap);
+            settings.SetJournalAutoRecap(!settings.JournalAutoRecapOn(settings.Ai()));
             JournalForm.Reload();
         });
-        autoRecap.ToolTipText = "Off by default, since it spends tokens. Once a day, the AI provider in AI Settings writes the previous day's journal recap.";
+        autoRecap.ToolTipText = Journal.AutoRecapInfo(ai.Kind.Title());
         s.DropDownItems.Add(autoRecap);
         s.DropDownItems.Add(new ToolStripSeparator());
         s.DropDownItems.Add(ShortcutMenu());
@@ -435,13 +439,14 @@ sealed class TrayApp : ApplicationContext
     void DeleteAll(bool screen, bool audio)
     {
         var what = screen && audio ? "all screenshots and audio" : screen ? "all screenshots" : "all audio recordings";
-        if (!Confirm($"Delete {what}?", $"This removes {what} from this PC. This cannot be undone.")) return;
+        if (!Confirm($"Delete {what}?", $"This removes {what} from this PC, and every journal recap. This cannot be undone.")) return;
         var db = engine.Db;
         var now = DateTime.UtcNow;
         Task.Run(() =>
         {
             int f = screen ? db.DeleteFrames(null, now) : 0;
             int a = audio ? db.DeleteAudio(null, now) : 0;
+            db.DeleteRecaps(null, null);  // each one was written from both
             db.Compact();
             Log.Write($"deleted {f} screenshots, {a} audio clips (all)");
         });

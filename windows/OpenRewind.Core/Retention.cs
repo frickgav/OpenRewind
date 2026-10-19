@@ -36,26 +36,26 @@ public sealed partial class Database
     /// Delete frames with `from <= timestamp < to`. null = open end. Returns frames deleted.
     public int DeleteFrames(DateTime? from, DateTime? to)
     {
-        // A recap is made from its day's recordings, so it goes with them.
-        DeleteRecaps(from, to);
         var (where, args) = Range("timestamp", from, to);
         var paths = Strings($"SELECT snapshot_path FROM frames {where}", args);
         if (paths.Count == 0) return 0;
         Run($"DELETE FROM frames {where}", args);  // FTS rows go with it (trigger frames_ad)
         RemoveFiles(paths);
+        // A recap is made from its day's recordings, so it goes with them.
+        DeleteRecapsWith(from, to);
         return paths.Count;
     }
 
     /// Delete audio chunks with `from <= timestamp < to`, their transcripts and WAV files.
     public int DeleteAudio(DateTime? from, DateTime? to)
     {
-        DeleteRecaps(from, to);
         var (where, args) = Range("timestamp", from, to);
         var paths = Strings($"SELECT file_path FROM audio_chunks {where}", args);
         if (paths.Count == 0) return 0;
         Run($"DELETE FROM audio_transcriptions WHERE audio_chunk_id IN (SELECT id FROM audio_chunks {where})", args);
         Run($"DELETE FROM audio_chunks {where}", args);
         RemoveFiles(paths);
+        DeleteRecapsWith(from, to);
         return paths.Count;
     }
 

@@ -25,6 +25,9 @@ public sealed class AiTools
         return list.BlocksWindow(app, app, window) || list.BlocksUrl(url) || list.HasKeyword(url);
     }
 
+    /// What a blocked app is called in lookups, so its name never reaches the provider.
+    public const string BlockedAppLabel = "(blocked app)";
+
     /// True for an app on the block list. The journal leaves such apps out of its lists entirely.
     public bool HidesApp(string app) => (Blocked ?? Blocklist.Current).BlocksApp(app, app);
 
@@ -130,8 +133,10 @@ public sealed class AiTools
             case "activity_summary":
                 var start = AiTime.Parse(a["start"]) ?? DateTime.Now.Date.ToUniversalTime();
                 var end = AiTime.Parse(a["end"]) ?? DateTime.UtcNow;
-                // Time in a blocked app still counts, as on the timeline, but not its window titles or addresses.
-                var rows = db.ActivityRows(start, end).Select(r => Hides(r.App, r.Window, r.Url) ? r with { Window = "", Url = "" } : r).ToList();
+                // Time in a blocked app still counts, as on the timeline, but not its name, window titles or addresses.
+                var rows = db.ActivityRows(start, end).Select(r =>
+                    HidesApp(r.App) ? r with { App = BlockedAppLabel, Window = "", Url = "" }
+                    : Hides(r.App, r.Window, r.Url) ? r with { Window = "", Url = "" } : r).ToList();
                 out_ = AiActivity.Summary(rows, start, end);
                 break;
             case "search_screen": out_ = SearchScreen(a); break;

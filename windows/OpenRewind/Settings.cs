@@ -60,6 +60,14 @@ sealed class Settings
     public bool JournalAutoRecap { get; set; }
     /// The day (yyyy-MM-dd) the automatic recap last ran for, so each day is written once.
     public string? JournalLastAutoDay { get; set; }
+    /// The AI provider it was turned on for (Journal.ProviderKey); it only runs while that is still the one in AI Settings.
+    public string? JournalAutoProvider { get; set; }
+    /// Failed automatic tries for JournalAutoAttemptDay (at most Journal.AutoAttempts).
+    public string? JournalAutoAttemptDay { get; set; }
+    public int JournalAutoAttempts { get; set; }
+
+    /// "Write Each Day's Recap Automatically" is on, for the AI provider set up now.
+    public bool JournalAutoRecapOn(AiSettings ai) => JournalAutoRecap && JournalAutoProvider == Journal.ProviderKey(ai);
 
     string path = "";
 
@@ -126,12 +134,17 @@ sealed class Settings
         Save();
     }
 
-    /// Turning it on starts with today: the days before were not asked for.
+    /// Turns it on for the AI provider set up now, or off. Turning it on starts with today: the days
+    /// before were not asked for.
     public void SetJournalAutoRecap(bool on)
     {
-        if (on == JournalAutoRecap) return;
+        var ai = Ai();
+        if (on == JournalAutoRecapOn(ai)) return;
         JournalAutoRecap = on;
+        JournalAutoProvider = on ? Journal.ProviderKey(ai) : null;
         if (on) JournalLastAutoDay = Journal.Key(DateTime.Today.AddDays(-1));
+        JournalAutoAttemptDay = null;
+        JournalAutoAttempts = 0;
         Save();
     }
 
