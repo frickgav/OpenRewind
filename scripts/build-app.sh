@@ -5,6 +5,8 @@
 #   VERSION=0.2.0 scripts/build-app.sh
 #   SIGN_IDENTITY="Developer ID Application: ..." scripts/build-app.sh   (default: see Signing below)
 #   NOTARY_PROFILE=openrewind scripts/build-app.sh   also notarize + staple (see README)
+#   NOTARY_KEY_PATH=AuthKey.p8 NOTARY_KEY_ID=... NOTARY_ISSUER=... scripts/build-app.sh
+#                                                    same, with an App Store Connect API key (CI)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -46,11 +48,16 @@ echo "→ signing with: $SIGN_IDENTITY"
 if [ "$SIGN_IDENTITY" = "-" ]; then
   echo "!! ad-hoc signature: macOS will ask for its permissions again after every rebuild"
 fi
+# SIGN_IDENTITY may be a name or a SHA-1 hash (CI passes the hash), so look the name up.
+SIGN_NAME=""
+if [ "$SIGN_IDENTITY" != "-" ]; then
+  SIGN_NAME="$(security find-identity -p codesigning | grep -F "$SIGN_IDENTITY" | grep -o '"[^"]*"' | head -1 | tr -d '"' || true)"
+fi
+IS_DEVELOPER_ID=0
+if [[ "${SIGN_NAME:-$SIGN_IDENTITY}" == Developer\ ID\ Application* ]]; then IS_DEVELOPER_ID=1; fi
 # Notarization needs a secure timestamp; the other identities don't.
 TIMESTAMP="--timestamp=none"
-if security find-identity -v -p codesigning | grep -F "$SIGN_IDENTITY" | grep -q "Developer ID Application"; then
-  TIMESTAMP="--timestamp"
-fi
+if [ "$IS_DEVELOPER_ID" = 1 ]; then TIMESTAMP="--timestamp"; fi
 codesign --force --options runtime "$TIMESTAMP" \
   --entitlements packaging/openrewind.entitlements \
   --sign "$SIGN_IDENTITY" "$APP"
@@ -69,13 +76,20 @@ hdiutil create -volname "openrewind $VERSION" -srcfolder "$STAGE" -ov -format UD
 rm -rf "$STAGE"
 if [ "$SIGN_IDENTITY" != "-" ]; then codesign --force --sign "$SIGN_IDENTITY" "$DMG"; fi
 
-if [ -n "${NOTARY_PROFILE:-}" ]; then
-  if [[ "$SIGN_IDENTITY" != Developer\ ID\ Application* ]]; then
+if [ -n "${NOTARY_PROFILE:-}${NOTARY_KEY_PATH:-}" ]; then
+  if [ "$IS_DEVELOPER_ID" != 1 ]; then
     echo "!! notarizing needs a 'Developer ID Application' certificate; skipping"
   else
+    if [ -n "${NOTARY_KEY_PATH:-}" ]; then
+      NOTARY_AUTH=(--key "$NOTARY_KEY_PATH" --key-id "${NOTARY_KEY_ID:?set NOTARY_KEY_ID}" --issuer "${NOTARY_ISSUER:?set NOTARY_ISSUER}")
+    else
+      NOTARY_AUTH=(--keychain-profile "$NOTARY_PROFILE")
+    fi
     echo "→ notarizing (this takes a few minutes)"
-    xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun notarytool submit "$DMG" "${NOTARY_AUTH[@]}" --wait
+    # Fails unless Apple accepted the submission, so a rejected build never ships.
     xcrun stapler staple "$DMG"
+    xcrun stapler validate "$DMG"
   fi
 fi
 

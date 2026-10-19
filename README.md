@@ -234,8 +234,18 @@ is signed with one long-lived certificate:
 - **Your Mac:** double-click `openrewind-signing.p12` and enter the password. `scripts/build-app.sh`
   picks it up (after a Developer ID certificate, before Apple Development or ad-hoc); allow
   `codesign` to use the key when asked.
-- **Developer ID later:** export the Developer ID Application certificate as a `.p12` and put it in
-  the same two secrets. That also removes the "unidentified developer" warning (with notarizing).
+- **Developer ID:** removes the "unidentified developer" warning. Set it up once:
+  1. Keychain Access on your Mac → find **Developer ID Application: …** (make it in Xcode → Settings
+     → Accounts → Manage Certificates → + if it's missing) → right-click → **Export** as
+     `developerid.p12` with a new password.
+  2. `base64 -i developerid.p12 | pbcopy` and paste it into the `release` environment's
+     `MACOS_CERTIFICATE_P12`; put the export password in `MACOS_CERTIFICATE_PASSWORD`.
+  3. For notarizing: App Store Connect → Users and Access → Integrations → **App Store Connect API**
+     → generate a key with the **Developer** role. Add environment secrets `APPLE_NOTARY_KEY` (the
+     whole `AuthKey_….p8` file), `APPLE_NOTARY_KEY_ID` (the key ID) and `APPLE_NOTARY_ISSUER_ID`
+     (the Issuer ID above the key list).
+  The next release is signed with Developer ID, notarized and stapled; the workflow fails rather
+  than ship a build Apple rejected.
 
 Changing the certificate (ad-hoc → self-signed, or self-signed → Developer ID) means turning the
 permissions on one more time; after that, updates keep them.
