@@ -46,6 +46,15 @@ final class Database {
         finishHomeMove(home: path.deletingLastPathComponent())
     }
 
+    /// For the MCP server: reads while the app records, and never changes the file
+    /// (no schema changes and no home move, which are the recording app's job).
+    init(readOnly path: URL) throws {
+        if sqlite3_open_v2(path.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) != SQLITE_OK {
+            throw DBError.open(String(cString: sqlite3_errmsg(db)))
+        }
+        try exec("PRAGMA busy_timeout=5000;")
+    }
+
     /// After the data folder moved from ~/.openscreen (see `Config.defaultHome`), point the stored
     /// screenshot and audio paths at the new folder. Runs again next launch if it is cut short.
     private func finishHomeMove(home: URL) {

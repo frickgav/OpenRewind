@@ -83,6 +83,8 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
 - **Ask AI** (menu bar or tray → Ask AI…) answers questions like "what did I work on today?"
   with your own key: Anthropic, OpenAI, Gemini, OpenRouter (any model it offers), or any
   OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
+- **Claude, Cursor and other AI apps** can search your history too, through MCP, once you turn
+  it on. See [Use with Claude and other AI apps (MCP)](#use-with-claude-and-other-ai-apps-mcp).
 
 ## Ask AI
 
@@ -117,6 +119,50 @@ supplied that address, so text on screen can't trick the AI into a link that sen
 elsewhere. With a local model (Ollama, LM Studio) nothing leaves your computer at all; a custom
 server reached over plain http on another network gets a warning, since your key would travel
 unencrypted.
+
+## Use with Claude and other AI apps (MCP)
+
+Claude Desktop, Claude Code, Cursor and other apps that support the
+[Model Context Protocol](https://modelcontextprotocol.io) can look things up in your history
+with the same lookups as Ask AI (the table above). Ask them "what was I reading about
+databases yesterday?" and they search OpenRewind on your computer.
+
+It is **off by default**. Turn on **Settings → Allow AI Apps to Read My History (MCP)**, then
+open **Settings → Connect AI Apps…**: it shows the setup for Claude Desktop, Claude Code and
+Cursor with this copy's path filled in, each with a **Copy** button. For Claude Desktop it looks
+like this (Mac path shown; on Windows it is the path of your `OpenRewind.exe`):
+
+```json
+{
+  "mcpServers": {
+    "openrewind": {
+      "command": "/Applications/OpenRewind.app/Contents/MacOS/OpenRewind",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+That goes in `~/Library/Application Support/Claude/claude_desktop_config.json` (Windows:
+`%APPDATA%\Claude\claude_desktop_config.json`); Cursor uses the same lines in `~/.cursor/mcp.json`.
+For Claude Code, run once:
+
+```bash
+claude mcp add --scope user openrewind /Applications/OpenRewind.app/Contents/MacOS/OpenRewind mcp
+```
+
+How it works:
+
+- The AI app starts `OpenRewind mcp` (Windows: `OpenRewind.exe mcp`, or `--mcp`) and talks to it
+  over stdin/stdout. It shows no icon or window and records nothing. It opens the database
+  read-only, so it works whether or not OpenRewind is running.
+- Lookups leave out blocked apps, sites and windows, and are capped in size, exactly as in
+  Ask AI. Screenshots are only shared when **Let AI look at screenshots** is on in AI Settings.
+- Each moment comes with its exact local time (like `2026-10-18T14:30:05-07:00`), which the AI
+  can pass back to read more around it.
+- While the switch is off, the AI app still lists OpenRewind, but every lookup answers that you
+  need to turn it on. Turning it off takes effect on the next lookup.
+- What the AI app reads goes to that app's AI provider, like anything else you ask it.
 
 ## Mac app
 

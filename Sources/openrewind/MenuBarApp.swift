@@ -131,6 +131,19 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Turning it on shows how to add OpenRewind to each AI app.
+    @objc private func toggleMCP() {
+        MCPSetup.enabled.toggle()
+        log("AI apps (MCP) \(MCPSetup.enabled ? "allowed" : "not allowed")")
+        if MCPSetup.enabled { showConnectAIApps() }
+    }
+
+    @objc private func showConnectAIApps() {
+        SetupWindows.shared.show("mcp", title: "Connect AI Apps", size: NSSize(width: 620, height: 860), resizable: true) {
+            ConnectAIAppsView(home: engine.config.home)
+        }
+    }
+
     // Build the menu fresh each time it opens, so it always shows the live state.
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
@@ -295,6 +308,11 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         server.state = engine.serverOn ? .on : .off
         server.toolTip = "Search in the browser and let local scripts read your history through the API. Only this Mac can connect."
         m.addItem(server)
+        let mcp = action("Allow AI Apps to Read My History (MCP)", #selector(toggleMCP))
+        mcp.state = MCPSetup.enabled ? .on : .off
+        mcp.toolTip = "Let Claude, Cursor and other AI apps search your history. They read it on this Mac; blocked apps and sites are left out."
+        m.addItem(mcp)
+        m.addItem(action("Connect AI Apps…", #selector(showConnectAIApps)))
         m.addItem(.separator())
 
         let auto = action("Download Updates Automatically", #selector(toggleAutoDownload))
