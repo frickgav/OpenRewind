@@ -28,6 +28,13 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         set { defaults.set(newValue, forKey: pausedUntilKey) }
     }
     private var isPaused: Bool { pausedUntil != nil }
+    /// The AI chat keeps its conversation while its window is closed.
+    private lazy var aiChat: AIChatModel = {
+        let m = AIChatModel(db: engine.db)
+        m.openMoment = { [weak self] d in self?.overlay.show(at: d) }
+        m.openSettings = { [weak self] in self?.showAISettings() }
+        return m
+    }()
 
     init(engine: Engine) {
         self.engine = engine
@@ -105,6 +112,20 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    @objc private func showAIChat() {
+        let chat = aiChat
+        chat.reloadSettings()
+        SetupWindows.shared.show("ai", title: "Ask OpenRewind", size: NSSize(width: 560, height: 720), resizable: true) {
+            AIChatView(model: chat)
+        }
+    }
+
+    @objc private func showAISettings() {
+        SetupWindows.shared.show("aiSettings", title: "AI Settings", size: NSSize(width: 560, height: 840)) {
+            AISettingsView { [weak self] in self?.aiChat.reloadSettings() }
+        }
+    }
+
     // Build the menu fresh each time it opens, so it always shows the live state.
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
@@ -147,6 +168,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         tl.target = self
         menu.addItem(tl)
         menu.addItem(action("Search…", #selector(openSearch)))
+        menu.addItem(action("Ask AI…", #selector(showAIChat)))
         menu.addItem(action("Show Data Folder", #selector(openData)))
         for line in storageLines() {
             let i = NSMenuItem(title: "  " + line, action: nil, keyEquivalent: "")
@@ -231,6 +253,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func settingsMenu() -> NSMenu {
         let m = NSMenu()
         m.addItem(action("Blocked Apps & Sites…", #selector(showBlockedApps)))
+        m.addItem(action("AI Settings…", #selector(showAISettings)))
         m.addItem(.separator())
         let sc = Shortcut.load(defaults)
         let shortcut = NSMenuItem(title: "Timeline Shortcut: \(sc.label)", action: nil, keyEquivalent: "")

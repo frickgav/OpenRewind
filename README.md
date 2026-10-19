@@ -80,6 +80,40 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
 - Transcribes each chunk with **local Whisper** (`whisper-cli` from
   whisper.cpp). Transcripts go into their own FTS5 index and show up in the
   same search as screen text.
+- **Ask AI** (menu bar or tray → Ask AI…) answers questions like "what did I work on today?"
+  with your own key: Anthropic, OpenAI, Gemini, OpenRouter (any model it offers), or any
+  OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
+
+## Ask AI
+
+Set it up in **Settings → AI Settings…**: pick a provider, paste your key and pick a model.
+Type any model name, or **Refresh List** to ask the provider which models it has, so new
+models work without an app update. Keys are kept in the Mac Keychain or the Windows
+Credential Manager, never in the settings file or the database.
+
+Requests go straight from your computer to the provider; there is no OpenRewind server.
+The model never gets your whole history. It calls lookups that run on your database and
+send back capped, trimmed text:
+
+| Lookup | What it sends |
+| --- | --- |
+| `activity_summary` | Time per app, window and website, and a timeline of what was in front |
+| `search_screen` | Matching moments from the screen-text search, with a short snippet |
+| `search_audio` | Matching transcript lines (or all of them in a time range) |
+| `get_screen_text` | Screen text from a short time range, sampled and trimmed |
+| `view_screenshot` | One screenshot near a moment, as a JPEG. Only offered when you turn on **Let AI look at screenshots** (off by default) |
+
+Each lookup shows in the chat with the arguments the AI asked for and exactly what was sent
+back. Times in answers link back to that moment in the timeline. Each answer shows the
+tokens it used and what they cost; the header shows the chat's total and AI Settings keeps a
+running total per provider. Prices are built in for Claude and GPT-6 models and come with
+OpenRouter's model list; for other models you can type the price. Lookups leave out every app,
+site and window on your block list, including anything saved before you blocked it; audio
+transcripts are not filtered by app. Web links in an answer only open if you or a lookup
+supplied that address, so text on screen can't trick the AI into a link that sends your data
+elsewhere. With a local model (Ollama, LM Studio) nothing leaves your computer at all; a custom
+server reached over plain http on another network gets a warning, since your key would travel
+unencrypted.
 
 ## Mac app
 
@@ -278,7 +312,7 @@ Delete the folder to wipe everything, or from the terminal:
 ## Not yet (Rewind had these)
 
 - Speaker identification (who said what)
-- Meeting summaries and AI chat over your history ("Ask Rewind")
+- Meeting summaries (Ask AI can summarize transcripts when asked, but nothing runs on its own)
 - UI input events (clicks, keys)
 - Browser URL per frame
 - Video chunk encoding (ffmpeg) instead of JPEGs
