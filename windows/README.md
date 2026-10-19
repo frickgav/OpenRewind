@@ -53,7 +53,9 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   http://127.0.0.1:3031. Off by default. Only this PC can connect. The terminal commands
   `record` and `serve` always start it.
 - **Settings → Allow AI Apps to Read My History (MCP)** lets Claude Desktop, Claude Code, Cursor
-  and other MCP apps search your history with the Ask AI lookups. Off by default.
+  and other MCP apps search your history with the Ask AI lookups. Off by default. Blocked apps and
+  sites are left out of screen text (a blocked app shows as "(blocked app)" in the activity
+  summary); audio transcripts are not filtered by app.
   **Settings → Connect AI Apps…** shows what to paste into each app, with the path of your
   `OpenRewind.exe` filled in and a Copy button. The app starts `OpenRewind.exe mcp` itself, with no
   tray icon, and reads the database read-only, so OpenRewind does not have to be running. See

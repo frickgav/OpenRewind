@@ -310,7 +310,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         m.addItem(server)
         let mcp = action("Allow AI Apps to Read My History (MCP)", #selector(toggleMCP))
         mcp.state = MCPSetup.enabled ? .on : .off
-        mcp.toolTip = "Let Claude, Cursor and other AI apps search your history. They read it on this Mac; blocked apps and sites are left out."
+        mcp.toolTip = "Let Claude, Cursor and other AI apps search your history on this Mac. Blocked apps and sites are left out of screen text; audio transcripts are not filtered by app. See Connect AI Apps for details."
         m.addItem(mcp)
         m.addItem(action("Connect AI Apps…", #selector(showConnectAIApps)))
         m.addItem(.separator())

@@ -8,45 +8,63 @@ namespace OpenRewind;
 sealed class ConnectAiAppsForm : Form
 {
     static ConnectAiAppsForm? open;
-    readonly Settings settings;
     readonly CheckBox allow;
 
     public static void ShowFor(Settings settings, Config config)
     {
-        if (open is { IsDisposed: false }) { open.allow.Checked = settings.McpEnabled; open.Activate(); return; }
+        if (open is { IsDisposed: false }) { SettingsChanged(settings); open.Activate(); return; }
         open = new ConnectAiAppsForm(settings, config);
         open.Show();
         open.Activate();
     }
 
+    /// The tray switch changed; keep the box here in step with it.
+    public static void SettingsChanged(Settings settings)
+    {
+        if (open is { IsDisposed: false } f && f.allow.Checked != settings.McpEnabled) f.allow.Checked = settings.McpEnabled;
+    }
+
+    /// What every screen about MCP says about what AI apps get (the Mac app and README say the same).
+    public const string WhatTheyGet =
+        "Blocked apps and sites are left out of screen text and screenshots; in the activity summary a blocked app shows only as "
+        + "“(blocked app)” with its time. Audio transcripts are not filtered by app. What the AI app reads goes to its AI provider. "
+        + "Text on your screen could try to trick it, and many AI apps can open links or run commands, so check what it does with your history.";
+
     ConnectAiAppsForm(Settings settings, Config config)
     {
-        this.settings = settings;
         var k = DeviceDpi / 96f;
         Text = "Connect AI Apps";
         Icon = Program.AppIcon;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
-        ClientSize = new Size((int)(620 * k), (int)(860 * k));
+        AutoScroll = true;
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Ui.Bg;
         ForeColor = Ui.Text;
         Font = Ui.F(14 * k);
         HandleCreated += (_, _) => { int on = 1; DwmSetWindowAttribute(Handle, 20, ref on, 4); };
 
-        int x = (int)(24 * k), w = ClientSize.Width - 2 * x, y = (int)(18 * k);
-        Label Add(string text, float size, Color color, bool bold = false, int height = 0)
+        // Never bigger than the screen it opens on (150% scaling on a 1080p laptop leaves about 1000 px);
+        // what does not fit scrolls. The scroll bar's width is kept free so nothing scrolls sideways.
+        var work = Screen.FromPoint(Cursor.Position).WorkingArea;
+        var chrome = SizeFromClientSize(Size.Empty);
+        ClientSize = new Size(Math.Min((int)(640 * k), work.Width - chrome.Width - 20), Math.Min((int)(900 * k), work.Height - chrome.Height - 20));
+
+        int x = (int)(24 * k), w = ClientSize.Width - 2 * x - SystemInformation.VerticalScrollBarWidth, y = (int)(18 * k);
+        Label Add(string text, float size, Color color, bool bold = false)
         {
-            var l = new Label { Text = text, Font = Ui.F(size * k, bold), ForeColor = color, Location = new Point(x, y), Size = new Size(w, height > 0 ? height : (int)(size * 1.6f * k)) };
+            var font = Ui.F(size * k, bold);
+            // Tall enough for the text wrapped at this width, so narrow windows do not cut lines off.
+            var h = TextRenderer.MeasureText(text, font, new Size(w, int.MaxValue), TextFormatFlags.WordBreak).Height + (int)(4 * k);
+            var l = new Label { Text = text, Font = font, ForeColor = color, Location = new Point(x, y), Size = new Size(w, h) };
             Controls.Add(l);
             y += l.Height + (int)(4 * k);
             return l;
         }
 
         Add("Connect AI Apps", 20, Ui.Text, bold: true);
-        Add("Let Claude, Cursor and other AI apps that support MCP search your OpenRewind history. They ask OpenRewind on this PC, "
-            + "and what they read is sent to that app's AI like anything else you ask it. Blocked apps and sites are left out.",
-            12.5f, Ui.Dim, height: (int)(60 * k));
+        Add("Let Claude, Cursor and other AI apps that support MCP search your OpenRewind history. They ask OpenRewind on this PC.", 12.5f, Ui.Dim);
+        Add(WhatTheyGet, 11.5f, Ui.Dim);
         y += (int)(4 * k);
 
         allow = new CheckBox
@@ -54,15 +72,23 @@ sealed class ConnectAiAppsForm : Form
             Text = "Allow AI Apps to Read My History (MCP)", Checked = settings.McpEnabled, Font = Ui.F(13.5f * k, true), ForeColor = Ui.Text,
             Location = new Point(x, y), Size = new Size(w, (int)(26 * k)),
         };
-        allow.CheckedChanged += (_, _) => { settings.McpEnabled = allow.Checked; settings.Save(); };
+        allow.CheckedChanged += (_, _) =>
+        {
+            if (settings.McpEnabled == allow.Checked) return;
+            settings.McpEnabled = allow.Checked;
+            settings.Save();
+            Log.Write($"AI apps (MCP) {(allow.Checked ? "allowed" : "not allowed")}");
+        };
         Controls.Add(allow);
         y += allow.Height + (int)(2 * k);
         Add("Off by default. While off, AI apps that you connected get a message asking you to turn this on. "
-            + "Screenshots are shared only if “Let AI look at screenshots” is on in AI Settings.",
-            11, Ui.Faint, height: (int)(34 * k));
+            + "Screenshots are shared only if “Let AI look at screenshots” is on in AI Settings.", 11, Ui.Faint);
         y += (int)(10 * k);
 
         var exe = Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "OpenRewind.exe");
+        if (McpCommand.InTemporaryFolder(exe))
+            Add("OpenRewind is running from a temporary folder (straight from the zip?). Unzip it to a folder that stays, "
+                + "like %LOCALAPPDATA%\\Programs\\OpenRewind, and open it from there first, so the path below keeps working.", 12, Ui.Warn);
         var home = McpCommand.HomeArg(config);
         var json = McpSetup.JsonConfig(exe, home);
         Snippet("Claude Desktop", $"Paste into {McpSetup.ClaudeDesktopFile(true)} (Settings → Developer → Edit Config), then quit and reopen Claude. "
@@ -73,7 +99,7 @@ sealed class ConnectAiAppsForm : Form
         void Snippet(string title, string hint, string code, int lines)
         {
             Add(title, 14, Ui.Text, bold: true);
-            Add(hint, 11.5f, Ui.Dim, height: (int)(38 * k));
+            Add(hint, 11.5f, Ui.Dim);
             var bw = (int)(84 * k);
             var box = new TextBox
             {
@@ -93,10 +119,15 @@ sealed class ConnectAiAppsForm : Form
             y += box.Height + (int)(14 * k);
         }
 
+        // Below the last snippet, so it scrolls into view with the rest on small screens.
         var close = new PillButton("Done", primary: true) { Font = Ui.F(13.5f * k, true) };
-        close.SetBounds(ClientSize.Width - x - (int)(110 * k), ClientSize.Height - (int)(60 * k), (int)(110 * k), (int)(40 * k));
+        close.SetBounds(x + w - (int)(110 * k), y + (int)(6 * k), (int)(110 * k), (int)(40 * k));
         close.Click += (_, _) => Close();
         Controls.Add(close);
+        // Room under Done, and no empty space when everything fits.
+        var bottom = close.Bottom + (int)(20 * k);
+        if (bottom < ClientSize.Height) ClientSize = new Size(ClientSize.Width, bottom);
+        else Controls.Add(new Label { Location = new Point(x, bottom - 1), Size = new Size(1, 1) });
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e) { open = null; base.OnFormClosed(e); }

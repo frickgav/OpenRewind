@@ -82,7 +82,7 @@ sealed class TrayApp : ApplicationContext
         settings.McpEnabled = !settings.McpEnabled;
         settings.Save();
         Log.Write($"AI apps (MCP) {(settings.McpEnabled ? "allowed" : "not allowed")}");
-        if (settings.McpEnabled) ShowConnectAiApps();
+        if (settings.McpEnabled) ShowConnectAiApps(); else ConnectAiAppsForm.SettingsChanged(settings);
     }
 
     void ShowConnectAiApps() => ConnectAiAppsForm.ShowFor(settings, engine.Config);
@@ -176,7 +176,7 @@ sealed class TrayApp : ApplicationContext
         server.ToolTipText = "Search in the browser and let local scripts read your history through the API. Only this PC can connect.";
         s.DropDownItems.Add(server);
         var mcp = Toggle("Allow AI Apps to Read My History (MCP)", settings.McpEnabled, ToggleMcp);
-        mcp.ToolTipText = "Let Claude, Cursor and other AI apps search your history. They read it on this PC; blocked apps and sites are left out.";
+        mcp.ToolTipText = "Let Claude, Cursor and other AI apps search your history on this PC. Blocked apps and sites are left out of screen text; audio transcripts are not filtered by app. See Connect AI Apps for details.";
         s.DropDownItems.Add(mcp);
         s.DropDownItems.Add(Item("Connect AI Apps…", ShowConnectAiApps));
         s.DropDownItems.Add(new ToolStripSeparator());

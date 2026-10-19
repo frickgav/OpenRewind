@@ -9,6 +9,9 @@ struct ConnectAIAppsView: View {
     @State private var copied: String?
     let home: URL
 
+    /// What every screen about MCP says about what AI apps get (the Windows app and README say the same).
+    static let whatTheyGet = "Blocked apps and sites are left out of screen text and screenshots; in the activity summary a blocked app shows only as “(blocked app)” with its time. Audio transcripts are not filtered by app. What the AI app reads goes to its AI provider. Text on your screen could try to trick it, and many AI apps can open links or run commands, so check what it does with your history."
+
     private var exe: String { MCPSetup.executable }
     private var json: String { MCPSetup.jsonConfig(exe: exe, home: MCPSetup.homeArg(home)) }
 
@@ -16,7 +19,9 @@ struct ConnectAIAppsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Connect AI Apps").font(.system(size: 20, weight: .semibold))
-                Text("Let Claude, Cursor and other AI apps that support MCP search your OpenRewind history. They ask OpenRewind on this Mac, and what they read is sent to that app's AI like anything else you ask it. Blocked apps and sites are left out.")
+                Text("Let Claude, Cursor and other AI apps that support MCP search your OpenRewind history. They ask OpenRewind on this Mac.")
+                    .font(.system(size: 12)).foregroundColor(SetupTheme.dim).fixedSize(horizontal: false, vertical: true)
+                Text(Self.whatTheyGet)
                     .font(.system(size: 12)).foregroundColor(SetupTheme.dim).fixedSize(horizontal: false, vertical: true)
 
                 VStack(alignment: .leading, spacing: 4) {

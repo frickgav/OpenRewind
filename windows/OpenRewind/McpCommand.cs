@@ -43,8 +43,21 @@ static class McpCommand
         return 0;
     }
 
-    /// The --home part of the setup, only when this copy uses a data folder other than the usual one.
-    public static string? HomeArg(Config config) =>
-        string.Equals(Path.GetFullPath(config.Home).TrimEnd('\\', '/'), Path.GetFullPath(Config.DefaultHome()).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase)
+    /// The data folder for the setup, only when this copy uses one other than %USERPROFILE%\.openrewind.
+    /// Compared with that literal folder, not Config.DefaultHome(): an OPENREWIND_HOME set only for the
+    /// app's own session would not reach the AI app's child process.
+    public static string? HomeArg(Config config)
+    {
+        var usual = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".openrewind");
+        return string.Equals(Path.GetFullPath(config.Home).TrimEnd('\\', '/'), Path.GetFullPath(usual).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase)
             ? null : config.Home;
+    }
+
+    /// True when this exe sits somewhere that goes away, like the temporary folder Explorer uses when
+    /// you run it straight from inside a zip. AI apps could not start it there later.
+    public static bool InTemporaryFolder(string exe)
+    {
+        var temp = Path.GetFullPath(Path.GetTempPath()).TrimEnd('\\') + "\\";
+        return Path.GetFullPath(exe).StartsWith(temp, StringComparison.OrdinalIgnoreCase);
+    }
 }
