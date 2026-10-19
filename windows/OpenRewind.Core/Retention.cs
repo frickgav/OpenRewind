@@ -44,9 +44,11 @@ public sealed partial class Database
         return paths.Count;
     }
 
-    /// Delete audio chunks with `from <= timestamp < to`, their transcripts and WAV files.
+    /// Delete audio chunks with `from <= timestamp < to`, their transcripts and WAV files, and the
+    /// meeting notes made from them.
     public int DeleteAudio(DateTime? from, DateTime? to)
     {
+        DeleteMeetings(from, to);
         var (where, args) = Range("timestamp", from, to);
         var paths = Strings($"SELECT file_path FROM audio_chunks {where}", args);
         if (paths.Count == 0) return 0;

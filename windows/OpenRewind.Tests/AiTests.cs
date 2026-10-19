@@ -44,7 +44,7 @@ public class AiTests : IDisposable
         var results = (JsonArray)msgs[2]!["content"]!;
         Assert.Equal(2, results.Count);
         Assert.Equal("c2", (string?)results[1]!["tool_use_id"]);
-        Assert.Equal(4, ((JsonArray)body["tools"]!).Count);
+        Assert.Equal(AiTools.Specs.Length, ((JsonArray)body["tools"]!).Count);
         Assert.Equal("sys", (string?)body["system"]);
     }
 

@@ -138,6 +138,7 @@ public sealed partial class Database : IDisposable
         // Added later: older databases do not have this column yet.
         if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'browser_url'") == 0)
             Exec("ALTER TABLE frames ADD COLUMN browser_url TEXT NOT NULL DEFAULT ''");
+        MigrateMeetings();
     }
 
     // MARK: frames
