@@ -9,6 +9,7 @@ namespace OpenRewind;
 sealed class OnboardingForm : Form
 {
     readonly Settings settings;
+    readonly Database db;
     /// Called once at the end; true when the user wants the guided tour in the real timeline.
     readonly Action<bool> done;
     readonly float k;
@@ -21,15 +22,16 @@ sealed class OnboardingForm : Form
 
     // Choices made on the pages.
     bool launchAtLogin = true;
-    CheckRow? pwRow, moneyRow, privateRow, bankRow;
+    CheckRow? pwRow, moneyRow, privateRow, bankRow, sitesRow;
     AppPicker? picker;
 
     /// The timeline shortcut as the user set it; TrayApp keeps it current.
     public static string Hotkey { get; set; } = HotkeyShortcut.Standard.Label;
 
-    public OnboardingForm(Settings settings, Action<bool> done)
+    public OnboardingForm(Settings settings, Database db, Action<bool> done)
     {
         this.settings = settings;
+        this.db = db;
         this.done = done;
         k = DeviceDpi / 96f;
         Text = "Welcome to OpenRewind";
@@ -203,7 +205,20 @@ sealed class OnboardingForm : Form
         moneyRow = new CheckRow("\U0001F4B0  Money and crypto apps", "Quicken, Ledger Live, Exodus, Trezor Suite", first || Has(BlockCategory.Finance), k);
         privateRow = new CheckRow("\U0001F576  Private browsing windows", "Incognito, InPrivate and private windows", settings.BlockPrivateWindows, k);
         bankRow = new CheckRow("\U0001F3E6  Bank and payment websites", "Chase, PayPal, Bank of America, Coinbase and more", first || BlockCatalog.BankingSites.All(s => settings.BlockedKeywords.Contains(s, StringComparer.OrdinalIgnoreCase)), k);
-        var groups = new[] { pwRow, moneyRow, privateRow, bankRow };
+        // Opens the site picker; the tick shows whether any sites are blocked.
+        sitesRow = new CheckRow("\U0001F310  Other websites and links", SitesDetail(), settings.BlockedSites.Count > 0, k);
+        bool picking = false;
+        sitesRow.CheckedChanged += r =>
+        {
+            if (picking) return;
+            picking = true;
+            SitePicker.Pick(this, settings, db);
+            r.Checked = settings.BlockedSites.Count > 0;
+            r.Detail = SitesDetail();
+            r.Invalidate();
+            picking = false;
+        };
+        var groups = new[] { pwRow, moneyRow, privateRow, bankRow, sitesRow };
         p.Controls.AddRange(groups);
 
         var otherLabel = new Label { Text = "Other apps on this PC", Font = Ui.F(13 * k, true), ForeColor = Ui.Dim, BackColor = Ui.Bg };
@@ -225,6 +240,14 @@ sealed class OnboardingForm : Form
         };
         blockPage = p;
         return p;
+    }
+
+    /// "Pick from the sites you visit", or the blocked ones not counted as bank sites.
+    string SitesDetail()
+    {
+        var own = settings.BlockedSites.Except(BlockCatalog.BankingDomains, StringComparer.OrdinalIgnoreCase).ToList();
+        return own.Count == 0 ? "Pick from the sites you visit, or type one"
+            : string.Join(", ", own.Take(3)) + (own.Count > 3 ? $" and {own.Count - 3} more" : "");
     }
 
     Control TourPage()
@@ -292,13 +315,16 @@ sealed class OnboardingForm : Form
         var words = settings.BlockedKeywords.Except(BlockCatalog.BankingSites, StringComparer.OrdinalIgnoreCase).ToList();
         if (bankRow!.Checked) words.AddRange(BlockCatalog.BankingSites);
         settings.BlockedKeywords = words;
+        var sites = settings.BlockedSites.Except(BlockCatalog.BankingDomains, StringComparer.OrdinalIgnoreCase).ToList();
+        if (bankRow.Checked) sites.AddRange(BlockCatalog.BankingDomains);
+        settings.BlockedSites = sites;
         settings.BlockPrivateWindows = privateRow!.Checked;
         settings.OnboardingDone = true;
         settings.Save();
         Blocklist.Current = settings.ToBlocklist();
         try { if (Settings.LaunchAtLogin != launchAtLogin) Settings.LaunchAtLogin = launchAtLogin; }
         catch (Exception e) { Log.Write($"launch at login failed: {e.Message}"); }
-        Log.Write($"setup done: {settings.BlockedApps.Count} blocked apps, {settings.BlockedKeywords.Count} blocked words, private windows {(settings.BlockPrivateWindows ? "hidden" : "recorded")}");
+        Log.Write($"setup done: {settings.BlockedApps.Count} blocked apps, {settings.BlockedKeywords.Count} blocked words, {settings.BlockedSites.Count} blocked sites, private windows {(settings.BlockPrivateWindows ? "hidden" : "recorded")}");
     }
 
     /// Windows' privacy switches for the microphone (all apps, and desktop apps like this one).

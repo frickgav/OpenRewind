@@ -17,8 +17,8 @@ static class Redactor
     static readonly uint myPid = (uint)Environment.ProcessId;
     static readonly Dictionary<string, string> nameCache = new(StringComparer.OrdinalIgnoreCase);
 
-    /// Visible top-level windows, back to front.
-    public static List<Win> Windows(Blocklist list)
+    /// Visible top-level windows, back to front. `sites` knows which browser windows show a blocked site.
+    public static List<Win> Windows(Blocklist list, SiteWindows? sites = null)
     {
         var wins = new List<Win>();
         var paths = new Dictionary<uint, string?>();
@@ -33,10 +33,12 @@ static class Redactor
             if (!paths.TryGetValue(pid, out var path)) paths[pid] = path = Native.ProcessPath(pid);
             var name = path == null ? "" : AppName(path);
             var title = Native.WindowTitle(hwnd);
-            bool blocked = list.BlocksWindow(Blocklist.IdFor(path), name, title);
+            bool site = sites?.Blocks(hwnd, list) == true;
+            bool blocked = site || list.BlocksWindow(Blocklist.IdFor(path), name, title);
             // Click-through overlays (game bars, screen dimmers) are see-through: they do not hide a blocked window.
             bool occludes = (GetWindowLong(hwnd, GWL_EXSTYLE) & WS_EX_TRANSPARENT) == 0;
             var label = list.BlocksApp(Blocklist.IdFor(path), name) && name.Length > 0 ? name
+                : site ? "Blocked site"
                 : Blocklist.IsPrivateTitle(title) ? "Private window" : "Hidden window";
             wins.Add(new Win(r, blocked, occludes, label));
             return true;

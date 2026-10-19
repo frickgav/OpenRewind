@@ -11,6 +11,18 @@ enum BrowserTabs {
     ]
     private static let safari: Set<String> = ["com.apple.Safari", "com.apple.SafariTechnologyPreview"]
 
+    /// Browsers whose tab address is read from the page (see Accessibility.focusedURL), for blocked sites.
+    private static let others: Set<String> = [
+        "company.thebrowser.Browser", "company.thebrowser.dia", "org.mozilla.firefox", "org.mozilla.firefoxdeveloperedition",
+        "org.mozilla.nightly", "app.zen-browser.zen", "com.kagi.kagimacOS", "ai.perplexity.comet", "com.operasoftware.OperaGX",
+        "org.chromium.Chromium", "net.imput.helium", "com.sigmaos.sigmaos.macos",
+    ]
+
+    static func isBrowser(_ bundleId: String?) -> Bool {
+        guard let bundleId else { return false }
+        return chromium.contains(bundleId) || safari.contains(bundleId) || others.contains(bundleId)
+    }
+
     static func canSelect(_ bundleId: String?) -> Bool {
         guard let bundleId else { return false }
         return chromium.contains(bundleId) || safari.contains(bundleId)

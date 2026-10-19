@@ -101,14 +101,14 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// The first-run setup; ends in the guided tour if the user asks for it.
     @objc private func showSetup() {
-        Onboarding.show { [weak self] tour in if tour { self?.overlay.showTutorial() } }
+        Onboarding.show(db: engine.db) { [weak self] tour in if tour { self?.overlay.showTutorial() } }
     }
 
     @objc private func showTutorial() { overlay.showTutorial() }
 
     @objc private func showBlockedApps() {
-        SetupWindows.shared.show("blocked", title: "Blocked Apps & Sites", size: NSSize(width: 600, height: 720), resizable: true) {
-            BlockedAppsView()
+        SetupWindows.shared.show("blocked", title: "Blocked Apps & Sites", size: NSSize(width: 600, height: 860), resizable: true) {
+            BlockedAppsView(db: engine.db)
         }
     }
 

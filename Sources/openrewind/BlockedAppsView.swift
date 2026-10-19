@@ -140,19 +140,30 @@ struct AppPickerList: View {
 final class BlockedAppsModel: ObservableObject {
     @Published var apps: [Blocklist.App]
     @Published var keywords: [String]
+    @Published var sites: [String]
     @Published var privateWindows: Bool { didSet { save() } }
 
     init() {
         let l = BlocklistStore.shared.current
         apps = l.apps
         keywords = l.keywords
+        sites = l.sites
         privateWindows = l.privateWindows
     }
 
     func save() {
         let old = BlocklistStore.shared.current
-        BlocklistStore.shared.save(Blocklist(apps: apps, keywords: keywords, privateWindows: privateWindows, extraNames: old.extraNames))
+        BlocklistStore.shared.save(Blocklist(apps: apps, keywords: keywords, privateWindows: privateWindows, sites: sites, extraNames: old.extraNames))
     }
+
+    func addSites(_ rules: [String]) {
+        for r in rules.compactMap(SiteRules.normalize) where !sites.contains(where: { $0.caseInsensitiveCompare(r) == .orderedSame }) {
+            sites.append(r)
+        }
+        save()
+    }
+
+    func removeSite(_ r: String) { sites.removeAll { $0 == r }; save() }
 
     func remove(_ app: Blocklist.App) { apps.removeAll { $0 == app }; save() }
 
@@ -174,7 +185,10 @@ final class BlockedAppsModel: ObservableObject {
 }
 
 struct BlockedAppsView: View {
+    /// For the recent sites list.
+    var db: Database?
     @StateObject private var model = BlockedAppsModel()
+    @State private var addingSites = false
     @State private var newWord = ""
     @State private var adding = false
     @State private var pick: Set<String> = []
@@ -182,7 +196,7 @@ struct BlockedAppsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Blocked apps and windows are blurred in every screenshot, wherever they are on screen, and their text is never saved. The lock screen is never recorded.")
+            Text("Blocked apps, sites and windows are blurred in every screenshot, wherever they are on screen, and their text is never saved. The lock screen is never recorded.")
                 .font(.system(size: 13)).foregroundColor(SetupTheme.dim).fixedSize(horizontal: false, vertical: true)
 
             HStack {
@@ -198,7 +212,31 @@ struct BlockedAppsView: View {
                     if model.apps.isEmpty { Text("No blocked apps").foregroundColor(SetupTheme.faint).padding() }
                 }
             }
-            .frame(minHeight: 160)
+            .frame(minHeight: 120)
+
+            HStack {
+                Text("Websites and links").font(.system(size: 17, weight: .bold))
+                Spacer()
+                Button("Add Sites…") { addingSites = true }.buttonStyle(PillButtonStyle())
+            }
+            .sheet(isPresented: $addingSites) {
+                SitePickerView(db: db, already: Set(model.sites)) { picked in
+                    model.addSites(picked)
+                    addingSites = false
+                }
+            }
+            Text(Accessibility.isTrusted ? "A browser tab showing one of these is hidden, checked each time it is in front."
+                 : "Needs Accessibility permission (Settings → Permissions) to see which site a browser tab shows.")
+                .font(.system(size: 12)).foregroundColor(Accessibility.isTrusted ? SetupTheme.faint : SetupTheme.warn)
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    ForEach(model.sites.sorted { (SiteRules.siteOf($0), $0) < (SiteRules.siteOf($1), $1) }, id: \.self) { r in
+                        removableRow(r, detail: r.contains("/") || r.contains("?") ? "This link and the pages under it" : "The whole site") { model.removeSite(r) }
+                    }
+                    if model.sites.isEmpty { Text("No blocked sites. Click Add Sites… to pick from the sites you visit.").foregroundColor(SetupTheme.faint).padding() }
+                }
+            }
+            .frame(minHeight: 100)
 
             CheckRowView(emoji: "🕶", title: "Private browsing windows",
                          detail: "Incognito, InPrivate and private windows, when the browser names them in the title",
@@ -207,7 +245,10 @@ struct BlockedAppsView: View {
             HStack {
                 Text("Words in window titles").font(.system(size: 17, weight: .bold))
                 Spacer()
-                Button("Add Bank Sites") { model.addWords(BlockCatalog.bankingSites) }.buttonStyle(PillButtonStyle())
+                Button("Add Bank Sites") {
+                    model.addSites(BlockCatalog.bankingDomains)
+                    model.addWords(BlockCatalog.bankingSites)
+                }.buttonStyle(PillButtonStyle())
             }
             Text("A browser's window title is the page title, so “PayPal” hides PayPal tabs. Whole words only.")
                 .font(.system(size: 12)).foregroundColor(SetupTheme.faint)
@@ -228,7 +269,7 @@ struct BlockedAppsView: View {
             .frame(minHeight: 100)
         }
         .padding(24)
-        .frame(minWidth: 560, minHeight: 640)
+        .frame(minWidth: 560, minHeight: 760)
         .background(SetupTheme.bg)
         .foregroundColor(.white)
         .preferredColorScheme(.dark)

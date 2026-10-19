@@ -6,6 +6,8 @@ struct ActiveWindow {
     var appName: String
     var windowName: String
     var pid: pid_t
+    /// The window's CGWindowID, or 0 when it has none on screen.
+    var windowID: CGWindowID = 0
 }
 
 enum Capture {
@@ -15,12 +17,15 @@ enum Capture {
         }
         let pid = app.processIdentifier
         var title = ""
+        var id: CGWindowID = 0
         if let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] {
             for w in info where (w[kCGWindowOwnerPID as String] as? pid_t) == pid && (w[kCGWindowLayer as String] as? Int) == 0 {
-                if let n = w[kCGWindowName as String] as? String, !n.isEmpty { title = n; break }
+                let number = w[kCGWindowNumber as String] as? CGWindowID ?? 0
+                if id == 0 { id = number }
+                if let n = w[kCGWindowName as String] as? String, !n.isEmpty { title = n; id = number; break }
             }
         }
-        return ActiveWindow(appName: app.localizedName ?? "", windowName: title, pid: pid)
+        return ActiveWindow(appName: app.localizedName ?? "", windowName: title, pid: pid, windowID: id)
     }
 
     static var hasScreenPermission: Bool { CGPreflightScreenCaptureAccess() }

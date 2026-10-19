@@ -161,7 +161,11 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
 - **Settings → Launch at Login** starts it with your Mac.
 - The lock screen and screen saver are never recorded.
 - **Settings → Blocked Apps & Sites** picks apps to blur, plus words that hide a window when its
-  title has them (a browser's title is the page title, so "PayPal" hides PayPal tabs). Private
+  title has them (a browser's title is the page title, so "PayPal" hides PayPal tabs). **Websites
+  and links** ("chase.com", or a full link to one page) are matched against the address of the
+  browser tab in front, read with Accessibility just before each screenshot; **Add Sites…** lists
+  the sites and pages you visited lately to tick. A window stays hidden after you click away from
+  it, until it is in front again showing another site. Private
   browsing windows are hidden when the browser names them in the title (Incognito, InPrivate,
   Private Browsing).
 - **Settings → Show Tutorial** walks through the timeline again; **Run Setup Again…** reopens
