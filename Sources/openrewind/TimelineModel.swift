@@ -76,10 +76,7 @@ final class TimelineModel: ObservableObject {
         let f = frames[frameIndex(at: date)]
         guard date <= (f.end == nil ? f.time.addingTimeInterval(60) : AppFilter.until(f)) else { return nil }
         if let img = thumbCache[f.id] { return (f, img) }
-        let opts = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 480,
-                     kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary
-        guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: f.path) as CFURL, nil),
-              let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts) else { return (f, nil) }
+        guard let cg = FrameImages.shared.thumbnail(f.source, maxPixels: 480) else { return (f, nil) }
         let img = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
         thumbCache[f.id] = img
         thumbOrder.append(f.id)
@@ -272,7 +269,7 @@ final class TimelineModel: ObservableObject {
 
     private func loadImage(_ f: TimelineFrame) -> NSImage? {
         if let img = imageCache[f.id] { return img }
-        guard let img = NSImage(contentsOfFile: f.path) else { return nil }
+        guard let img = FrameImages.shared.nsImage(f.source) else { return nil }
         imageCache[f.id] = img
         cacheOrder.append(f.id)
         if cacheOrder.count > 24 { imageCache.removeValue(forKey: cacheOrder.removeFirst()) }

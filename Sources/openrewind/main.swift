@@ -16,6 +16,7 @@ Usage:
   openrewind delete <15m|1h|today|all|older:week>
                              Delete recordings in that range
   openrewind doctor          Check and request permissions
+  openrewind video-check     Check that this Mac can write and read the videos of Compress Older Recordings
 
 Options:
   --port N        API port (default 3031)
@@ -58,6 +59,16 @@ func value(after flag: String) -> String? {
 
 func startServer() {
     do { try engine.startServer() } catch { log("cannot start server: \(error)"); exit(1) }
+}
+
+/// Which codec Compress Older Recordings would use: encodes and reads back a short test clip.
+func videoCheck() -> (text: String, ok: Bool) {
+    let codec = AVCodec()
+    switch codec.usable {
+    case "hevc": return ("HEVC (H.265, hardware)", true)
+    case "h264": return ("H.264 (no hardware HEVC encoder)", true)
+    default: return ("not available (\(codec.probeError ?? "unknown"))", false)
+    }
 }
 
 func requirePermissions() {
@@ -164,8 +175,17 @@ case "doctor":
     print("audio chunks:    \(a.chunks) (\(a.pending) pending), \(a.segments) transcript segments")
     print("whisper-cli:     \(Transcriber.findBinary(config.whisperBinary) ?? "MISSING (brew install whisper-cpp)")")
     print("whisper model:   \(Transcriber.findModel(config.whisperModel, home: config.home) ?? "MISSING")")
+    print("video storage:   \(videoCheck().text)")
+    let v = db.videoStats()
+    print("videos:          \(v.segments) (\(v.bytes >> 20) MB, saving \(v.saved >> 20) MB)")
     if !Capture.hasScreenPermission { Capture.requestScreenPermission() }
     if !Accessibility.isTrusted { Accessibility.promptForTrust() }
+
+case "video-check":
+    let check = videoCheck()
+    print("video storage: \(check.text)")
+    guard check.ok else { exit(1) }
+    exit(VideoSelfTest.run() ? 0 : 1)
 
 default:
     print(usage); exit(2)

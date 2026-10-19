@@ -84,6 +84,34 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
   with your own key: Anthropic, OpenAI, Gemini, OpenRouter (any model it offers), or any
   OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
 
+## Compress Older Recordings
+
+**Settings → Compress Older Recordings** keeps screenshots older than an hour as short videos
+instead of one picture each. Screens change little from one frame to the next, so a video takes
+about 5 to 10 times less disk space. **It is off by default**: it is new and has not been tested on
+many Macs and PCs yet. The storage line in the menu shows what the videos save
+("Using 3.1 GB · video saves 14.2 GB").
+
+- Each video holds up to five minutes of one screen (frames of different sizes go in separate
+  videos). The last hour stays as pictures, so the recent timeline is exactly as before.
+- HEVC (H.265) on a Mac with a hardware HEVC encoder, or a PC whose Media Foundation can
+  encode and decode HEVC; H.264 everywhere else. The Mac uses AVFoundation, Windows uses Media
+  Foundation, both built into the system; nothing is downloaded and nothing leaves the computer.
+- Crash-safe: a video is written to a temporary file, read back and compared with the pictures,
+  moved into place, and the frames are pointed at it in one database transaction. Only then are
+  the pictures deleted. Quitting or crashing at any point loses nothing; the next run cleans up.
+- The timeline, search highlights, the local API (`GET /frames/{id}` still returns a JPEG), and
+  Ask AI's screenshots all read frames through one loader. It seeks exactly to each frame, keeps
+  the last few videos open and the last 48 frames decoded, so scrubbing stays quick. A keyframe
+  every 20 frames means one frame never needs more than 20 decoded to show it.
+- Deleting recordings and **Keep Recordings For** work the same: a video whose frames are all
+  deleted is deleted; one that loses only some of them is written again without them, soon after.
+- Turning it off stops making new videos. Videos already made keep playing.
+- `openrewind video-check` (Mac) or `OpenRewind.exe video-check` (Windows) checks that this
+  computer can make the videos: it compresses made-up screenshots in a temporary folder, reads
+  every frame back, deletes some and checks the rewrite. `doctor` shows which codec would be used
+  and how much space the videos save.
+
 ## Ask AI
 
 Open it from the menu bar or tray (**Ask AI…**) or with the **Ask AI** button in the timeline,
@@ -158,6 +186,9 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
   launch and every hour.
 - **Settings → Delete Recordings**: last 15 minutes, last hour, today, all
   screen, all audio, or everything (asks first).
+- **Settings → Compress Older Recordings** keeps screenshots older than an hour as video, for
+  about 5 to 10 times less disk space. Off by default; see
+  [Compress Older Recordings](#compress-older-recordings).
 - **Settings → Local Search Server** turns on the API and browser search page at
   `http://127.0.0.1:3031`. Off by default. Only this Mac can connect. The terminal
   commands `record` and `serve` always start it.
@@ -297,7 +328,7 @@ On when you run `record` or `serve` from the terminal, or after **Settings → L
 |-------|------|
 | `GET /health` | Status, frame count, permissions |
 | `GET /search?q=&app_name=&window_name=&start_time=&end_time=&limit=&offset=&max_content_length=` | Full-text search. Times: ISO, `2h ago`, `today`, `yesterday`, `YYYY-MM-DD` |
-| `GET /frames/{id}` | Snapshot as JPEG |
+| `GET /frames/{id}` | Snapshot as JPEG (also for frames kept in a video) |
 | `GET /apps?start_time=` | Apps with frame counts |
 | `GET /audio/{chunk_id}` | Audio chunk WAV |
 
@@ -307,8 +338,10 @@ Response: `{"data":[{"type":"OCR","content":{"frame_id","text","timestamp","app_
 
 ## Data
 
-`~/.openrewind/db.sqlite`, `~/.openrewind/data/<date>/*.heic` (`*.jpg` on Windows and older recordings), and
-`~/.openrewind/data/audio/<date>/*.wav`.
+`~/.openrewind/db.sqlite`, `~/.openrewind/data/<date>/*.heic` (`*.jpg` on Windows and older recordings),
+`~/.openrewind/data/video/<date>/*.mp4` (with Compress Older Recordings on), and
+`~/.openrewind/data/audio/<date>/*.wav`. In the API, a frame kept in a video has the video as
+`file_path` and its frame number in it as `offset_index`.
 Delete the folder to wipe everything, or from the terminal:
 
 ```bash
@@ -323,7 +356,6 @@ Delete the folder to wipe everything, or from the terminal:
 - Meeting summaries (Ask AI can summarize transcripts when asked, but nothing runs on its own)
 - UI input events (clicks, keys)
 - Browser URL per frame
-- Video chunk encoding (ffmpeg) instead of JPEGs
 - Plugins
 
 ## License

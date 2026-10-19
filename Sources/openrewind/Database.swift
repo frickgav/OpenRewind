@@ -15,6 +15,15 @@ struct Frame: Codable {
     var hash: Int64
     /// Address of the browser tab in this frame, the open document (file://), or "".
     var browserUrl = ""
+    /// The screen it was taken on.
+    var display = ""
+    /// After Compress Older Recordings the picture is frame `videoFrame` of this video, `videoTime` seconds in,
+    /// and `snapshotPath` is "". Read it with FrameImages, never from the paths directly.
+    var videoPath = ""
+    var videoFrame = 0
+    var videoTime = 0.0
+
+    var source: FrameSource { FrameSource(stillPath: snapshotPath, videoPath: videoPath, videoFrame: videoFrame, videoTime: videoTime) }
 }
 
 struct SearchQuery {
@@ -34,6 +43,13 @@ enum DBError: Error { case open(String), prepare(String), step(String) }
 final class Database {
     var db: OpaquePointer?
     let lock = NSLock()
+    /// Held for a whole frame delete and a whole video commit, so neither runs halfway through the other
+    /// (a video must never be committed for frames that are being deleted). See VideoStore.swift.
+    let videoGate = NSLock()
+    /// Videos are about to be deleted: forget cached decoders for them.
+    var releasingVideos: (([String]) -> Void)?
+    /// Frames of a video were deleted while others in it are kept: the compactor should write it again soon.
+    var videosNeedRewrite: (() -> Void)?
 
     init(path: URL) throws {
         if sqlite3_open_v2(path.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) != SQLITE_OK {
@@ -54,7 +70,7 @@ final class Database {
         let new = home.path + "/"
         do {
             try exec("BEGIN")
-            for (table, col) in [("frames", "snapshot_path"), ("audio_chunks", "file_path")] {
+            for (table, col) in [("frames", "snapshot_path"), ("frames", "video_path"), ("video_segments", "path"), ("audio_chunks", "file_path")] {
                 run("UPDATE \(table) SET \(col) = ? || substr(\(col), ?) WHERE substr(\(col), 1, ?) = ?",
                     [.text(new), .int(Int64(old.unicodeScalars.count + 1)), .int(Int64(old.unicodeScalars.count)), .text(old)])
             }
@@ -97,10 +113,11 @@ final class Database {
             VALUES ('delete', old.id, old.text, old.app_name, old.window_name);
         END;
         """)
-        // Added later: older databases do not have this column yet. Windows adds the same column.
+        // Added later: older databases do not have these columns yet. Windows adds the same ones.
         if scalarInt("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'browser_url'", []) == 0 {
             try exec("ALTER TABLE frames ADD COLUMN browser_url TEXT NOT NULL DEFAULT ''")
         }
+        try migrateVideo()
     }
 
     func exec(_ sql: String) throws {
@@ -116,7 +133,7 @@ final class Database {
     @discardableResult
     func insert(_ f: Frame) throws -> Int64 {
         lock.lock(); defer { lock.unlock() }
-        let sql = "INSERT INTO frames (timestamp, app_name, window_name, focused, snapshot_path, text, text_source, hash, browser_url) VALUES (?,?,?,?,?,?,?,?,?)"
+        let sql = "INSERT INTO frames (timestamp, app_name, window_name, focused, snapshot_path, text, text_source, hash, browser_url, display) VALUES (?,?,?,?,?,?,?,?,?,?)"
         var st: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { throw DBError.prepare(errmsg) }
         defer { sqlite3_finalize(st) }
@@ -125,6 +142,7 @@ final class Database {
         bind(st, 5, f.snapshotPath); bind(st, 6, f.text); bind(st, 7, f.textSource)
         sqlite3_bind_int64(st, 8, f.hash)
         bind(st, 9, f.browserUrl)
+        bind(st, 10, f.display)
         guard sqlite3_step(st) == SQLITE_DONE else { throw DBError.step(errmsg) }
         return sqlite3_last_insert_rowid(db)
     }
@@ -203,7 +221,7 @@ final class Database {
 
     // MARK: - helpers
 
-    private static let cols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url"
+    private static let cols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, f.display, f.video_path, f.video_frame, f.video_time"
 
     /// Turn free text into a safe FTS5 query: every word becomes a quoted prefix term.
     static func ftsQuery(_ raw: String) -> String? {
@@ -214,7 +232,7 @@ final class Database {
         return words.map { "\"\($0)\"*" }.joined(separator: " ")
     }
 
-    enum Arg { case text(String), int(Int64) }
+    enum Arg { case text(String), int(Int64), real(Double) }
 
     var errmsg: String { String(cString: sqlite3_errmsg(db)) }
 
@@ -227,6 +245,7 @@ final class Database {
             switch a {
             case .text(let s): bind(st, Int32(i + 1), s)
             case .int(let n): sqlite3_bind_int64(st, Int32(i + 1), n)
+            case .real(let d): sqlite3_bind_double(st, Int32(i + 1), d)
             }
         }
     }
@@ -246,7 +265,8 @@ final class Database {
             out.append(Frame(id: sqlite3_column_int64(st, 0), timestamp: col(st, 1), appName: col(st, 2),
                              windowName: col(st, 3), focused: sqlite3_column_int(st, 4) != 0,
                              snapshotPath: col(st, 5), text: col(st, 6), textSource: col(st, 7),
-                             hash: sqlite3_column_int64(st, 8), browserUrl: col(st, 9)))
+                             hash: sqlite3_column_int64(st, 8), browserUrl: col(st, 9), display: col(st, 10),
+                             videoPath: col(st, 11), videoFrame: Int(sqlite3_column_int64(st, 12)), videoTime: sqlite3_column_double(st, 13)))
         }
         return out
     }

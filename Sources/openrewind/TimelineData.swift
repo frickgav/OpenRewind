@@ -11,6 +11,13 @@ struct TimelineFrame {
     var url: String = ""
     /// Set only while the timeline shows one app: when the next screenshot (of any app) was taken.
     var end: Date? = nil
+    /// Set when the picture is a frame of a video (Compress Older Recordings); `path` is then "".
+    var videoPath = ""
+    var videoFrame = 0
+    var videoTime = 0.0
+
+    /// Where the picture is. Read it with FrameImages.
+    var source: FrameSource { FrameSource(stillPath: path, videoPath: videoPath, videoFrame: videoFrame, videoTime: videoTime) }
 }
 
 struct TimelineAudio {
@@ -34,7 +41,7 @@ extension Database {
     func timelineFrames(since: Date) -> [TimelineFrame] {
         lock.lock(); defer { lock.unlock() }
         var st: OpaquePointer?
-        let sql = "SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url FROM frames WHERE timestamp >= ? ORDER BY timestamp ASC"
+        let sql = "SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url, video_path, video_frame, video_time FROM frames WHERE timestamp >= ? ORDER BY timestamp ASC"
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(st) }
         bind(st, 1, Time.iso.string(from: since))
@@ -42,7 +49,8 @@ extension Database {
         while sqlite3_step(st) == SQLITE_ROW {
             guard let t = Time.iso.date(from: col(st, 1)) else { continue }
             out.append(TimelineFrame(id: sqlite3_column_int64(st, 0), time: t, appName: col(st, 2),
-                                     windowName: col(st, 3), path: col(st, 4), url: col(st, 5)))
+                                     windowName: col(st, 3), path: col(st, 4), url: col(st, 5), videoPath: col(st, 6),
+                                     videoFrame: Int(sqlite3_column_int64(st, 7)), videoTime: sqlite3_column_double(st, 8)))
         }
         return out
     }

@@ -184,7 +184,8 @@ struct API {
             items += rows.map { f in (f.timestamp, ["type": "OCR", "content": [
                 "frame_id": f.id, "text": clip(f.text), "timestamp": f.timestamp,
                 "app_name": f.appName, "window_name": f.windowName, "focused": f.focused,
-                "file_path": f.snapshotPath, "text_source": f.textSource, "offset_index": 0, "tags": [],
+                "file_path": f.videoPath.isEmpty ? f.snapshotPath : f.videoPath, "text_source": f.textSource,
+                "offset_index": f.videoFrame, "tags": [],
             ] as [String: Any]]) }
         }
         if wantAudio {
@@ -214,19 +215,19 @@ struct API {
 
     private func frameImage(_ idStr: String) -> HTTPResponse {
         guard let id = Int64(idStr), let f = db.frame(id: id) else { return .error("frame not found", status: 404) }
-        // Only serve files inside our own data dir.
-        let path = URL(fileURLWithPath: f.snapshotPath).standardizedFileURL.path
-        guard path.hasPrefix(config.dataDir.standardizedFileURL.path),
-              let data = FileManager.default.contents(atPath: path) else {
+        // Only serve files inside our own data dir. The picture is a still, or a frame of a video
+        // (Compress Older Recordings).
+        let file = f.videoPath.isEmpty ? f.snapshotPath : f.videoPath
+        let path = URL(fileURLWithPath: file).standardizedFileURL.path
+        guard !file.isEmpty, path.hasPrefix(config.dataDir.standardizedFileURL.path), FileManager.default.fileExists(atPath: path) else {
             return .error("snapshot missing", status: 404)
         }
-        // Chrome and Firefox cannot show HEIC: send JPEG.
-        if path.hasSuffix(".heic") {
-            guard let img = ImageTools.load(URL(fileURLWithPath: path)), let jpg = ImageTools.jpegData(img) else {
-                return .error("cannot decode snapshot", status: 500)
-            }
-            return HTTPResponse(contentType: "image/jpeg", body: jpg)
+        // A JPEG still goes out as it is. Chrome and Firefox cannot show HEIC, and a video frame is no file: send JPEG.
+        if f.videoPath.isEmpty, !path.hasSuffix(".heic") {
+            guard let data = FileManager.default.contents(atPath: path) else { return .error("snapshot missing", status: 404) }
+            return HTTPResponse(contentType: "image/jpeg", body: data)
         }
-        return HTTPResponse(contentType: "image/jpeg", body: data)
+        guard let jpg = FrameImages.shared.jpeg(f.source) else { return .error("cannot decode snapshot", status: 500) }
+        return HTTPResponse(contentType: "image/jpeg", body: jpg)
     }
 }

@@ -29,14 +29,34 @@ enum KeepFor: String, CaseIterable {
 /// Deletes screen and audio recordings (files + rows) inside a time range.
 extension Database {
     /// Delete frames with `from <= timestamp < to`. nil = open end. Returns frames deleted.
+    /// A video left with no frames is deleted; one that still has frames outside the range is marked
+    /// for the compactor to write again without the deleted ones (see VideoCompactor.runOnce).
     @discardableResult
     func deleteFrames(from: Date?, to: Date?) -> Int {
         let (whereSQL, args) = Self.range("timestamp", from, to)
-        let paths = strings("SELECT snapshot_path FROM frames \(whereSQL)", args)
-        guard !paths.isEmpty else { return 0 }
+        let and = whereSQL.isEmpty ? "WHERE" : whereSQL + " AND"
+        // All in one go, so a compaction cannot commit a new video for these frames halfway through.
+        videoGate.lock()
+        let n = scalarInt("SELECT COUNT(*) FROM frames \(whereSQL)", args)
+        guard n > 0 else { videoGate.unlock(); return 0 }
+        let stills = strings("SELECT snapshot_path FROM frames \(whereSQL)", args)
+        let videos = strings("SELECT DISTINCT video_path FROM frames \(and) video_path != ''", args)
         run("DELETE FROM frames \(whereSQL)", args)  // FTS rows go with it (trigger frames_ad)
-        Self.removeFiles(paths)
-        return paths.count
+        var emptied: [String] = [], partial = false
+        for v in videos {
+            if scalarInt("SELECT COUNT(*) FROM frames WHERE video_path = ? AND video_path != ''", [.text(v)]) == 0 {
+                run("DELETE FROM video_segments WHERE path = ?", [.text(v)])
+                emptied.append(v)
+            } else {
+                run("UPDATE video_segments SET needs_rewrite = 1 WHERE path = ?", [.text(v)])
+                partial = true
+            }
+        }
+        videoGate.unlock()
+        if !emptied.isEmpty { releasingVideos?(emptied) }
+        Self.removeFiles(stills + emptied)
+        if partial { videosNeedRewrite?() }
+        return n
     }
 
     /// Delete audio chunks with `from <= timestamp < to`, their transcripts and WAV files.
@@ -63,7 +83,7 @@ extension Database {
         return (parts.isEmpty ? "" : "WHERE " + parts.joined(separator: " AND "), args)
     }
 
-    private func strings(_ sql: String, _ args: [Arg]) -> [String] {
+    func strings(_ sql: String, _ args: [Arg]) -> [String] {
         lock.lock(); defer { lock.unlock() }
         var st: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); return [] }

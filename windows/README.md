@@ -49,6 +49,12 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   or Until I Delete Them (default). Older recordings are deleted at launch and every hour.
 - **Settings → Delete Recordings**: last 15 minutes, last hour, today, all screen,
   all audio, or everything (asks first).
+- **Settings → Compress Older Recordings** keeps screenshots older than an hour as video (HEVC,
+  or H.264 when the PC has no HEVC codec), for about 5 to 10 times less disk space. Off by default,
+  because it is new; it reads "(not available on this PC)" when Windows has no working video
+  encoder (some N editions without the Media Feature Pack). Turning it off stops making videos;
+  ones already made keep playing. Details in the
+  [main README](../README.md#compress-older-recordings).
 - **Settings → Local Search Server** turns on the API and browser search page at
   http://127.0.0.1:3031. Off by default. Only this PC can connect. The terminal commands
   `record` and `serve` always start it.
@@ -80,6 +86,7 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
 | System audio | ScreenCaptureKit | WASAPI loopback (no permission needed) |
 | Speech to text | whisper.cpp `whisper-cli` | whisper.cpp `whisper-cli.exe` |
 | Database, API, search page | SQLite + FTS5, port 3031 | the same |
+| Compress Older Recordings | AVAssetWriter / AVAssetImageGenerator | Media Foundation sink writer / source reader |
 | App | Menu bar, ⌥⌘T | Tray, Ctrl+Alt+T |
 
 Windows OCR uses the languages installed for your Windows display language. If
@@ -111,6 +118,7 @@ on your PC. OpenRewind records audio without it; the clips are transcribed once 
 
 ```powershell
 .\OpenRewind.exe doctor
+.\OpenRewind.exe video-check     # can this PC make the videos of Compress Older Recordings?
 .\OpenRewind.exe record          # record + API, no tray icon
 .\OpenRewind.exe delete older:week
 .\OpenRewind.exe --help
