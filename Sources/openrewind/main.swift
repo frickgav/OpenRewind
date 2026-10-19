@@ -16,6 +16,8 @@ Usage:
   openrewind delete <15m|1h|today|all|older:week>
                              Delete recordings in that range
   openrewind doctor          Check and request permissions
+  openrewind mcp             MCP server for AI apps, over stdin/stdout (also --mcp).
+                             Turn on Settings → Allow AI Apps to Read My History first
 
 Options:
   --port N        API port (default 3031)
@@ -37,12 +39,14 @@ Env:
 let args = Array(CommandLine.arguments.dropFirst())
 /// Launched from Finder / Dock as OpenRewind.app with no command → run the menu bar app.
 let launchedAsApp = Bundle.main.bundleURL.pathExtension == "app" && !args.contains(where: { !$0.hasPrefix("-") })
-let command = launchedAsApp ? "app" : (args.first(where: { !$0.hasPrefix("-") }) ?? "record")
+let command = args.contains("--mcp") ? "mcp" : launchedAsApp ? "app" : (args.first(where: { !$0.hasPrefix("-") }) ?? "record")
 if args.contains("-h") || args.contains("--help") || command == "help" {
     print(usage); exit(0)
 }
 
 let config = Config.load(arguments: args)
+// Started by an AI app with stdin/stdout as pipes: no menu bar icon, no recording, read-only.
+if command == "mcp" { MCPServer.serveStdio(config: config) }
 if command == "app" { openLogFile(in: config.home) }
 let db: Database
 do { db = try Database(path: config.dbPath) } catch {
