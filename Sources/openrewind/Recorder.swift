@@ -82,6 +82,8 @@ final class Recorder {
     /// Seconds between stored frames while only a few words change. At or below the capture interval: every capture.
     var minorChangeGap: TimeInterval = 2
     private let excluded: Set<String>
+    /// Browser windows showing a blocked site (see Blocklist.sites).
+    private let siteWindows = SiteWindows()
 
     init(config: Config, db: Database) {
         self.config = config
@@ -114,15 +116,20 @@ final class Recorder {
         let win = Capture.activeWindow()
         if excluded.contains(win.appName.lowercased()) { return }
         let list = BlocklistStore.shared.current
-        let windows = Redaction.windows(list)
+        let app = NSRunningApplication(processIdentifier: win.pid)
+        // Blocked sites: which tab the browser in front shows, read just before the screenshot.
+        if !list.sites.isEmpty, BrowserTabs.isBrowser(app?.bundleIdentifier) {
+            siteWindows.saw(win.windowID, url: Accessibility.focusedURL(pid: win.pid))
+        }
+        let windows = Redaction.windows(list, sites: siteWindows)
         let shot = try await Capture.capture(excluding: Set(windows.filter(\.blocked).map(\.id)))
         guard let image = Redaction.apply(shot.image, bounds: shot.bounds, windows: windows) else {
             log("could not blur blocked apps; skipping this frame"); return
         }
         // A blocked window in front: keep the app name for the timeline, but not its title or its text.
-        let app = NSRunningApplication(processIdentifier: win.pid)
-        if list.blocksWindow(bundleID: app?.bundleIdentifier, appName: win.appName, path: app?.bundleURL?.path, title: win.windowName) {
-            _ = try ingest(image: image, window: ActiveWindow(appName: win.appName, windowName: "", pid: win.pid), pid: nil)
+        if list.blocksWindow(bundleID: app?.bundleIdentifier, appName: win.appName, path: app?.bundleURL?.path, title: win.windowName)
+            || siteWindows.blocks(win.windowID, list) {
+            _ = try ingest(image: image, window: ActiveWindow(appName: win.appName, windowName: "", pid: win.pid, windowID: win.windowID), pid: nil)
         } else {
             _ = try ingest(image: image, window: win, pid: win.pid)
         }
@@ -146,6 +153,11 @@ final class Recorder {
             let w = Accessibility.focusedWindow(pid: pid)
             if let ax = w.text { text = ax; source = "accessibility" }
             url = w.url ?? ""
+            // The tab changed to a blocked site after the check in tick(), so the screenshot is not blurred: drop it.
+            if BlocklistStore.shared.current.blocksURL(url) {
+                siteWindows.saw(window.windowID, url: url)
+                return nil
+            }
         }
         if text.isEmpty { text = OCR.recognize(image) }
         // Pixels moved (cursor blink, animation) but the text is the same: nothing new to search.

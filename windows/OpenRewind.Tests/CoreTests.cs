@@ -276,6 +276,21 @@ public class CoreTests : IDisposable
     }
 
     [Fact]
+    public void RecentPagesAreNewestFirstOncePerAddress()
+    {
+        var now = DateTime.UtcNow;
+        void Page(int minAgo, string title, string url) =>
+            db.Insert(new Frame(0, Time.Iso(now.AddMinutes(-minAgo)), "Google Chrome", title, true, "x.jpg", "t", "ocr", 0, url));
+        Page(5, "Old title", "https://a.com/1");
+        Page(4, "B", "https://b.com/");
+        Page(3, "New title", "https://a.com/1");
+        AddFrame(now.AddMinutes(-2), "Notepad", "no address");
+        var pages = db.RecentPages();
+        Assert.Equal(new[] { "https://a.com/1", "https://b.com/" }, pages.Select(p => p.Url));
+        Assert.Equal("New title", pages[0].Title);
+    }
+
+    [Fact]
     public void OlderDatabasesGetTheBrowserUrlColumn()
     {
         var oldPath = Path.Combine(home, "old.sqlite");

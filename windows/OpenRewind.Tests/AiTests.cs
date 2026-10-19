@@ -295,6 +295,18 @@ public class AiTests : IDisposable
     }
 
     [Fact]
+    public void BlockedSitesStayOutOfLookups()
+    {
+        var now = DateTime.UtcNow;
+        AddFrame(now.AddMinutes(-20), "Chrome", "My Doc", "secret draft beta", "https://docs.google.com/document/d/abc/edit");
+        AddFrame(now.AddMinutes(-15), "Chrome", "Other Doc", "public draft beta", "https://docs.google.com/document/d/xyz/edit");
+        var tools = new AiTools(db) { Blocked = new Blocklist(Array.Empty<BlockedApp>(), Array.Empty<string>(), false, sites: new[] { "docs.google.com/document/d/abc" }) };
+        var hits = tools.Run(new AiToolCall("1", "search_screen", new JsonObject { ["query"] = "draft beta" }));
+        Assert.Contains("public draft", hits);
+        Assert.DoesNotContain("secret draft", hits);
+    }
+
+    [Fact]
     public async Task OnlyLinksTheUserOrALookupSuppliedOpen()
     {
         AddFrame(DateTime.UtcNow.AddMinutes(-5), "Chrome", "Docs", "how to deploy", "https://docs.example.com/deploy");

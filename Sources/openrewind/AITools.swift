@@ -132,10 +132,10 @@ struct AITools {
         return AITools.cap(out)
     }
 
-    /// True for a frame the block list covers now, by app name, private-window title, or a blocked
-    /// word in the title or web address.
+    /// True for a frame the block list covers now, by app name, private-window title, blocked site,
+    /// or a blocked word in the title or web address.
     func hides(app: String, window: String, url: String) -> Bool {
-        blocklist.blocksWindow(bundleID: nil, appName: app, title: window) || Blocklist.hasKeyword(url, blocklist.keywords)
+        blocklist.blocksFrame(appName: app, windowName: window, url: url) || Blocklist.hasKeyword(url, blocklist.keywords)
     }
 
     static func cap(_ s: String, _ limit: Int = resultLimit) -> String {

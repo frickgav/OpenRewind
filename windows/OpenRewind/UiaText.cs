@@ -24,8 +24,13 @@ static class UiaText
 
     public static bool IsBrowser(string? exePath) => exePath != null && browsers.Contains(Path.GetFileNameWithoutExtension(exePath));
 
+    /// Only the address of the browser tab on screen, quickly: checked before every screenshot when
+    /// sites are blocked, so a blocked tab is hidden in the same screenshot.
+    public static string? Url(IntPtr hwnd) => FocusedWindow(hwnd, true, maxNodes: 1500, maxMillis: 400, urlOnly: true).Url;
+
     /// Text of the window, and for a browser the address of the tab on screen (or null).
-    public static (string? Text, string? Url) FocusedWindow(IntPtr hwnd, bool browser, int maxNodes = 4000, int maxChars = 60_000, int maxMillis = 1500)
+    public static (string? Text, string? Url) FocusedWindow(IntPtr hwnd, bool browser, int maxNodes = 4000, int maxChars = 60_000, int maxMillis = 1500,
+                                                           bool urlOnly = false)
     {
         if (hwnd == IntPtr.Zero) return (null, null);
         lock (gate)
@@ -44,7 +49,7 @@ static class UiaText
                 var deadline = Environment.TickCount64 + maxMillis;
                 var stack = new Stack<(IUIAutomationElement El, int Depth)>();
                 stack.Push((root, 0));
-                while (stack.Count > 0 && visited < maxNodes && chars < maxChars && Environment.TickCount64 < deadline)
+                while (stack.Count > 0 && visited < maxNodes && chars < maxChars && Environment.TickCount64 < deadline && !(urlOnly && docUrl != null))
                 {
                     var (el, depth) = stack.Pop();
                     visited++;
@@ -60,7 +65,7 @@ static class UiaText
                                 if (type == UIA_ControlTypeIds.UIA_DocumentControlTypeId) docUrl = u; else barUrl = u;
                             }
                         }
-                        foreach (var id in new[] { UIA_PropertyIds.UIA_NamePropertyId, UIA_PropertyIds.UIA_ValueValuePropertyId, UIA_PropertyIds.UIA_HelpTextPropertyId })
+                        if (!urlOnly) foreach (var id in new[] { UIA_PropertyIds.UIA_NamePropertyId, UIA_PropertyIds.UIA_ValueValuePropertyId, UIA_PropertyIds.UIA_HelpTextPropertyId })
                         {
                             if (el.GetCurrentPropertyValue(id) is string s)
                             {

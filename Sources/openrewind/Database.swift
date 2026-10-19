@@ -166,6 +166,22 @@ final class Database {
         return out
     }
 
+    /// Web pages seen lately, newest first, one row per address: for picking sites to block.
+    func recentPages(limit: Int = 3000) -> [RecentPage] {
+        lock.lock(); defer { lock.unlock() }
+        var st: OpaquePointer?
+        // SQLite fills the bare window_name from the row that has the MAX(timestamp).
+        let sql = "SELECT browser_url, window_name, MAX(timestamp) FROM frames WHERE browser_url LIKE 'http%' GROUP BY browser_url ORDER BY 3 DESC LIMIT ?"
+        guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); return [] }
+        defer { sqlite3_finalize(st) }
+        sqlite3_bind_int64(st, 1, Int64(limit))
+        var out: [RecentPage] = []
+        while sqlite3_step(st) == SQLITE_ROW {
+            out.append(RecentPage(url: col(st, 0), title: col(st, 1), lastSeen: col(st, 2)))
+        }
+        return out
+    }
+
     func stats() -> (count: Int, last: String?) {
         let n = scalarInt("SELECT COUNT(*) FROM frames", [])
         let last = query("SELECT \(Self.cols) FROM frames f ORDER BY id DESC LIMIT 1", []).first?.timestamp

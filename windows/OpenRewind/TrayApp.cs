@@ -70,7 +70,7 @@ sealed class TrayApp : ApplicationContext
     {
         if (setup is { IsDisposed: false }) { setup.Activate(); return; }
         OnboardingForm.Hotkey = Shortcut.Label;
-        setup = new OnboardingForm(settings, tour => { if (tour) ShowTutorial(); });
+        setup = new OnboardingForm(settings, engine.Db, tour => { if (tour) ShowTutorial(); });
         setup.Show();
     }
     OnboardingForm? setup;
@@ -125,7 +125,7 @@ sealed class TrayApp : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
 
         var s = new ToolStripMenuItem(Permissions.MicrophoneOn ? "Settings" : "Settings  ⚠");
-        s.DropDownItems.Add(Item("Blocked Apps & Sites…", () => BlockedAppsForm.ShowFor(settings)));
+        s.DropDownItems.Add(Item("Blocked Apps & Sites…", () => BlockedAppsForm.ShowFor(settings, engine.Db)));
         s.DropDownItems.Add(Item("AI Settings…", () => AiSettingsForm.ShowFor(settings)));
         s.DropDownItems.Add(new ToolStripSeparator());
         s.DropDownItems.Add(ShortcutMenu());

@@ -17,12 +17,12 @@ public sealed class AiTools
     /// What to leave out; null means the block list recording uses right now.
     public Blocklist? Blocked;
 
-    /// True for a frame the block list covers now, by app name, private-window title, or a blocked
+    /// True for a frame the block list covers now, by app name, private-window title, blocked site, or a blocked
     /// word in the title or web address.
     public bool Hides(string app, string window, string url)
     {
         var list = Blocked ?? Blocklist.Current;
-        return list.BlocksWindow(app, app, window) || list.HasKeyword(url);
+        return list.BlocksWindow(app, app, window) || list.BlocksUrl(url) || list.HasKeyword(url);
     }
 
     /// Reads a frame's screenshot as a small JPEG. Set only while the user has turned on

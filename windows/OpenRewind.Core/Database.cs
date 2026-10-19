@@ -191,6 +191,21 @@ public sealed partial class Database : IDisposable
         }
     }
 
+    /// Web pages seen lately, newest first, one row per address: for picking sites to block.
+    public List<RecentPage> RecentPages(int limit = 3000)
+    {
+        lock (gate)
+        {
+            // SQLite fills the bare window_name from the row that has the MAX(timestamp).
+            using var cmd = Cmd("SELECT browser_url, window_name, MAX(timestamp) FROM frames WHERE browser_url LIKE 'http%' " +
+                                "GROUP BY browser_url ORDER BY 3 DESC LIMIT ?", limit);
+            using var r = cmd.ExecuteReader();
+            var out_ = new List<RecentPage>();
+            while (r.Read()) out_.Add(new RecentPage(r.GetString(0), r.GetString(1), r.GetString(2)));
+            return out_;
+        }
+    }
+
     public (int Count, string? Last) Stats()
     {
         var n = (int)ScalarLong("SELECT COUNT(*) FROM frames");

@@ -23,6 +23,8 @@ sealed class Settings
     /// Window titles with any of these words are hidden too (bank sites in a browser).
     public List<string> BlockedKeywords { get; set; } = new();
     public bool BlockPrivateWindows { get; set; } = true;
+    /// Websites and links whose tabs are hidden (see SiteRules): "chase.com", "docs.google.com/document/d/…".
+    public List<string> BlockedSites { get; set; } = new();
     /// The first-run setup has been finished (or skipped).
     public bool OnboardingDone { get; set; } = false;
     /// Download new versions in the background; they are installed only on a click.
@@ -74,7 +76,7 @@ sealed class Settings
     }
 
     /// What recording should hide, from these settings plus OPENREWIND_EXCLUDE.
-    public Blocklist ToBlocklist() => new(BlockedApps, BlockedKeywords, BlockPrivateWindows, Blocklist.EnvNames());
+    public Blocklist ToBlocklist() => new(BlockedApps, BlockedKeywords, BlockPrivateWindows, Blocklist.EnvNames(), BlockedSites);
 
     public AiSettings Ai() => Ai(AiProviders.FromId(AiProvider));
 
