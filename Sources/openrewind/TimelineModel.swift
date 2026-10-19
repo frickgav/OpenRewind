@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Combine
 import ImageIO
+import VisionKit
 
 /// State behind the timeline overlay: which moment is shown, its screenshot, and audio at that moment.
 final class TimelineModel: ObservableObject {
@@ -51,6 +52,12 @@ final class TimelineModel: ObservableObject {
     var highlightWork: DispatchWorkItem?
     var highlightCache: [String: [CGRect]] = [:]
     var highlightOrder: [String] = []
+    /// Clip start and end marked with [ and ], and the Export Clip card while it is open (see ClipExport.swift).
+    @Published var clipStart: Date?
+    @Published var clipEnd: Date?
+    @Published var exportClip: ClipRange?
+    /// Live Text on the shown screenshot, for copying what is selected (see LiveText.swift).
+    weak var liveText: ImageAnalysisOverlayView?
     private var thumbCache: [Int64: NSImage] = [:]
     private var thumbOrder: [Int64] = []
 

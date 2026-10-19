@@ -54,11 +54,6 @@ sealed partial class TimelineModel
         Notify();
     }
 
-    public void SelectAllText()
-    {
-        if (Text is { IsEmpty: false } t) Select(0, t.Words.Count - 1);
-    }
-
     public void ClearSelection() => Select(-1, -1);
 
     /// Read the words of the shown screenshot shortly, unless they are cached or it is blocked now.

@@ -118,6 +118,32 @@ elsewhere. With a local model (Ollama, LM Studio) nothing leaves your computer a
 server reached over plain http on another network gets a warning, since your key would travel
 unencrypted.
 
+## Copy and export
+
+Get things out of the timeline, on the Mac and on Windows:
+
+- **Copy text from the past**: drag across words on any screenshot in the timeline to select
+  them, then **⌘C** / **Ctrl+C**. The Mac uses Live Text (VisionKit); Windows reads the shown
+  screenshot with Windows OCR. Both run on your computer.
+- **Copy Screenshot**: **⌘C** / **Ctrl+C** with no text selected copies the whole screenshot as
+  an image. **Save Screenshot…** (**⌘S** / **Ctrl+S**) saves it as a PNG.
+- **Export Clip…** (**⌘E** / **Ctrl+E**) turns a stretch of the timeline into an MP4 video or an
+  animated GIF. Mark where it starts with **[** and where it ends with **]** (the bar shows the
+  marked range; **Esc** clears it), or leave it unmarked to get the 5 minutes before the shown
+  screenshot. Pick the format and a speed (1× real time, or 2×, 5×, 10×, 30× faster), then
+  where to save it. A bar shows how far it got; **Cancel** stops it and leaves no file.
+- The share button at the top of the timeline (or a right-click on the screenshot on Windows) has
+  all of these, plus **Copy All Text** and **Mark Clip Start / End Here**.
+
+Clips are made from the screenshots already saved, never from a new recording, so blocked apps
+stay blurred. Screenshots from apps, windows or sites that are on your block list now are left
+out (and can't be copied or saved), even ones saved before you blocked them. With the app filter
+on, a clip has only that app's screenshots, as the timeline shows them. A screenshot lasts until
+the next one, at most a minute, so long breaks are skipped. A clip covers at most 2 hours; videos
+are at most 1920 pixels wide and GIFs 1280, with at most 600 pictures (fast parts drop pictures
+to stay under that). MP4 uses H.264 (AVAssetWriter on the Mac, the encoder built into Windows);
+GIFs use ImageIO on the Mac and a small encoder in OpenRewind on Windows.
+
 ## Mac app
 
 ```bash
@@ -143,6 +169,9 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
   shown screenshot) limits the timeline to the moments when one app was in front. Time spent in
   other apps shrinks to breaks on the bar, ← → skip straight between that app's screenshots, and
   search only finds that app's screen text (and speech heard while it was in front).
+- **Copy and export**: drag across text on a screenshot and **⌘C** copies it; with nothing
+  selected **⌘C** copies the screenshot, **⌘S** saves it as a PNG, **[** and **]** mark a clip and
+  **⌘E** exports it as MP4 or GIF. See [Copy and export](#copy-and-export).
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
 - **Settings → Timeline Shortcut**: **Change Shortcut…** waits for the new key combination

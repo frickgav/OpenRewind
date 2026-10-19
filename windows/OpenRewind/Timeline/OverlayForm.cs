@@ -1163,7 +1163,6 @@ sealed class OverlayForm : Form
         if (ctrl && key == Keys.C) { model.Copy(); return true; }
         if (ctrl && key == Keys.S) { model.SaveFrame(this); return true; }
         if (ctrl && key == Keys.E) { ExportClip(); return true; }
-        if (ctrl && key == Keys.A) { model.SelectAllText(); return true; }
         if (key == Keys.OemQuestion && shift) { model.ShowHelp = !model.ShowHelp; Invalidate(); return true; }
         if ((key == Keys.OemQuestion || key == Keys.Divide) && !ctrl) { FocusSearch(); return true; }
         switch (key)
