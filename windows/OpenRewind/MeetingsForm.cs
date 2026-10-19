@@ -11,6 +11,8 @@ sealed class MeetingWatcher : IDisposable
     readonly Database db;
     readonly Settings settings;
     readonly double chunkSeconds;
+    /// Whether Whisper is set up (clips waiting for it are speech still to come).
+    readonly Func<bool> transcribing;
     /// Runs an action on the UI thread.
     readonly Action<Action> ui;
     System.Threading.Timer? timer;
@@ -20,9 +22,9 @@ sealed class MeetingWatcher : IDisposable
     /// Raised on the UI thread when meetings were added, changed or summarized.
     public static event Action? Changed;
 
-    public MeetingWatcher(Database db, Settings settings, double chunkSeconds, Action<Action> ui)
+    public MeetingWatcher(Database db, Settings settings, double chunkSeconds, Func<bool> transcribing, Action<Action> ui)
     {
-        this.db = db; this.settings = settings; this.chunkSeconds = chunkSeconds; this.ui = ui;
+        this.db = db; this.settings = settings; this.chunkSeconds = chunkSeconds; this.transcribing = transcribing; this.ui = ui;
     }
 
     public void Start() => timer = new System.Threading.Timer(_ => Tick(), null, TimeSpan.FromSeconds(20), TimeSpan.FromMinutes(1));
@@ -32,23 +34,54 @@ sealed class MeetingWatcher : IDisposable
         if (Interlocked.Exchange(ref running, 1) == 1) return;
         try
         {
-            var ended = MeetingTracker.Update(db, Blocklist.Current, DateTime.UtcNow, chunkSeconds);
+            var now = DateTime.UtcNow;
+            var ended = MeetingTracker.Update(db, Blocklist.Current, now, chunkSeconds, transcribing());
             foreach (var m in ended) Log.Write($"meeting ended: {m.App}, {m.Start.ToLocalTime():t}–{m.End.ToLocalTime():t}");
+            var late = settings.SummarizeMeetings ? MeetingTracker.Late(db, now) : new();
             ui(() =>
             {
                 Changed?.Invoke();
                 foreach (var m in ended) if (AutoSummarizes(m)) _ = Summarize(m);
+                // Transcripts that came in after the notes were made: make them again, once.
+                foreach (var m in late)
+                    if (!summarizing.Contains(m.Id) && AutoSummarizes(m))
+                    {
+                        db.MarkMeetingRedone(m.Id);
+                        Log.Write($"meeting {m.Id}: more of it was transcribed, summarizing again");
+                        _ = Summarize(m);
+                    }
             });
         }
         catch (Exception e) { Log.Write($"meeting check failed: {e.Message}"); }
         finally { Interlocked.Exchange(ref running, 0); }
     }
 
-    /// Only meetings that ended after the user turned the setting on, so turning it on does not
-    /// spend tokens on older ones.
+    /// Only meetings that ended after the user turned the setting on (so turning it on does not spend
+    /// tokens on older ones), and only to the provider they agreed to.
     bool AutoSummarizes(Meeting m) =>
-        settings.SummarizeMeetings && settings.SummarizeMeetingsSince is DateTime since && m.End >= since
-        && settings.Ai().IsReady && !MeetingDetector.Hides(Blocklist.Current, m);
+        MeetingNotes.AutoSummarizes(m, settings.SummarizeMeetings, settings.SummarizeMeetingsSince, settings.SummarizeMeetingsProvider,
+                                    settings.Ai(), Blocklist.Current);
+
+    /// After AI Settings change: summaries were agreed to for another provider, so ask before sending
+    /// transcripts to this one. Call on the UI thread.
+    public static void RecheckConsent(Settings settings, IWin32Window? owner)
+    {
+        if (!settings.SummarizeMeetings) return;
+        var ai = settings.Ai();
+        var key = MeetingNotes.ConsentKey(ai);
+        if (settings.SummarizeMeetingsProvider == key || !ai.IsReady) return;
+        var was = settings.SummarizeMeetingsProvider is string old ? AiProviders.FromId(old.Split(' ')[0]).Title() : "another provider";
+        var text = $"Meeting summaries were turned on for {was}. AI Settings now use {ai.Kind.Title()}"
+                 + (ai.Kind == AiProviderKind.Custom ? $" ({ai.BaseUrl})" : "") + ".\n\n"
+                 + $"Send each meeting's transcript to {ai.Kind.Title()} from now on? It uses your key and costs tokens. "
+                 + "If you choose No, meeting summaries are turned off.";
+        var yes = MessageBox.Show(owner, text, "Summarize meetings with the new provider?", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                                  MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+        if (yes) settings.SummarizeMeetingsProvider = key;
+        else { settings.SummarizeMeetings = false; settings.SummarizeMeetingsSince = null; settings.SummarizeMeetingsProvider = null; }
+        settings.Save();
+        Log.Write(yes ? "meeting summaries moved to the new provider" : "meeting summaries off (provider changed)");
+    }
 
     public bool IsSummarizing(long id) => summarizing.Contains(id);
 
@@ -60,12 +93,16 @@ sealed class MeetingWatcher : IDisposable
         if (!summarizing.Add(m.Id)) return null;
         Changed?.Invoke();
         var price = settings.AiPriceFor(ai.Model);
+        var segments = 0;
         try
         {
-            var lines = await Task.Run(() => db.MeetingTranscriptLines(m));
-            var r = await MeetingNotes.Summarize(new AiClient(ai), m, lines);
+            m = db.MeetingById(m.Id) ?? m;
+            var segs = await Task.Run(() => db.MeetingSegments(m.Start, m.End));
+            segments = segs.Count;
+            // AiClient gives up after 180 seconds, so a request that hangs ends as a failed summary.
+            var r = await MeetingNotes.Summarize(new AiClient(ai), m, MeetingTranscript.Build(segs));
             var cost = r.Usage.Cost(price);
-            db.SaveMeetingNotes(m.Id, r.Notes, ai.Model, r.Usage, cost);
+            db.SaveMeetingNotes(m.Id, r.Notes, ai.Model, r.Usage, cost, segments);
             settings.AddAiUsage(ai.Kind, r.Usage, cost);
             Log.Write($"meeting {m.Id} summarized with {ai.Model}: {r.Usage.Describe(price)}");
             return null;
@@ -73,7 +110,7 @@ sealed class MeetingWatcher : IDisposable
         catch (Exception e)
         {
             var msg = e is AiException ? e.Message : $"Something went wrong: {e.Message}";
-            db.MeetingFailed(m.Id, msg);
+            db.MeetingFailed(m.Id, msg, segments);
             Log.Write($"meeting {m.Id} summary failed: {msg}");
             return msg;
         }
@@ -269,12 +306,24 @@ sealed class MeetingsForm : Form
         var fresh = db.MeetingById(m.Id) ?? m;
         var busy = watcher.IsSummarizing(fresh.Id);
         if (fresh == shown && busy == shownBusy) return;
+        var same = shown?.Id == fresh.Id;
         shown = fresh;
         shownBusy = busy;
+        // A meeting in progress changes every minute: keep the reader's place in it.
+        var at = new ScrollPoint();
+        if (same) SendMessage(body.Handle, EM_GETSCROLLPOS, IntPtr.Zero, ref at);
+        body.SuspendLayout();
         Display(fresh);
+        if (same) SendMessage(body.Handle, EM_SETSCROLLPOS, IntPtr.Zero, ref at);
+        else { body.SelectionStart = 0; body.ScrollToCaret(); }
+        body.ResumeLayout();
     }
 
     bool shownBusy;
+
+    const int EM_GETSCROLLPOS = 0x0400 + 221, EM_SETSCROLLPOS = 0x0400 + 222;
+    struct ScrollPoint { public int X, Y; }
+    [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wParam, ref ScrollPoint lParam);
 
     void Display(Meeting m)
     {
@@ -308,8 +357,6 @@ sealed class MeetingsForm : Form
             Append(l.Speaker + ": ", l.Speaker == MeetingTranscript.Me ? Ui.AccentHi : Ui.Good, Ui.F(14 * k, true));
             Append(l.Text + "\n\n", Ui.Text, Ui.F(14 * k));
         }
-        body.SelectionStart = 0;
-        body.ScrollToCaret();
     }
 
     void Section(string heading, string text)

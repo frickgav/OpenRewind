@@ -39,6 +39,7 @@ public sealed partial class Database
         var (where, args) = Range("timestamp", from, to);
         var paths = Strings($"SELECT snapshot_path FROM frames {where}", args);
         if (paths.Count == 0) return 0;
+        ForgetMeetingWindows(from, to);
         Run($"DELETE FROM frames {where}", args);  // FTS rows go with it (trigger frames_ad)
         RemoveFiles(paths);
         return paths.Count;

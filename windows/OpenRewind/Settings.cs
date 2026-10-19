@@ -63,6 +63,9 @@ sealed class Settings
     public bool SummarizeMeetings { get; set; }
     /// When it was turned on (UTC). Only meetings that end after this are summarized by themselves.
     public DateTime? SummarizeMeetingsSince { get; set; }
+    /// The provider and server the user agreed to send transcripts to (MeetingNotes.ConsentKey).
+    /// Summaries pause, and the user is asked again, when AI Settings point somewhere else.
+    public string? SummarizeMeetingsProvider { get; set; }
 
     string path = "";
 

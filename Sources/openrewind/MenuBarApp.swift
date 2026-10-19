@@ -41,7 +41,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }()
 
     /// Finds meetings once a minute; the Meetings window and the AI notes read what it stores.
-    private lazy var meetings = MeetingCenter(db: engine.db, chunkSeconds: engine.config.audioChunkSeconds)
+    private lazy var meetings = MeetingCenter(db: engine.db, chunkSeconds: engine.config.audioChunkSeconds,
+                                              transcribing: { [weak self] in self?.engine.transcriber != nil })
 
     init(engine: Engine) {
         self.engine = engine
@@ -158,10 +159,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let a = NSAlert()
         a.messageText = "Summarize meetings with AI?"
-        a.informativeText = "After each meeting ends, OpenRewind sends what was said (the transcript) to \(ai.kind.title) using your key, "
-            + "to write a summary, decisions and action items.\n\nThis costs tokens on your account, and \(ai.kind.title)'s privacy terms apply. "
-            + "Meetings in blocked apps and sites are never sent. Only meetings from now on are summarized; you can still summarize "
-            + "any meeting yourself in the Meetings window."
+        a.informativeText = Self.meetingConsentText(ai.kind.title)
         a.addButton(withTitle: "Turn On")
         a.addButton(withTitle: "Cancel")
         guard a.runModal() == .alertFirstButtonReturn else { return }
@@ -169,9 +167,43 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         log("meeting summaries with AI on")
     }
 
+    /// What turning on meeting summaries sends, and where. Same words as the Windows app.
+    static func meetingConsentText(_ provider: String) -> String {
+        "After each meeting ends, OpenRewind sends its whole transcript (what was said and heard during the call) to \(provider) "
+            + "using your key, to write a summary, decisions and action items.\n\n"
+            + "This costs tokens on your account, and \(provider)'s privacy terms apply. Calls in blocked apps and sites never become "
+            + "meetings, but the transcript is not filtered by app: anything said or played during a call is sent, even while a blocked "
+            + "app or site was in front.\n\nOnly meetings from now on are summarized, and only to \(provider): if you switch providers "
+            + "in AI Settings, OpenRewind asks again. You can still summarize any meeting yourself in the Meetings window."
+    }
+
+    /// After AI Settings change: summaries were agreed to for another provider, so ask before sending
+    /// transcripts to this one.
+    private func recheckMeetingConsent() {
+        guard MeetingCenter.needsNewConsent else { return }
+        let ai = AISettings.load()
+        let a = NSAlert()
+        a.messageText = "Summarize meetings with the new provider?"
+        a.informativeText = "Meeting summaries were turned on for \(MeetingCenter.consentTitle). AI Settings now use \(ai.kind.title)"
+            + (ai.kind == .custom ? " (\(ai.baseURL))" : "") + ".\n\nSend each meeting's transcript to \(ai.kind.title) from now on? "
+            + "It uses your key and costs tokens. If you choose Turn Off, meeting summaries are turned off."
+        a.addButton(withTitle: "Turn Off")
+        a.addButton(withTitle: "Use \(ai.kind.title)")
+        if a.runModal() == .alertSecondButtonReturn {
+            MeetingCenter.consent = MeetingNotes.consentKey(ai)
+            log("meeting summaries moved to the new provider")
+        } else {
+            MeetingCenter.autoSummarize = false
+            log("meeting summaries off (provider changed)")
+        }
+    }
+
     @objc private func showAISettings() {
         SetupWindows.shared.show("aiSettings", title: "AI Settings", size: NSSize(width: 560, height: 840)) {
-            AISettingsView { [weak self] in self?.aiChat.reloadSettings() }
+            AISettingsView { [weak self] in
+                self?.aiChat.reloadSettings()
+                self?.recheckMeetingConsent()
+            }
         }
     }
 

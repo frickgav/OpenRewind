@@ -52,7 +52,7 @@ sealed class TrayApp : ApplicationContext
         updater.Start();
 
         // Finds meetings once a minute; the window and the AI notes read what it stores.
-        meetings = new MeetingWatcher(engine.Db, settings, engine.Config.AudioChunkSeconds, a => overlay.BeginInvoke(a));
+        meetings = new MeetingWatcher(engine.Db, settings, engine.Config.AudioChunkSeconds, () => engine.Transcriber != null, a => overlay.BeginInvoke(a));
         meetings.Start();
 
         // Ctrl+Alt+T (or the shortcut picked in Settings) opens the timeline from anywhere.
@@ -83,6 +83,15 @@ sealed class TrayApp : ApplicationContext
 
     void ShowMeetings() => MeetingsForm.ShowFor(engine.Db, settings, meetings, OpenMoment, OpenAiSettings);
 
+    /// What turning on meeting summaries sends, and where. Same words as the Mac app.
+    static string MeetingConsentText(string provider) =>
+        $"After each meeting ends, OpenRewind sends its whole transcript (what was said and heard during the call) to {provider} "
+        + "using your key, to write a summary, decisions and action items.\n\n"
+        + $"This costs tokens on your account, and {provider}'s privacy terms apply. Calls in blocked apps and sites never become "
+        + "meetings, but the transcript is not filtered by app: anything said or played during a call is sent, even while a blocked "
+        + $"app or site was in front.\n\nOnly meetings from now on are summarized, and only to {provider}: if you switch providers "
+        + "in AI Settings, OpenRewind asks again. You can still summarize any meeting yourself in the Meetings window.";
+
     /// Turning it on says plainly what it sends and that it costs tokens.
     void ToggleMeetingSummaries()
     {
@@ -90,6 +99,7 @@ sealed class TrayApp : ApplicationContext
         {
             settings.SummarizeMeetings = false;
             settings.SummarizeMeetingsSince = null;
+            settings.SummarizeMeetingsProvider = null;
             settings.Save();
             return;
         }
@@ -100,13 +110,11 @@ sealed class TrayApp : ApplicationContext
                                 "Summarize Meetings with AI", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) == DialogResult.OK) OpenAiSettings();
             return;
         }
-        var text = $"After each meeting ends, OpenRewind sends what was said (the transcript) to {ai.Kind.Title()} using your key, "
-                 + "to write a summary, decisions and action items.\n\n"
-                 + $"This costs tokens on your account, and {ai.Kind.Title()}'s privacy terms apply. Meetings in blocked apps and sites are never sent. "
-                 + "Only meetings from now on are summarized; you can still summarize any meeting yourself in the Meetings window.";
+        var text = MeetingConsentText(ai.Kind.Title());
         if (MessageBox.Show(text, "Summarize meetings with AI?", MessageBoxButtons.OKCancel, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.OK) return;
         settings.SummarizeMeetings = true;
         settings.SummarizeMeetingsSince = DateTime.UtcNow;
+        settings.SummarizeMeetingsProvider = MeetingNotes.ConsentKey(ai);
         settings.Save();
         Log.Write("meeting summaries with AI on");
     }

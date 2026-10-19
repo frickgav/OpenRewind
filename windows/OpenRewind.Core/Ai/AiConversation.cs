@@ -64,7 +64,7 @@ public sealed class AiConversation
                 foreach (var call in reply.ToolCalls)
                 {
                     var (result, image) = await Task.Run(() => tools.Execute(call), ct);
-                    seenUrls.UnionWith(WebAddresses(result));
+                    if (AiTools.SuppliesLinks(call.Name)) seenUrls.UnionWith(WebAddresses(result));
                     history.Add(new AiMessage { Role = AiRole.Tool, Text = result, ToolCallId = call.Id, ToolName = call.Name, Image = image });
                     var detail = image == null ? result : $"{result}\n\n[+ the screenshot as a JPEG image, {image.Length / 1024:N0} KB]";
                     add(new AiChatItem(AiChatKind.Tool, AiTools.Describe(call), detail, AiTools.Arguments(call)));

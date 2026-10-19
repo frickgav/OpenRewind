@@ -92,6 +92,10 @@ public sealed class AiTools
     static JsonObject Int(string d) => new() { ["type"] = "integer", ["description"] = d };
     static JsonObject TimeArg(string d) => Str(d + " Local time like '2026-10-18 14:30', or 'today', 'yesterday', '2h ago'.");
 
+    /// Whether web addresses in this lookup's answer may open from Ask AI's reply. Not for meeting
+    /// notes: a model wrote them from what other people said on a call.
+    public static bool SuppliesLinks(string tool) => tool != "list_meetings";
+
     /// A short line for the chat window: what was looked up.
     public static string Describe(AiToolCall call)
     {

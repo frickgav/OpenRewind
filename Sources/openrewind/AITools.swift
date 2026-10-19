@@ -99,6 +99,10 @@ struct AITools {
         ["type": "string", "description": d + " Local time like '2026-10-18 14:30', or 'today', 'yesterday', '2h ago'."]
     }
 
+    /// Whether web addresses in this lookup's answer may open from Ask AI's reply. Not for meeting
+    /// notes: a model wrote them from what other people said on a call.
+    static func suppliesLinks(_ tool: String) -> Bool { tool != "list_meetings" }
+
     /// A short line for the chat window: what was looked up.
     static func describe(_ call: AIToolCall) -> String {
         let a = call.args
