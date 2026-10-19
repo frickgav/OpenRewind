@@ -38,6 +38,15 @@ sealed class Settings
     /// Timeline Look: "system", "light" or "dark".
     public string TimelineLook { get; set; } = "system";
 
+    /// AI: the picked provider, and per provider (by AiProviders.Id) the model, server address and
+    /// models seen. API keys are in the Windows Credential Manager (AiKeyStore), not here.
+    public string AiProvider { get; set; } = "anthropic";
+    public Dictionary<string, string> AiModel { get; set; } = new();
+    public Dictionary<string, string> AiBaseUrl { get; set; } = new();
+    public Dictionary<string, List<string>> AiModels { get; set; } = new();
+    /// The user has read what gets sent to the provider.
+    public bool AiPrivacyAccepted { get; set; }
+
     string path = "";
 
     public static Settings Load(string home)
@@ -58,6 +67,32 @@ sealed class Settings
 
     /// What recording should hide, from these settings plus OPENREWIND_EXCLUDE.
     public Blocklist ToBlocklist() => new(BlockedApps, BlockedKeywords, BlockPrivateWindows, Blocklist.EnvNames());
+
+    public AiSettings Ai() => Ai(AiProviders.FromId(AiProvider));
+
+    public AiSettings Ai(AiProviderKind k) =>
+        new(k, AiModel.GetValueOrDefault(k.Id()) ?? k.SuggestedModels().FirstOrDefault() ?? "",
+            AiBaseUrl.GetValueOrDefault(k.Id()) ?? k.DefaultBaseUrl(), AiKeyStore.Get(k.Id()));
+
+    public void SaveAi(AiSettings s)
+    {
+        AiProvider = s.Kind.Id();
+        AiModel[s.Kind.Id()] = s.Model;
+        AiBaseUrl[s.Kind.Id()] = s.BaseUrl;
+        AiKeyStore.Set(s.Kind.Id(), s.Key);
+        RememberModels(s.Kind, new[] { s.Model });
+    }
+
+    /// Models the user typed or fetched, so new ones stay in the list without an app update.
+    public List<string> SavedModels(AiProviderKind k) =>
+        k.SuggestedModels().Concat(AiModels.GetValueOrDefault(k.Id()) ?? new()).Distinct().ToList();
+
+    public void RememberModels(AiProviderKind k, IEnumerable<string> models)
+    {
+        if (!AiModels.TryGetValue(k.Id(), out var list)) AiModels[k.Id()] = list = new();
+        foreach (var m in models) if (m.Length > 0 && !list.Contains(m)) list.Add(m);
+        Save();
+    }
 
     public KeepFor Screen => KeepForInfo.FromRaw(KeepScreen) ?? KeepFor.Forever;
     public KeepFor Audio => KeepForInfo.FromRaw(KeepAudio) ?? KeepFor.Forever;
