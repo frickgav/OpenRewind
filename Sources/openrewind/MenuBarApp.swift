@@ -40,6 +40,9 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return m
     }()
 
+    /// Finds meetings once a minute; the Meetings window and the AI notes read what it stores.
+    private lazy var meetings = MeetingCenter(db: engine.db, chunkSeconds: engine.config.audioChunkSeconds)
+
     init(engine: Engine) {
         self.engine = engine
         super.init()
@@ -96,6 +99,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let until = pausedUntil { schedulePause(until) } else { applyRecordingPrefs() }
         retention = RetentionJob(db: engine.db, screen: keep(keepScreenKey), audio: keep(keepAudioKey))
         retention.start()
+        meetings.start()
 
         // ⌥⌘T (or the shortcut picked in Settings) opens the timeline from anywhere.
         registerHotKey(Shortcut.load(defaults))
@@ -123,6 +127,46 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         SetupWindows.shared.show("ai", title: "Ask OpenRewind", size: NSSize(width: 560, height: 720), resizable: true) {
             AIChatView(model: chat)
         }
+    }
+
+    @objc private func showMeetings() {
+        let model = MeetingsModel(db: engine.db)
+        model.openMoment = { [weak self] d in self?.overlay.show(at: d) }
+        model.openSettings = { [weak self] in self?.showAISettings() }
+        let center = meetings
+        SetupWindows.shared.show("meetings", title: "Meetings", size: NSSize(width: 1000, height: 700), resizable: true) {
+            MeetingsView(model: model, center: center)
+        }
+    }
+
+    /// Turning it on says plainly what it sends and that it costs tokens.
+    @objc private func toggleMeetingSummaries() {
+        if MeetingCenter.autoSummarize {
+            MeetingCenter.autoSummarize = false
+            return
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        let ai = AISettings.load()
+        guard ai.isReady else {
+            let a = NSAlert()
+            a.messageText = "Summarize Meetings with AI"
+            a.informativeText = "Meeting summaries use your own AI key. Set up a provider in AI Settings first, then turn this on."
+            a.addButton(withTitle: "Open AI Settings…")
+            a.addButton(withTitle: "Cancel")
+            if a.runModal() == .alertFirstButtonReturn { showAISettings() }
+            return
+        }
+        let a = NSAlert()
+        a.messageText = "Summarize meetings with AI?"
+        a.informativeText = "After each meeting ends, OpenRewind sends what was said (the transcript) to \(ai.kind.title) using your key, "
+            + "to write a summary, decisions and action items.\n\nThis costs tokens on your account, and \(ai.kind.title)'s privacy terms apply. "
+            + "Meetings in blocked apps and sites are never sent. Only meetings from now on are summarized; you can still summarize "
+            + "any meeting yourself in the Meetings window."
+        a.addButton(withTitle: "Turn On")
+        a.addButton(withTitle: "Cancel")
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        MeetingCenter.autoSummarize = true
+        log("meeting summaries with AI on")
     }
 
     @objc private func showAISettings() {
@@ -174,6 +218,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(tl)
         menu.addItem(action("Search…", #selector(openSearch)))
         menu.addItem(action("Ask AI…", #selector(showAIChat)))
+        menu.addItem(action("Meetings…", #selector(showMeetings)))
         menu.addItem(action("Show Data Folder", #selector(openData)))
         for line in storageLines() {
             let i = NSMenuItem(title: "  " + line, action: nil, keyEquivalent: "")
@@ -259,6 +304,10 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let m = NSMenu()
         m.addItem(action("Blocked Apps & Sites…", #selector(showBlockedApps)))
         m.addItem(action("AI Settings…", #selector(showAISettings)))
+        let summaries = action("Summarize Meetings with AI", #selector(toggleMeetingSummaries))
+        summaries.state = MeetingCenter.autoSummarize ? .on : .off
+        summaries.toolTip = "Off by default. When on, each meeting's transcript is sent to your AI provider after it ends, for a summary and action items. This uses your key and costs tokens."
+        m.addItem(summaries)
         m.addItem(.separator())
         let sc = Shortcut.load(defaults)
         let shortcut = NSMenuItem(title: "Timeline Shortcut: \(sc.label)", action: nil, keyEquivalent: "")

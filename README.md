@@ -83,6 +83,8 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
 - **Ask AI** (menu bar or tray → Ask AI…) answers questions like "what did I work on today?"
   with your own key: Anthropic, OpenAI, Gemini, OpenRouter (any model it offers), or any
   OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
+- **Meetings** (menu bar or tray → Meetings…) lists your Zoom, Teams, Meet, Webex, FaceTime and
+  Slack huddle calls with their transcript, and can summarize them with your AI key. See [Meetings](#meetings).
 
 ## Ask AI
 
@@ -105,6 +107,7 @@ send back capped, trimmed text:
 | `search_audio` | Matching transcript lines (or all of them in a time range) |
 | `get_screen_text` | Screen text from a short time range, sampled and trimmed |
 | `view_screenshot` | One screenshot near a moment, as a JPEG. Only offered when you turn on **Let AI look at screenshots** (off by default) |
+| `list_meetings` | Meetings in a time range, with their summary, decisions and action items when they have notes (see [Meetings](#meetings)) |
 
 Each lookup shows in the chat with the arguments the AI asked for and exactly what was sent
 back. Times in answers link back to that moment in the timeline. Each answer shows the
@@ -117,6 +120,28 @@ supplied that address, so text on screen can't trick the AI into a link that sen
 elsewhere. With a local model (Ollama, LM Studio) nothing leaves your computer at all; a custom
 server reached over plain http on another network gets a warning, since your key would travel
 unencrypted.
+
+## Meetings
+
+OpenRewind finds your calls in what it already records; nothing extra runs during a call.
+A meeting starts when Zoom, Microsoft Teams, Webex, FaceTime or a Slack huddle is the app in front,
+or the browser in front shows Google Meet, Teams, Zoom or Webex, and there is sound. It goes on while
+that app is in front or you talk; other sound alone (a video) keeps it going for at most 15 minutes
+after the app was last in front. It ends after 3 minutes with none of these, and calls in the same app
+less than 10 minutes apart (a dropped call, a rejoin) become one. It shows up a few minutes after it
+starts, marked In progress until it ends. Blocked apps and sites never become meetings.
+
+**Meetings…** in the menu bar or tray lists them by day. Each one shows its transcript, built from the
+audio transcripts of that time: lines from your microphone are **Me**, lines from system audio are
+**Others** (OpenRewind does not tell people apart). **Open in Timeline** jumps to the start,
+**Copy as Markdown** and **Save as Markdown…** export the notes and transcript.
+
+**Summaries are off by default.** They use your Ask AI provider and key, cost tokens, and send the
+meeting's transcript to that provider. Turn on **Settings → Summarize Meetings with AI** to have each
+meeting summarized when it ends (only meetings that end after you turn it on), or press **Summarize** on
+one meeting. You get a short summary, decisions and action items, with the tokens and cost it used, as
+in Ask AI. Ask AI can read them too: "what did we decide in my 2pm call?" Deleting audio recordings
+deletes the meetings in that time.
 
 ## Mac app
 
@@ -320,7 +345,6 @@ Delete the folder to wipe everything, or from the terminal:
 ## Not yet (Rewind had these)
 
 - Speaker identification (who said what)
-- Meeting summaries (Ask AI can summarize transcripts when asked, but nothing runs on its own)
 - UI input events (clicks, keys)
 - Browser URL per frame
 - Video chunk encoding (ffmpeg) instead of JPEGs

@@ -39,9 +39,11 @@ extension Database {
         return paths.count
     }
 
-    /// Delete audio chunks with `from <= timestamp < to`, their transcripts and WAV files.
+    /// Delete audio chunks with `from <= timestamp < to`, their transcripts and WAV files, and the
+    /// meeting notes made from them.
     @discardableResult
     func deleteAudio(from: Date?, to: Date?) -> Int {
+        deleteMeetings(from: from, to: to)
         let (whereSQL, args) = Self.range("timestamp", from, to)
         let paths = strings("SELECT file_path FROM audio_chunks \(whereSQL)", args)
         guard !paths.isEmpty else { return 0 }
