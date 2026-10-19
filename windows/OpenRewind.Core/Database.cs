@@ -138,6 +138,9 @@ public sealed partial class Database : IDisposable
         // Added later: older databases do not have this column yet.
         if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'browser_url'") == 0)
             Exec("ALTER TABLE frames ADD COLUMN browser_url TEXT NOT NULL DEFAULT ''");
+        // Insights reads app, window and address in time order; with this index it never touches the
+        // screen text. Created once (a few seconds on a big database). The Mac app adds the same index.
+        Exec("CREATE INDEX IF NOT EXISTS idx_frames_activity ON frames(timestamp, app_name, window_name, browser_url)");
     }
 
     // MARK: frames
