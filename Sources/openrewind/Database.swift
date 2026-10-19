@@ -101,6 +101,9 @@ final class Database {
         if scalarInt("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'browser_url'", []) == 0 {
             try exec("ALTER TABLE frames ADD COLUMN browser_url TEXT NOT NULL DEFAULT ''")
         }
+        // Insights reads app, window and address in time order; with this index it never touches the
+        // screen text. Created once (a few seconds on a big database). Windows adds the same index.
+        try exec("CREATE INDEX IF NOT EXISTS idx_frames_activity ON frames(timestamp, app_name, window_name, browser_url)")
     }
 
     func exec(_ sql: String) throws {

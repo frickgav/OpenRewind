@@ -248,6 +248,18 @@ final class TimelineModel: ObservableObject {
 
     func jumpToNow() { stopAudio(); show(frames.count - 1) }
 
+    /// Go to a moment, loading enough history, showing only `app` when given (Insights).
+    func open(at date: Date, app: String?) {
+        if date < loadedSince { reload(hours: Date().timeIntervalSince(date) / 3600 + 1) }
+        if app == nil {
+            setAppFilter(nil)
+        } else if let app, app != appFilter, allFrames.contains(where: { $0.appName == app }) {
+            setAppFilter(app)
+            show(notice: "Only showing \(app). Press A for all apps.")
+        }
+        jump(to: date)
+    }
+
     /// Last frame at or before `date` (binary search; frames are sorted by time).
     func frameIndex(at date: Date) -> Int {
         var lo = 0, hi = frames.count - 1, best = 0
