@@ -21,12 +21,16 @@ public sealed class Blocklist
     public IReadOnlyList<string> Keywords { get; }
     /// Hide private / incognito browser windows.
     public bool PrivateWindows { get; }
+    /// Websites and links (see SiteRules): a browser tab showing one is hidden.
+    public IReadOnlyList<string> Sites { get; }
 
     readonly HashSet<string> keys;
     readonly Regex? keywordRx;
 
-    public Blocklist(IEnumerable<BlockedApp> apps, IEnumerable<string> keywords, bool privateWindows, IEnumerable<string>? extraNames = null)
+    public Blocklist(IEnumerable<BlockedApp> apps, IEnumerable<string> keywords, bool privateWindows, IEnumerable<string>? extraNames = null,
+                     IEnumerable<string>? sites = null)
     {
+        Sites = (sites ?? Array.Empty<string>()).Select(SiteRules.Normalize).OfType<string>().Distinct().ToList();
         Apps = apps.ToList();
         Keywords = keywords.Select(k => k.Trim()).Where(k => k.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         PrivateWindows = privateWindows;
@@ -58,6 +62,14 @@ public sealed class Blocklist
 
     public bool BlocksWindow(string? id, string? name, string? title) =>
         BlocksApp(id, name) || (PrivateWindows && IsPrivateTitle(title)) || HasKeyword(title);
+
+    /// True when the address is one of the blocked sites or links.
+    public bool BlocksUrl(string? url) => Sites.Count > 0 && Sites.Any(r => SiteRules.Matches(r, url));
+
+    /// For something already recorded, where only the app name, window title and address are known
+    /// (search results, the timeline, anything that reads stored frames).
+    public bool BlocksFrame(string? appName, string? windowName, string? url) =>
+        BlocksWindow(null, appName, windowName) || BlocksUrl(url);
 
     public bool HasKeyword(string? title) => keywordRx != null && !string.IsNullOrEmpty(title) && keywordRx.IsMatch(title);
 
@@ -103,5 +115,12 @@ public static class BlockCatalog
     {
         "Online Banking", "Bank of America", "Chase", "Wells Fargo", "Citibank", "Capital One", "PayPal", "Venmo",
         "Coinbase", "Robinhood", "Fidelity", "Charles Schwab", "Vanguard", "American Express", "Ally Bank",
+    };
+
+    /// The same banks and money sites by address, so their tabs are hidden whatever the page title says.
+    public static readonly string[] BankingDomains =
+    {
+        "bankofamerica.com", "chase.com", "wellsfargo.com", "citi.com", "capitalone.com", "paypal.com", "venmo.com",
+        "coinbase.com", "robinhood.com", "fidelity.com", "schwab.com", "vanguard.com", "americanexpress.com", "ally.com",
     };
 }
