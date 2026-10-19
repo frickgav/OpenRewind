@@ -31,6 +31,8 @@ extension Database {
     /// Delete frames with `from <= timestamp < to`. nil = open end. Returns frames deleted.
     @discardableResult
     func deleteFrames(from: Date?, to: Date?) -> Int {
+        // A recap is made from its day's recordings, so it goes with them.
+        deleteRecaps(from: from, to: to)
         let (whereSQL, args) = Self.range("timestamp", from, to)
         let paths = strings("SELECT snapshot_path FROM frames \(whereSQL)", args)
         guard !paths.isEmpty else { return 0 }
@@ -42,6 +44,7 @@ extension Database {
     /// Delete audio chunks with `from <= timestamp < to`, their transcripts and WAV files.
     @discardableResult
     func deleteAudio(from: Date?, to: Date?) -> Int {
+        deleteRecaps(from: from, to: to)
         let (whereSQL, args) = Self.range("timestamp", from, to)
         let paths = strings("SELECT file_path FROM audio_chunks \(whereSQL)", args)
         guard !paths.isEmpty else { return 0 }

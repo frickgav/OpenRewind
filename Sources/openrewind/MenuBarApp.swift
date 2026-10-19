@@ -39,6 +39,16 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         return m
     }()
+    /// The journal keeps the day it shows while its window is closed.
+    private lazy var journal: JournalModel = {
+        let m = JournalModel(db: engine.db)
+        m.openMoment = { [weak self] d in self?.overlay.show(at: d) }
+        m.openSettings = { [weak self] in self?.showAISettings() }
+        return m
+    }()
+    /// Checks every few minutes whether yesterday's recap is due (Write Each Day's Recap Automatically).
+    private var recapTimer: Timer?
+    private var writingRecap = false
 
     init(engine: Engine) {
         self.engine = engine
@@ -102,6 +112,48 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Updater.shared.start()
         updateIcon()
         if !BlocklistStore.shared.onboardingDone { showSetup() }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in self?.writeDueRecap() }
+        recapTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in self?.writeDueRecap() }
+    }
+
+    @objc private func showJournal() {
+        let j = journal
+        j.reload()
+        SetupWindows.shared.show("journal", title: "Journal", size: NSSize(width: 620, height: 800), resizable: true) {
+            JournalView(model: j)
+        }
+    }
+
+    /// Write Each Day's Recap Automatically: yesterday's recap, once, the first time the app runs
+    /// after the day ended. Days with nothing recorded, or with a recap already, are skipped.
+    private func writeDueRecap() {
+        guard JournalSettings.autoRecap, !writingRecap else { return }
+        let s = AISettings.load()
+        guard s.isReady, let key = Journal.autoRecapDay(now: Date(), lastDone: JournalSettings.lastAutoDay),
+              let day = Journal.date(fromKey: key) else { return }
+        JournalSettings.lastAutoDay = key
+        let db = engine.db
+        guard db.recap(day: key) == nil else { return }
+        writingRecap = true
+        let tools = JournalModel.tools(db), price = AISettings.price(for: s.model)
+        Task { @MainActor [weak self] in
+            defer { self?.writingRecap = false }
+            let stats = await Task.detached { db.journalStats(day: day, tools: tools) }.value
+            guard !stats.isEmpty else { return }
+            let r = await JournalWriter.write(day: day, client: AIClient(settings: s), tools: tools, price: price)
+            AISettings.add(r.usage, cost: r.cost, to: s.kind)
+            if let e = r.error { log("automatic journal recap for \(key) failed: \(e)"); return }
+            db.saveRecap(JournalRecap(day: key, text: r.text, created: Date(), provider: s.kind.rawValue,
+                                      model: s.model, usage: r.usage, cost: r.cost))
+            log("wrote the journal recap for \(key) (\(r.usage.describe(price)))")
+            if let j = self?.journal, Journal.key(j.day) == key { j.reload() }
+        }
+    }
+
+    @objc private func toggleAutoRecap() {
+        JournalSettings.autoRecap.toggle()
+        journal.autoRecap = JournalSettings.autoRecap
     }
 
     /// The first-run setup; ends in the guided tour if the user asks for it.
@@ -127,7 +179,10 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func showAISettings() {
         SetupWindows.shared.show("aiSettings", title: "AI Settings", size: NSSize(width: 560, height: 840)) {
-            AISettingsView { [weak self] in self?.aiChat.reloadSettings() }
+            AISettingsView { [weak self] in
+                self?.aiChat.reloadSettings()
+                self?.journal.reload()
+            }
         }
     }
 
@@ -174,6 +229,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(tl)
         menu.addItem(action("Search…", #selector(openSearch)))
         menu.addItem(action("Ask AI…", #selector(showAIChat)))
+        menu.addItem(action("Journal…", #selector(showJournal)))
         menu.addItem(action("Show Data Folder", #selector(openData)))
         for line in storageLines() {
             let i = NSMenuItem(title: "  " + line, action: nil, keyEquivalent: "")
@@ -259,6 +315,10 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let m = NSMenu()
         m.addItem(action("Blocked Apps & Sites…", #selector(showBlockedApps)))
         m.addItem(action("AI Settings…", #selector(showAISettings)))
+        let autoRecap = action("Write Each Day's Recap Automatically", #selector(toggleAutoRecap))
+        autoRecap.state = JournalSettings.autoRecap ? .on : .off
+        autoRecap.toolTip = "Off by default, since it spends tokens. Once a day, the AI provider in AI Settings writes the previous day's journal recap."
+        m.addItem(autoRecap)
         m.addItem(.separator())
         let sc = Shortcut.load(defaults)
         let shortcut = NSMenuItem(title: "Timeline Shortcut: \(sc.label)", action: nil, keyEquivalent: "")
