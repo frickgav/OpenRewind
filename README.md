@@ -81,8 +81,8 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
   whisper.cpp). Transcripts go into their own FTS5 index and show up in the
   same search as screen text.
 - **Ask AI** (menu bar or tray → Ask AI…) answers questions like "what did I work on today?"
-  with your own key: Anthropic, OpenAI, Gemini, or any OpenAI-compatible server (Ollama,
-  LM Studio, OpenRouter). See [Ask AI](#ask-ai).
+  with your own key: Anthropic, OpenAI, Gemini, OpenRouter (any model it offers), or any
+  OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
 
 ## Ask AI
 
@@ -101,10 +101,14 @@ send back capped, trimmed text:
 | `search_screen` | Matching moments from the screen-text search, with a short snippet |
 | `search_audio` | Matching transcript lines (or all of them in a time range) |
 | `get_screen_text` | Screen text from a short time range, sampled and trimmed |
+| `view_screenshot` | One screenshot near a moment, as a JPEG. Only offered when you turn on **Let AI look at screenshots** (off by default) |
 
-Each lookup shows in the chat with exactly what was sent. Times in answers link back to that
-moment in the timeline. Screenshots are never sent. Blocked apps and sites are never
-recorded, so the AI never sees them. With a local model (Ollama, LM Studio) nothing leaves
+Each lookup shows in the chat with the arguments the AI asked for and exactly what was sent
+back. Times in answers link back to that moment in the timeline. Each answer shows the
+tokens it used and what they cost; the header shows the chat's total and AI Settings keeps a
+running total per provider. Prices are built in for Claude and GPT-6 models and come with
+OpenRouter's model list; for other models you can type the price. Blocked apps and sites are
+never recorded, so the AI never sees them. With a local model (Ollama, LM Studio) nothing leaves
 your computer at all.
 
 ## Mac app

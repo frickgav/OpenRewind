@@ -14,6 +14,17 @@ public sealed class AiTools
 
     public AiTools(Database db) { this.db = db; }
 
+    /// Reads a frame's screenshot as a small JPEG. Set only while the user has turned on
+    /// "Let AI look at screenshots"; null means view_screenshot is not offered at all.
+    public Func<Frame, byte[]?>? Screenshots;
+
+    /// The tools to send with a request.
+    public IReadOnlyList<AiToolSpec> Offered => Screenshots == null ? Specs : Specs.Append(ScreenshotSpec).ToArray();
+
+    public static readonly AiToolSpec ScreenshotSpec = new("view_screenshot",
+        "The screenshot saved closest to a moment, as an image. Use only when the screen text is not enough (charts, pictures, layout, what something looked like). Each image costs far more than text, so look at few.",
+        Schema(new() { ["time"] = TimeArg("The moment to look at.") }, "time"));
+
     /// Most characters one tool answer may send to the provider.
     public const int ResultLimit = 14_000;
 
@@ -70,8 +81,29 @@ public sealed class AiTools
             "search_screen" => $"Searched screen for “{q}”{when}",
             "search_audio" => (q.Length == 0 ? "Read transcripts" : $"Searched audio for “{q}”") + when,
             "get_screen_text" => "Read screen text" + when,
+            "view_screenshot" => $"Looked at the screenshot from {S(a, "time")}",
             _ => call.Name,
         };
+    }
+
+    /// The arguments as the model sent them, for the chat window.
+    public static string Arguments(AiToolCall call) =>
+        call.Name + " " + call.Args.ToJsonString(new System.Text.Json.JsonSerializerOptions
+        {
+            WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        });
+
+    /// Runs a lookup. Only view_screenshot returns an image.
+    public (string Text, byte[]? Image) Execute(AiToolCall call)
+    {
+        if (call.Name != "view_screenshot") return (Run(call), null);
+        if (Screenshots == null) return ("Error: the user has not allowed screenshots. Use the text tools.", null);
+        if (AiTime.Parse(call.Args["time"]) is not DateTime t) return ("Error: time is required, e.g. '2026-10-18 14:30'.", null);
+        if (db.FrameNear(t) is not Frame f) return ("No screenshot was saved near that time.", null);
+        var image = Screenshots(f);
+        var what = $"Screenshot from {AiTime.Label(f.Timestamp)} {f.AppName}" + (f.WindowName.Length > 0 ? $" — “{f.WindowName}”" : "")
+                   + $" (link: {AiTime.Link(f.Timestamp)})";
+        return image == null ? ($"{what}: the image file is missing (it may have been deleted).", null) : (what + ". The image is attached.", image);
     }
 
     public string Run(AiToolCall call)
@@ -304,6 +336,17 @@ public static class AiActivity
 
 public sealed partial class Database
 {
+    /// The saved frame closest to `t` (UTC), within 10 minutes.
+    public Frame? FrameNear(DateTime t)
+    {
+        var iso = Time.Iso(t);
+        var before = Frames($"SELECT {Cols} FROM frames f WHERE f.timestamp <= ? ORDER BY f.timestamp DESC LIMIT 1", iso).FirstOrDefault();
+        var after = Frames($"SELECT {Cols} FROM frames f WHERE f.timestamp > ? ORDER BY f.timestamp ASC LIMIT 1", iso).FirstOrDefault();
+        double Gap(Frame? f) => f != null && Time.ParseIso(f.Timestamp) is DateTime d ? Math.Abs((d - t).TotalSeconds) : double.MaxValue;
+        var best = Gap(before) <= Gap(after) ? before : after;
+        return Gap(best) <= 600 ? best : null;
+    }
+
     /// Light rows (no text) for the activity summary, oldest first. `start` and `end` are UTC.
     public List<ActivityRow> ActivityRows(DateTime start, DateTime end)
     {

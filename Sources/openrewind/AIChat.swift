@@ -3,12 +3,14 @@ import SwiftUI
 
 /// One row in the chat window.
 struct ChatItem: Identifiable {
-    enum Kind { case user, assistant, tool, error }
+    enum Kind { case user, assistant, tool, error, usage }
     let id = UUID()
     var kind: Kind
     var text: String
-    /// For `.tool`: exactly what was sent to the provider.
+    /// For `.tool`: exactly what was sent back to the provider.
     var detail = ""
+    /// For `.tool`: the lookup as the model asked for it.
+    var args = ""
 }
 
 /// The conversation behind the chat window. Kept by the menu bar app, so closing the window keeps it.
@@ -18,9 +20,12 @@ final class AIChatModel: ObservableObject {
     @Published var busy = false
     @Published var settings = AISettings.load()
     @Published var privacyAccepted = AISettings.privacyAccepted
+    /// Tokens and cost of this chat so far. Cost leaves out requests to models with no known price.
+    @Published var used = AIUsage()
+    @Published var cost = 0.0
     private var history: [AIMessage] = []
     private var task: Task<Void, Never>?
-    private let tools: AITools
+    private var tools: AITools
     var openMoment: (Date) -> Void = { _ in }
     var openSettings: () -> Void = {}
 
@@ -28,6 +33,8 @@ final class AIChatModel: ObservableObject {
     static let maxRounds = 10
     /// Characters of earlier tool answers kept in the conversation; older ones are shortened.
     static let historyBudget = 60_000
+    /// Screenshots kept attached; older ones are dropped because every request sends them again.
+    static let imagesKept = 2
 
     init(db: Database) { tools = AITools(db: db) }
 
@@ -46,9 +53,18 @@ final class AIChatModel: ObservableObject {
         history.append(AIMessage(role: .user, text: q))
         busy = true
         let client = AIClient(settings: settings)
+        tools.screenshots = AISettings.screenshotsAllowed ? { AITools.jpegForAI($0.snapshotPath) } : nil
+        let kind = settings.kind, price = AISettings.price(for: settings.model)
         task = Task { @MainActor [weak self] in
-            await self?.run(client)
-            self?.busy = false
+            guard let self else { return }
+            let usage = await self.run(client)
+            // Tokens are paid for even when the question fails halfway.
+            let c = usage.cost(price)
+            self.used = self.used + usage
+            self.cost += c ?? 0
+            AISettings.add(usage, cost: c, to: kind)
+            if !usage.isZero { self.items.append(ChatItem(kind: .usage, text: usage.describe(price))) }
+            self.busy = false
         }
     }
 
@@ -58,23 +74,30 @@ final class AIChatModel: ObservableObject {
         stop()
         items = []
         history = []
+        used = AIUsage()
+        cost = 0
     }
 
-    @MainActor private func run(_ client: AIClient) async {
+    /// Asks until the model answers; returns the tokens all its requests used.
+    @MainActor private func run(_ client: AIClient) async -> AIUsage {
+        var usage = AIUsage()
         do {
             for _ in 0..<Self.maxRounds {
                 trimHistory()
-                let reply = try await client.send(system: Self.systemPrompt(), messages: history, tools: AITools.specs)
+                let reply = try await client.send(system: Self.systemPrompt(screenshots: tools.screenshots != nil),
+                                                  messages: history, tools: tools.offered)
+                usage = usage + reply.usage
                 try Task.checkCancellation()
-                history.append(AIMessage(role: .assistant, text: reply.text, toolCalls: reply.toolCalls))
+                history.append(AIMessage(role: .assistant, text: reply.text, toolCalls: reply.toolCalls, raw: reply.raw))
                 if !reply.text.isEmpty { items.append(ChatItem(kind: .assistant, text: reply.text)) }
-                if reply.toolCalls.isEmpty { return }
+                if reply.toolCalls.isEmpty { return usage }
                 for call in reply.toolCalls {
                     let tools = self.tools
-                    let result = await Task.detached { tools.run(call) }.value
+                    let result = await Task.detached { tools.execute(call) }.value
                     try Task.checkCancellation()
-                    history.append(AIMessage(role: .tool, text: result, toolCallId: call.id, toolName: call.name))
-                    items.append(ChatItem(kind: .tool, text: AITools.describe(call), detail: result))
+                    history.append(AIMessage(role: .tool, text: result.text, toolCallId: call.id, toolName: call.name, image: result.image))
+                    let detail = result.image.map { "\(result.text)\n\n[+ the screenshot as a JPEG image, \($0.count / 1024) KB]" } ?? result.text
+                    items.append(ChatItem(kind: .tool, text: AITools.describe(call), detail: detail, args: AITools.arguments(call)))
                 }
             }
             items.append(ChatItem(kind: .error, text: "Stopped after \(Self.maxRounds) lookups. Try asking something narrower."))
@@ -86,10 +109,19 @@ final class AIChatModel: ObservableObject {
             if let last = history.last, last.role == .assistant, !last.toolCalls.isEmpty { history.removeLast() }
             if history.last?.role == .user { history.removeLast() }
         }
+        return usage
     }
 
     /// Long chats would send every earlier lookup again; shorten the oldest ones first.
     private func trimHistory() {
+        var images = 0
+        for i in history.indices.reversed() where history[i].image != nil {
+            images += 1
+            if images > Self.imagesKept {
+                history[i].image = nil
+                history[i].text += "\n[the image is no longer attached]"
+            }
+        }
         var total = history.filter { $0.role == .tool }.reduce(0) { $0 + $1.text.count }
         for i in history.indices where total > Self.historyBudget && history[i].role == .tool && history[i].text.count > 1500 {
             total -= history[i].text.count - 1500
@@ -97,7 +129,7 @@ final class AIChatModel: ObservableObject {
         }
     }
 
-    static func systemPrompt() -> String {
+    static func systemPrompt(screenshots: Bool = false) -> String {
         let now = Date()
         let day = now.formatted(.dateTime.weekday(.wide).day().month(.wide).year())
         return """
@@ -114,7 +146,7 @@ final class AIChatModel: ObservableObject {
         The link opens that moment in the user's timeline.
         - Group work into tasks or projects instead of listing every window. Be concise.
         - If nothing is found, say so plainly. Screen text comes from OCR and can have errors.
-        """
+        """ + (screenshots ? "\n- view_screenshot shows what the screen looked like. Use it only when text is not enough, and look at few." : "")
     }
 }
 
@@ -129,11 +161,11 @@ struct AIChatView: View {
             Divider().overlay(SetupTheme.stroke)
             if !model.settings.isReady {
                 notice(icon: "key", title: "Add your AI key",
-                       text: "OpenRewind can answer questions about what you did and saw, using your own Anthropic, OpenAI or Gemini key, or a local model (Ollama, LM Studio).",
+                       text: "OpenRewind can answer questions about what you did and saw, using your own Anthropic, OpenAI, Gemini or OpenRouter key, or a local model (Ollama, LM Studio).",
                        button: "Open AI Settings…") { model.openSettings() }
             } else if !model.privacyAccepted {
                 notice(icon: "lock.shield", title: "Before you start",
-                       text: "To answer, the AI reads parts of your history: screen text, app and window names, web addresses and transcripts. Those parts are sent to \(model.settings.kind.title) using your key, and their privacy terms apply. Screenshots are never sent. Blocked apps and sites are never recorded, so the AI never sees them. Each lookup is listed in the chat so you can see what was sent.",
+                       text: "To answer, the AI reads parts of your history: screen text, app and window names, web addresses and transcripts. Those parts are sent to \(model.settings.kind.title) using your key, and their privacy terms apply. \(AISettings.screenshotsAllowed ? "You allowed screenshots, so it can also look at a few of those." : "Screenshots are not sent unless you allow them in AI Settings.") Blocked apps and sites are never recorded, so the AI never sees them. Each lookup is listed in the chat so you can see what was sent.",
                        button: "Continue") { model.acceptPrivacy() }
             } else {
                 conversation
@@ -155,7 +187,7 @@ struct AIChatView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Ask OpenRewind").font(.system(size: 15, weight: .semibold))
                 if model.settings.isReady {
-                    Text("\(model.settings.kind.title) · \(model.settings.model)").font(.system(size: 11)).foregroundColor(SetupTheme.faint)
+                    Text("\(model.settings.kind.title) · \(model.settings.model)\(chatUsage)").font(.system(size: 11)).foregroundColor(SetupTheme.faint)
                 }
             }
             Spacer()
@@ -165,6 +197,14 @@ struct AIChatView: View {
                 .buttonStyle(.plain).help("AI settings")
         }
         .padding(.horizontal, 16).padding(.top, 34).padding(.bottom, 10)
+    }
+
+    /// " · This chat: 12,345 tokens, $0.04"
+    private var chatUsage: String {
+        guard !model.used.isZero else { return "" }
+        let tokens = (model.used.input + model.used.output).formatted()
+        let priced = AISettings.price(for: model.settings.model) != nil || model.cost > 0
+        return " · This chat: \(tokens) tokens" + (priced ? ", " + AIPrice.money(model.cost) : "")
     }
 
     private func notice(icon: String, title: String, text: String, button: String, action: @escaping () -> Void) -> some View {
@@ -232,14 +272,21 @@ struct AIChatView: View {
         case .tool:
             DisclosureGroup {
                 ScrollView {
-                    Text(item.detail).font(.system(size: 11, design: .monospaced)).foregroundColor(SetupTheme.dim)
-                        .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("The AI asked for:").font(.system(size: 11, weight: .semibold)).foregroundColor(SetupTheme.faint)
+                        Text(item.args).font(.system(size: 11, design: .monospaced)).foregroundColor(SetupTheme.dim)
+                        Text("Sent back to the AI:").font(.system(size: 11, weight: .semibold)).foregroundColor(SetupTheme.faint)
+                        Text(item.detail).font(.system(size: 11, design: .monospaced)).foregroundColor(SetupTheme.dim)
+                    }
+                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxHeight: 220)
+                .frame(maxHeight: 260)
             } label: {
                 Label("\(item.text) · \(item.detail.count.formatted()) characters sent", systemImage: "magnifyingglass")
                     .font(.system(size: 11)).foregroundColor(SetupTheme.faint)
             }
+        case .usage:
+            Text(item.text).font(.system(size: 11)).foregroundColor(SetupTheme.faint)
         case .error:
             Label(item.text, systemImage: "exclamationmark.triangle").font(.system(size: 12)).foregroundColor(SetupTheme.warn)
                 .textSelection(.enabled)
@@ -278,6 +325,12 @@ struct AISettingsView: View {
     @State private var models: [String]
     @State private var status = ""
     @State private var working = false
+    @State private var priceIn = ""
+    @State private var priceOut = ""
+    @State private var allowScreenshots = AISettings.screenshotsAllowed
+    @State private var total: AITotal?
+    @State private var picking = false
+    @State private var search = ""
 
     init(onSave: @escaping () -> Void) {
         self.onSave = onSave
@@ -287,6 +340,7 @@ struct AISettingsView: View {
         _model = State(initialValue: s.model)
         _baseURL = State(initialValue: s.baseURL)
         _models = State(initialValue: AISettings.savedModels(s.kind))
+        _total = State(initialValue: AISettings.total(s.kind))
     }
 
     private var current: AISettings {
@@ -311,7 +365,7 @@ struct AISettingsView: View {
             if kind == .custom {
                 field("Server address") {
                     TextField("http://localhost:11434/v1", text: $baseURL).textFieldStyle(.roundedBorder)
-                    Text("Ollama: http://localhost:11434/v1 · LM Studio: http://localhost:1234/v1 · OpenRouter: https://openrouter.ai/api/v1")
+                    Text("Ollama: http://localhost:11434/v1 · LM Studio: http://localhost:1234/v1")
                         .font(.system(size: 11)).foregroundColor(SetupTheme.faint)
                 }
             }
@@ -327,15 +381,38 @@ struct AISettingsView: View {
             field("Model") {
                 HStack {
                     TextField("Model name", text: $model).textFieldStyle(.roundedBorder)
-                    Menu("Choose") {
-                        ForEach(models, id: \.self) { m in Button(m) { model = m } }
-                    }
-                    .fixedSize()
-                    .disabled(models.isEmpty)
-                    Button("Refresh List") { refresh() }.disabled(working)
+                    Button("Choose") { search = ""; picking = true }
+                        .disabled(models.isEmpty)
+                        .popover(isPresented: $picking, arrowEdge: .bottom) { picker }
+                    Button("Refresh List") { refresh(quiet: false) }.disabled(working)
                 }
                 Text("Type any model name, so new models work as soon as they come out. Refresh List asks the provider for its models.")
                     .font(.system(size: 11)).foregroundColor(SetupTheme.faint).fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 16) {
+            field("Price per million tokens (US$, input / output)") {
+                HStack {
+                    TextField("Input, e.g. 2", text: $priceIn).textFieldStyle(.roundedBorder)
+                    TextField("Output, e.g. 10", text: $priceOut).textFieldStyle(.roundedBorder)
+                }
+                Text("Filled in for Claude, GPT-6 and OpenRouter models. For others, copy the price from the provider's pricing page; leave empty to see tokens only.")
+                    .font(.system(size: 11)).foregroundColor(SetupTheme.faint).fixedSize(horizontal: false, vertical: true)
+            }
+            .onChange(of: model) { loadPrice() }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Let AI look at screenshots", isOn: $allowScreenshots).font(.system(size: 13, weight: .semibold))
+                Text("Off by default. When on, the AI can ask for a few screenshots when text is not enough. Those images go to the provider and cost more than text. Blocked apps are blurred in them.")
+                    .font(.system(size: 11)).foregroundColor(SetupTheme.faint).fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(alignment: .firstTextBaseline) {
+                Text(usageText).font(.system(size: 12)).foregroundColor(SetupTheme.dim).fixedSize(horizontal: false, vertical: true)
+                if total != nil {
+                    Button("Reset") { AISettings.resetTotal(kind); total = nil }.buttonStyle(.link).font(.system(size: 12))
+                }
+            }
             }
 
             Spacer()
@@ -355,6 +432,56 @@ struct AISettingsView: View {
         .background(SetupTheme.bg)
         .foregroundColor(.white)
         .preferredColorScheme(.dark)
+        .onAppear { loadPrice(); autoRefresh() }
+    }
+
+    /// A searchable list, since OpenRouter has hundreds of models.
+    private var picker: some View {
+        let shown = search.isEmpty ? models : models.filter { $0.localizedCaseInsensitiveContains(search) }
+        return VStack(spacing: 8) {
+            TextField("Search \(models.count) models", text: $search).textFieldStyle(.roundedBorder)
+            List(shown, id: \.self) { m in
+                Button { model = m; picking = false } label: {
+                    HStack {
+                        Text(m).font(.system(size: 12))
+                        Spacer()
+                        if let p = AISettings.price(for: m) {
+                            Text("\(AIPrice.money(p.input)) / \(AIPrice.money(p.output))").font(.system(size: 11)).foregroundColor(.secondary)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(10)
+        .frame(width: 420, height: 440)
+    }
+
+    /// "Used with OpenAI since 19 Oct 2026: 120,000 tokens in, 8,000 out, about $0.38."
+    private var usageText: String {
+        guard let t = total else { return "Nothing used with \(kind.title) yet." }
+        let cost = t.cost > 0 || !t.unpriced ? ", \(t.unpriced ? "at least" : "about") \(AIPrice.money(t.cost))" : ""
+        return "Used with \(kind.title) since \(t.since.formatted(date: .abbreviated, time: .omitted)): "
+            + "\(t.input.formatted()) tokens in, \(t.output.formatted()) out\(cost)."
+    }
+
+    private func loadPrice() {
+        let p = AISettings.price(for: model.trimmingCharacters(in: .whitespaces))
+        priceIn = p.map { Self.number($0.input) } ?? ""
+        priceOut = p.map { Self.number($0.output) } ?? ""
+    }
+
+    private static func number(_ d: Double) -> String {
+        let f = NumberFormatter()
+        f.maximumFractionDigits = 6
+        f.minimumIntegerDigits = 1
+        return f.string(from: d as NSNumber) ?? "\(d)"
+    }
+
+    /// OpenRouter lists its models without a key; the others need one.
+    private func autoRefresh() {
+        if kind == .openrouter || !key.isEmpty { refresh(quiet: true) }
     }
 
     private func field<V: View>(_ title: String, @ViewBuilder _ content: () -> V) -> some View {
@@ -370,28 +497,49 @@ struct AISettingsView: View {
         model = s.model
         baseURL = s.baseURL
         models = AISettings.savedModels(k)
+        total = AISettings.total(k)
         status = ""
+        loadPrice()
+        autoRefresh()
     }
 
     private func save() {
         current.save()
+        let m = current.model
+        let f = NumberFormatter()
+        if let i = f.number(from: priceIn)?.doubleValue, let o = f.number(from: priceOut)?.doubleValue, i >= 0, o >= 0 {
+            AISettings.setPrice(nil, for: m)
+            // Store only a price that differs from the listed or built-in one.
+            if AISettings.price(for: m) != AIPrice(input: i, output: o) { AISettings.setPrice(AIPrice(input: i, output: o), for: m) }
+        } else if priceIn.trimmingCharacters(in: .whitespaces).isEmpty && priceOut.trimmingCharacters(in: .whitespaces).isEmpty {
+            AISettings.setPrice(nil, for: m)
+        }
+        AISettings.screenshotsAllowed = allowScreenshots
         models = AISettings.savedModels(kind)
         status = "Saved."
         onSave()
+        refresh(quiet: true)
     }
 
-    private func refresh() {
+    /// Fills the model list from the provider. Quiet: in the background, saying nothing if it fails.
+    private func refresh(quiet: Bool) {
         let s = current
+        if s.kind.needsKey && s.kind != .openrouter && (s.key ?? "").isEmpty {
+            if !quiet { status = "Add your key first." }
+            return
+        }
+        guard !working else { return }
         working = true
-        status = "Asking \(s.kind.title) for its models…"
+        if !quiet { status = "Asking \(s.kind.title) for its models…" }
         Task { @MainActor in
             do {
-                let list = try await AIClient(settings: s).listModels()
-                AISettings.remember(models: list, for: s.kind)
-                models = AISettings.savedModels(s.kind)
-                status = list.isEmpty ? "The provider listed no models." : "Found \(list.count) models. Pick one from Choose."
+                let list = try await AIClient(settings: s).listModelsWithPrices()
+                AISettings.rememberListedPrices(list)
+                AISettings.remember(models: list.map { $0.id }, for: s.kind)
+                if kind == s.kind { models = AISettings.savedModels(s.kind) }
+                if !quiet { status = list.isEmpty ? "The provider listed no models." : "Found \(list.count) models. Click Choose to search them." }
             } catch {
-                status = error.localizedDescription
+                if !quiet { status = error.localizedDescription }
             }
             working = false
         }

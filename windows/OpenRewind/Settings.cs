@@ -46,6 +46,14 @@ sealed class Settings
     public Dictionary<string, List<string>> AiModels { get; set; } = new();
     /// The user has read what gets sent to the provider.
     public bool AiPrivacyAccepted { get; set; }
+    /// Let the AI ask for screenshots (view_screenshot). Off unless the user turns it on.
+    public bool AiScreenshots { get; set; }
+    /// Prices the user typed, by model: US dollars per million tokens in and out.
+    public Dictionary<string, double[]> AiPrices { get; set; } = new();
+    /// Prices that came with a provider's model list (OpenRouter), by model.
+    public Dictionary<string, double[]> AiListedPrices { get; set; } = new();
+    /// Everything used per provider (by AiProviders.Id) since the user last reset it.
+    public Dictionary<string, AiTotal> AiTotals { get; set; } = new();
 
     string path = "";
 
@@ -94,6 +102,24 @@ sealed class Settings
         Save();
     }
 
+    /// The typed price for a model, else the built-in one (Claude models only).
+    public AiPrice? AiPriceFor(string model) =>
+        AiPrices.TryGetValue(model, out var p) && p.Length == 2 ? new AiPrice(p[0], p[1])
+        : AiListedPrices.TryGetValue(model, out var l) && l.Length == 2 ? new AiPrice(l[0], l[1])
+        : AiPrice.Default(model);
+
+    public void AddAiUsage(AiProviderKind k, AiUsage used, double? cost)
+    {
+        if (used.IsZero) return;
+        var t = AiTotals.GetValueOrDefault(k.Id()) ?? new AiTotal { Since = DateTime.UtcNow };
+        t.Input += used.Input;
+        t.Output += used.Output;
+        t.Cost += cost ?? 0;
+        if (cost == null) t.Unpriced = true;
+        AiTotals[k.Id()] = t;
+        Save();
+    }
+
     public KeepFor Screen => KeepForInfo.FromRaw(KeepScreen) ?? KeepFor.Forever;
     public KeepFor Audio => KeepForInfo.FromRaw(KeepAudio) ?? KeepFor.Forever;
 
@@ -115,4 +141,15 @@ sealed class Settings
             else k.DeleteValue(RunName, false);
         }
     }
+}
+
+/// Running total for one AI provider.
+sealed class AiTotal
+{
+    public long Input { get; set; }
+    public long Output { get; set; }
+    public double Cost { get; set; }
+    /// Some requests went to a model with no price, so Cost is too low.
+    public bool Unpriced { get; set; }
+    public DateTime Since { get; set; }
 }

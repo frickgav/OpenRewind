@@ -121,7 +121,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func showAISettings() {
-        SetupWindows.shared.show("aiSettings", title: "AI Settings", size: NSSize(width: 560, height: 560)) {
+        SetupWindows.shared.show("aiSettings", title: "AI Settings", size: NSSize(width: 560, height: 840)) {
             AISettingsView { [weak self] in self?.aiChat.reloadSettings() }
         }
     }
