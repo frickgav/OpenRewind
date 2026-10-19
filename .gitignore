@@ -10,3 +10,4 @@ signing/
 *.p12.b64
 *.pem
 password.txt
+*.whl
