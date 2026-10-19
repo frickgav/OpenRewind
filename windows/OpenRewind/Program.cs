@@ -71,8 +71,23 @@ static class Program
             Log.Write($"OpenRewind {Updater.Current} starting ({Environment.ProcessPath})");
         }
 
+        // Encrypt Recordings: load the data key before the database, which may be encrypted with it.
+        var encrypt = Settings.Load(config.Home).EncryptRecordings;
+        var key = DataKeyStore.Load(config.Home);
+        if (key == null && (encrypt || Database.IsEncryptedFile(config.DbPath)))
+        {
+            if (command == "app") key = Encryption.AskForRecoveryKey(config);
+            if (key == null)
+            {
+                Log.Write("your recordings are encrypted and the key is not on this Windows account; open OpenRewind to enter the recovery key");
+                return 1;
+            }
+        }
+        RecordingFile.Key = key;
+        RecordingFile.EncryptNew = encrypt && key != null;
+
         Database db;
-        try { db = new Database(config.DbPath); }
+        try { db = new Database(config.DbPath, key, createEncrypted: RecordingFile.EncryptNew); }
         catch (Exception e)
         {
             Log.Write($"cannot open database at {config.DbPath}: {e.Message}");
@@ -185,6 +200,7 @@ static class Program
             {
                 Console.WriteLine($"data dir:        {config.Home}");
                 Console.WriteLine($"frames stored:   {db.Stats().Count}");
+                Console.WriteLine($"encryption:      {(RecordingFile.EncryptNew ? "on" : "off")} (database {(db.IsEncrypted ? "encrypted" : "plain")})");
                 Console.WriteLine($"windows ocr:     {(Ocr.Available ? "ok" : "MISSING (add a language with OCR in Settings → Time & language)")}");
                 Console.WriteLine($"accessibility:   {(config.UseAccessibility ? "on (UI Automation)" : "off")}");
                 Console.WriteLine($"microphone:      {(AudioStream.HasDevice(NAudio.CoreAudioApi.DataFlow.Capture) ? "found" : "none")}");

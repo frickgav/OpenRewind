@@ -24,6 +24,8 @@ sealed class TrayApp : ApplicationContext
     /// The AI chat keeps its conversation while its window is closed.
     readonly AiConversation aiConversation = new();
     readonly AiTools aiTools;
+    readonly AppLock appLock;
+    readonly Encryption encryption;
 
     public TrayApp(Engine engine)
     {
@@ -35,6 +37,11 @@ sealed class TrayApp : ApplicationContext
         aiTools = new AiTools(engine.Db);
         overlay = new OverlayForm(timeline) { Look = settings.TimelineLook };
         _ = overlay.Handle;  // create it on the UI thread now
+        appLock = new AppLock(settings);
+        appLock.Locked += () => overlay.BeginInvoke(HideHistory);
+        engine.ServerLocked = () => !appLock.IsUnlocked;
+        encryption = new Encryption(engine, settings);
+        encryption.Resume();
 
         if (settings.LocalSearchServer) StartServer();
         engine.StartTranscriber();
@@ -51,11 +58,11 @@ sealed class TrayApp : ApplicationContext
         updater.Start();
 
         // Ctrl+Alt+T (or the shortcut picked in Settings) opens the timeline from anywhere.
-        hotKey = new HotKey(Shortcut, overlay.Toggle);
+        hotKey = new HotKey(Shortcut, ToggleTimeline);
 
         menu.Opening += (_, _) => BuildMenu();
         icon = new NotifyIcon { Icon = Program.AppIcon, ContextMenuStrip = menu, Visible = true };
-        icon.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) overlay.Toggle(); };
+        icon.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) ToggleTimeline(); };
 
         // Start recording, or re-arm a pause saved last time, only once `icon` exists:
         // both paths end in UpdateIcon(), which sets the icon's tooltip and picture.
@@ -66,8 +73,25 @@ sealed class TrayApp : ApplicationContext
         if (!settings.OnboardingDone) ShowSetup();
     }
 
+    /// Open the timeline, after Windows Hello when App Lock is on; close it if it is open.
+    void ToggleTimeline()
+    {
+        if (overlay.Visible) overlay.HideOverlay();
+        else appLock.Run("Unlock OpenRewind to see your timeline", overlay.ShowOverlay);
+    }
+
+    /// The app locked (screen locked, PC asleep): close everything that shows history. Recording goes on.
+    void HideHistory()
+    {
+        if (overlay.Visible) overlay.HideOverlay(restoreFocus: false);
+        AiChatForm.Release();
+        BlockedAppsForm.Release();
+    }
+
     /// The first-run setup; ends in the guided tour if the user asks for it.
-    void ShowSetup()
+    void ShowSetup() => appLock.Run("Unlock OpenRewind to change its setup", OpenSetup);
+
+    void OpenSetup()
     {
         if (setup is { IsDisposed: false }) { setup.Activate(); return; }
         OnboardingForm.Hotkey = Shortcut.Label;
@@ -76,7 +100,8 @@ sealed class TrayApp : ApplicationContext
     }
     OnboardingForm? setup;
 
-    void ShowAiChat() => AiChatForm.ShowFor(settings, aiTools, aiConversation, OpenMoment, OpenAiSettings);
+    void ShowAiChat() => appLock.Run("Unlock OpenRewind to ask about your history",
+                                     () => AiChatForm.ShowFor(settings, aiTools, aiConversation, OpenMoment, OpenAiSettings));
 
     /// The chat for the overlay; the same one the Ask AI window shows.
     AiChatPanel AiChat() => AiChatPanel.Get(settings, aiTools, aiConversation, OpenMoment, OpenAiSettings);
@@ -94,11 +119,11 @@ sealed class TrayApp : ApplicationContext
         AiSettingsForm.ShowFor(settings);
     }
 
-    void ShowTutorial()
+    void ShowTutorial() => appLock.Run("Unlock OpenRewind to see your timeline", () =>
     {
         OnboardingForm.Hotkey = Shortcut.Label;
         TutorialCoach.Start(overlay, timeline);
-    }
+    });
 
     // Build the menu fresh each time it opens, so it always shows the live state.
     void BuildMenu()
@@ -130,18 +155,26 @@ sealed class TrayApp : ApplicationContext
             menu.Items.Add(Item("   Transcription off: set up Whisper…", () => Open("https://github.com/frickgav/openscreen/blob/main/windows/README.md#whisper")));
         menu.Items.Add(new ToolStripSeparator());
 
-        menu.Items.Add(new ToolStripMenuItem("Open Timeline", null, (_, _) => overlay.ShowOverlay()) { ShortcutKeyDisplayString = Shortcut.Label });
+        menu.Items.Add(new ToolStripMenuItem("Open Timeline", null, (_, _) => appLock.Run("Unlock OpenRewind to see your timeline", overlay.ShowOverlay))
+        {
+            ShortcutKeyDisplayString = Shortcut.Label
+        });
         // The browser page when the local server is on, else the timeline's own search box.
-        menu.Items.Add(Item("Search…", () => { if (engine.ServerOn) Open($"http://127.0.0.1:{engine.Config.Port}/"); else overlay.ShowSearch(); }));
+        menu.Items.Add(Item("Search…", () => appLock.Run("Unlock OpenRewind to search your history", () =>
+        {
+            if (engine.ServerOn) Open($"http://127.0.0.1:{engine.Config.Port}/"); else overlay.ShowSearch();
+        })));
         menu.Items.Add(Item("Ask AI…", ShowAiChat));
-        menu.Items.Add(Item("Show Data Folder", () => Open(engine.Config.Home)));
+        menu.Items.Add(Item("Show Data Folder", () => appLock.Run("Unlock OpenRewind to open its data folder", () => Open(engine.Config.Home))));
         foreach (var line in StorageLines()) menu.Items.Add(new ToolStripMenuItem("   " + line) { Enabled = false });
         MeasureStorage();
         menu.Items.Add(new ToolStripSeparator());
 
         var s = new ToolStripMenuItem(Permissions.MicrophoneOn ? "Settings" : "Settings  ⚠");
-        s.DropDownItems.Add(Item("Blocked Apps & Sites…", () => BlockedAppsForm.ShowFor(settings, engine.Db)));
+        s.DropDownItems.Add(Item("Blocked Apps & Sites…", () => appLock.Run("Unlock OpenRewind to change blocked apps and sites",
+                                                                            () => BlockedAppsForm.ShowFor(settings, engine.Db))));
         s.DropDownItems.Add(Item("AI Settings…", () => AiSettingsForm.ShowFor(settings)));
+        s.DropDownItems.Add(EncryptionMenu());
         s.DropDownItems.Add(new ToolStripSeparator());
         s.DropDownItems.Add(ShortcutMenu());
         s.DropDownItems.Add(ScreenshotSizeMenu());
@@ -264,7 +297,7 @@ sealed class TrayApp : ApplicationContext
         hotKey.Dispose();  // so pressing the old shortcut now does not open the timeline
         using var picker = new ShortcutPicker(old);
         var picked = picker.ShowDialog() == DialogResult.OK ? picker.Picked : null;
-        hotKey = new HotKey(old, overlay.Toggle);
+        hotKey = new HotKey(old, ToggleTimeline);
         if (picked != null && picked != old) SetShortcut(picked);
     }
 
@@ -273,7 +306,7 @@ sealed class TrayApp : ApplicationContext
     {
         var old = Shortcut;
         hotKey.Dispose();
-        var next = new HotKey(sc, overlay.Toggle);
+        var next = new HotKey(sc, ToggleTimeline);
         if (next.Registered)
         {
             hotKey = next;
@@ -283,9 +316,65 @@ sealed class TrayApp : ApplicationContext
             return;
         }
         next.Dispose();
-        hotKey = new HotKey(old, overlay.Toggle);
+        hotKey = new HotKey(old, ToggleTimeline);
         MessageBox.Show($"Another app or Windows uses this shortcut. The shortcut stays {old.Label}.", $"{sc.Label} is already in use",
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+
+    // MARK: encryption & lock
+
+    ToolStripMenuItem EncryptionMenu()
+    {
+        var item = new ToolStripMenuItem("Encryption && Lock");
+        var enc = Toggle("Encrypt Recordings", encryption.On, () =>
+        {
+            if (!encryption.On) encryption.TurnOn();
+            else appLock.Run("Unlock OpenRewind to stop encrypting recordings", encryption.TurnOff);
+        });
+        enc.ToolTipText = "Encrypt screenshots, audio and the database on disk. The key stays with your Windows account.";
+        item.DropDownItems.Add(enc);
+        item.DropDownItems.Add(new ToolStripMenuItem("   " + encryption.Status()) { Enabled = false });
+        item.DropDownItems.Add(new ToolStripMenuItem("Export Recovery Key…", null, (_, _) =>
+            appLock.Run("Unlock OpenRewind to save the recovery key", () => encryption.ExportKey())) { Enabled = encryption.HasKey });
+        item.DropDownItems.Add(new ToolStripSeparator());
+
+        var lockItem = Toggle("Require Windows Hello to Open Timeline", settings.RequireUnlock, ToggleAppLock);
+        lockItem.ToolTipText = "Ask for your face, fingerprint or PIN before showing the timeline, search, Ask AI and other history. Recording keeps going.";
+        item.DropDownItems.Add(lockItem);
+        var after = new ToolStripMenuItem("Lock Again After") { Enabled = settings.RequireUnlock };
+        foreach (var (mins, title) in AppLock.TimeoutChoices)
+            after.DropDownItems.Add(Toggle(title + (mins == 15 ? " (Default)" : ""), settings.LockAfterMinutes == mins, () =>
+            {
+                settings.LockAfterMinutes = mins;
+                settings.Save();
+            }));
+        item.DropDownItems.Add(after);
+        return item;
+    }
+
+    async void ToggleAppLock()
+    {
+        if (settings.RequireUnlock)
+        {
+            // Turning it off is a change only the person it protects should make.
+            if (!await appLock.Unlock("Unlock OpenRewind to stop asking for Windows Hello")) return;
+            settings.RequireUnlock = false;
+        }
+        else
+        {
+            if (!await AppLock.Available())
+            {
+                MessageBox.Show($"Windows Hello is not set up on this PC. {AppLock.SetUpHello}", "Require Windows Hello",
+                                MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            settings.RequireUnlock = true;
+            appLock.Forget();
+            // Check it works now, so nobody is locked out by a Windows Hello that never answers.
+            if (!await appLock.Unlock("Check that Windows Hello works for OpenRewind")) { settings.RequireUnlock = false; return; }
+        }
+        settings.Save();
+        Log.Write($"app lock {(settings.RequireUnlock ? "on" : "off")}");
     }
 
     // MARK: permissions
@@ -544,6 +633,7 @@ sealed class TrayApp : ApplicationContext
 
     void Quit()
     {
+        encryption.Stop();
         icon.Visible = false;
         overlay.HideOverlay();
         hotKey.Dispose();

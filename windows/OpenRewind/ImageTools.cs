@@ -78,7 +78,8 @@ static class ImageTools
     {
         try
         {
-            using var image = new Bitmap(path);
+            using var file = new MemoryStream(RecordingFile.Read(path));
+            using var image = new Bitmap(file);
             using var small = Scaled(image, Math.Min(1, 1568.0 / Math.Max(image.Width, image.Height)));
             using var ps = new EncoderParameters(1);
             ps.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 75L);
@@ -86,17 +87,19 @@ static class ImageTools
             small.Save(ms, jpeg, ps);
             return ms.ToArray();
         }
-        catch (Exception e) when (e is IOException or ArgumentException or UnauthorizedAccessException) { return null; }
+        catch (Exception e) when (e is IOException or ArgumentException or UnauthorizedAccessException
+                                  or InvalidDataException or System.Security.Cryptography.CryptographicException or InvalidOperationException) { return null; }
     }
 
     static readonly ImageCodecInfo jpeg = ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Jpeg.Guid);
 
+    /// Saved through RecordingFile: encrypted when Encrypt Recordings is on.
     public static void WriteJpeg(Bitmap image, string path, long quality = 70)
     {
         using var ps = new EncoderParameters(1);
         ps.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
-        var tmp = path + ".tmp";
-        image.Save(tmp, jpeg, ps);
-        File.Move(tmp, path, overwrite: true);
+        using var ms = new MemoryStream();
+        image.Save(ms, jpeg, ps);
+        RecordingFile.Write(path, ms.ToArray());
     }
 }

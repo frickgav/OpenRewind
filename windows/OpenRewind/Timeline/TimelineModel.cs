@@ -206,10 +206,10 @@ sealed class TimelineModel
         Notify();
     }
 
-    /// Read the file into memory so the JPEG is not locked (retention may delete it).
+    /// Read the file into memory (decrypted if need be) so the JPEG is not locked (retention may delete it).
     static Image? ReadImage(string path)
     {
-        try { return Image.FromStream(new MemoryStream(File.ReadAllBytes(path))); }
+        try { return RecordingFile.TryRead(path) is byte[] b ? Image.FromStream(new MemoryStream(b)) : null; }
         catch { return null; }
     }
 
@@ -352,7 +352,7 @@ sealed class TimelineModel
         StopAudio();
         try
         {
-            reader = new WaveFileReader(a.Path);
+            reader = new WaveFileReader(new MemoryStream(RecordingFile.Read(a.Path)));
             var at = TimeSpan.FromSeconds(Math.Max(0, (Playhead - a.Start).TotalSeconds));
             if (at < reader.TotalTime) reader.CurrentTime = at;
             player = new WaveOutEvent();

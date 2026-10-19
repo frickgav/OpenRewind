@@ -29,6 +29,8 @@ sealed class Engine
     }
 
     public bool ServerOn => server != null;
+    /// While true the local server answers searches with "locked" (App Lock, see AppLock).
+    public Func<bool>? ServerLocked;
 
     public void StartServer()
     {
@@ -40,7 +42,7 @@ sealed class Engine
             ["accessibility_permission"] = Config.UseAccessibility,
             ["ocr_available"] = Ocr.Available,
             ["platform"] = "windows",
-        });
+        }) { Locked = () => ServerLocked?.Invoke() == true };
         var s = new Server(Config.Port, api.Handle);
         s.Start();
         server = s;
