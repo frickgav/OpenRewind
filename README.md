@@ -305,10 +305,50 @@ On when you run `record` or `serve` from the terminal, or after **Settings → L
 
 Response: `{"data":[{"type":"OCR","content":{"frame_id","text","timestamp","app_name","window_name","file_path","text_source"}},{"type":"Audio","content":{"chunk_id","transcription","timestamp","start_time","end_time","device_name","device_type"}}],"pagination":{"limit","offset","total"}}`
 
+## Encryption and App Lock
+
+Both are off by default. Find them in **Settings → Encryption & Lock**, on the Mac and on Windows.
+
+**Encrypt Recordings** encrypts new screenshots and audio clips with AES-256-GCM, and the database
+with [SQLCipher](https://www.zetetic.net/sqlcipher/). What is already recorded is encrypted in the
+background while recording goes on; quitting halfway is fine, it carries on at the next launch.
+Turning it off decrypts everything back the same way. The menu shows how far it has got.
+
+- **What it protects against:** someone who copies your disk, a backup or the `~/.openrewind`
+  folder, and other user accounts on the same computer. Without your login they see only
+  encrypted files.
+- **What it does not protect against:** apps running as you. OpenRewind has to record in the
+  background without asking for a password, so the key is kept where your login unlocks it: the
+  login Keychain on the Mac (this Mac only), DPAPI for your Windows account on Windows
+  (`~/.openrewind/encryption-key.dpapi`). Anything that can run as you can ask for it too.
+- **Recovery key:** **Export Recovery Key…** saves the key as a text file (72 characters in 9 groups).
+  OpenRewind offers to save it when you turn encryption on. If the Keychain or your Windows account
+  is reset, or you move your recordings to another computer, OpenRewind asks for it at launch.
+  **If you lose the key and the Keychain or Windows account, the recordings are lost for good.**
+  Keep it somewhere safe, like a password manager. The same key works in the Mac and the Windows app.
+- Speech to text: whisper-cli needs a file, so each encrypted audio clip is decrypted to a private
+  file in your temp folder while it is transcribed (a few seconds) and deleted right after.
+- Files: an encrypted file starts with `ORENC`, a format version and a key id, then the nonce, the
+  encrypted data and the tag. Plain and encrypted files can sit side by side, so the switch can
+  stop anywhere. The SQLCipher libraries are
+  [skiptools/swift-sqlcipher](https://github.com/skiptools/swift-sqlcipher) 1.9.0 on the Mac (built
+  into the app) and `SQLitePCLRaw.bundle_e_sqlcipher` 2.1.10 on Windows.
+- For developers: every reader of recordings goes through one loader, `RecordingFile.read(path)`
+  on the Mac and `RecordingFile.Read(path)` on Windows. It returns the plain bytes of a plain or an
+  encrypted file. New features that open screenshots or audio should call it too.
+
+**Require Touch ID or Password to Open Timeline** (Mac) / **Require Windows Hello to Open Timeline**
+(Windows) asks before showing the timeline, search, Ask AI, Blocked Apps & Sites, the data folder and
+setup. Recording keeps going while locked. An unlock lasts until the screen locks or the computer
+sleeps, or until **Lock Again After** has passed (5 minutes, 15 minutes (default), 1 hour, or only when
+the screen locks). While locked, the Local Search Server answers `423 Locked` for search, screenshots
+and audio. Windows Hello needs at least a PIN set up; a Mac needs a login password.
+
 ## Data
 
 `~/.openrewind/db.sqlite`, `~/.openrewind/data/<date>/*.heic` (`*.jpg` on Windows and older recordings), and
-`~/.openrewind/data/audio/<date>/*.wav`.
+`~/.openrewind/data/audio/<date>/*.wav`. With Encrypt Recordings on, these files keep their names
+but are encrypted (see [Encryption and App Lock](#encryption-and-app-lock)).
 Delete the folder to wipe everything, or from the terminal:
 
 ```bash

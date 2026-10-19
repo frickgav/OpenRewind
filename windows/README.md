@@ -67,6 +67,16 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   title changes, and a window whose new address can't be read is hidden too (Add sites… lists the
   sites and pages you visited lately).
   `OPENREWIND_EXCLUDE` adds more app names.
+- **Settings → Encryption & Lock → Encrypt Recordings** (off by default) encrypts screenshots,
+  audio and the database on disk. The key is kept for your Windows account (DPAPI), so recording
+  needs no password. It protects against someone copying the disk, a backup or the folder, and
+  against other Windows accounts; not against programs running as you. Existing recordings are
+  converted in the background. **Export Recovery Key…** saves the key; without it, encrypted
+  recordings can't be opened after a Windows account reset or on another PC.
+- **Settings → Encryption & Lock → Require Windows Hello to Open Timeline** (off by default) asks
+  for your face, fingerprint or PIN before the timeline, search, Ask AI and other history open. It
+  locks again when the PC locks or sleeps, or after **Lock Again After** (15 minutes by default).
+  See [Encryption and App Lock](../README.md#encryption-and-app-lock).
 - **Settings → Show Tutorial** walks through the timeline again; **Run Setup Again…** reopens setup.
 - Log: `%USERPROFILE%\.openrewind\openrewind.log`.
 
