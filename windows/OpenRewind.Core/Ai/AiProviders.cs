@@ -580,6 +580,27 @@ public static class AiFormat
                            new AiUsage(L(u?["promptTokenCount"]), L(u?["candidatesTokenCount"]) + L(u?["thoughtsTokenCount"])));
     }
 
+    // MARK: custom servers
+
+    /// An http:// address that leaves this computer and its network, where the key and history would
+    /// travel unencrypted. Loopback, .local names and private or link-local addresses are fine.
+    public static bool IsPlainHttpRemote(string address)
+    {
+        if (!Uri.TryCreate(address.Trim(), UriKind.Absolute, out var u) || u.Scheme != Uri.UriSchemeHttp || u.Host.Length == 0) return false;
+        var host = u.Host.Trim('[', ']').ToLowerInvariant();
+        if (System.Net.IPAddress.TryParse(host, out var ip))
+        {
+            if (System.Net.IPAddress.IsLoopback(ip)) return false;
+            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+                return !(ip.IsIPv6LinkLocal || ip.IsIPv6UniqueLocal || ip.IsIPv6SiteLocal);
+            var b = ip.GetAddressBytes();
+            return !(b[0] == 10 || (b[0] == 192 && b[1] == 168) || (b[0] == 169 && b[1] == 254)
+                     || (b[0] == 172 && b[1] is >= 16 and <= 31)
+                     || (b[0] == 100 && b[1] is >= 64 and <= 127));  // carrier-grade NAT range, used by Tailscale
+        }
+        return !(host == "localhost" || host.EndsWith(".localhost") || host.EndsWith(".local") || !host.Contains('.'));
+    }
+
     // MARK: errors
 
     public static string ErrorMessage(int status, JsonObject? json, string raw)

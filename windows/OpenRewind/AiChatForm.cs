@@ -112,7 +112,7 @@ sealed class AiChatForm : Form
             ShowNotice("Before you start",
                 $"To answer, the AI reads parts of your history: screen text, app and window names, web addresses and transcripts. Those parts are sent to {ai.Kind.Title()} using your key, and their privacy terms apply. "
                 + (settings.AiScreenshots ? "You allowed screenshots, so it can also look at a few of those. " : "Screenshots are not sent unless you allow them in AI Settings. ")
-                + "Blocked apps and sites are never recorded, so the AI never sees them. Each lookup is listed in the chat so you can see what was sent.",
+                + "Blocked apps and sites are left out, but audio transcripts are not filtered by app. Each lookup is listed in the chat so you can see what was sent.",
                 "Continue", () => { settings.AiPrivacyAccepted = true; settings.Save(); ShowState(); });
         else
         {
@@ -227,7 +227,7 @@ sealed class AiChatForm : Form
 
     Control AssistantRow(string md)
     {
-        var (text, links) = AiMarkdown.Plain(md);
+        var (text, links) = AiMarkdown.Plain(md, convo.MayOpen);
         var l = new LinkLabel
         {
             Text = text, ForeColor = Ui.Text, BackColor = Ui.Card, AutoSize = true, Font = Ui.F(13.5f * k),
@@ -248,7 +248,7 @@ sealed class AiChatForm : Form
     {
         if (url == null) return;
         if (AiTime.FromLink(url) is DateTime at) openMoment(at);
-        else if (url.StartsWith("https://") || url.StartsWith("http://")) Updater.Open(url);
+        else if (convo.MayOpen(url)) Updater.Open(url);
     }
 
     Control UsageRow(string text) => new Label
@@ -380,7 +380,8 @@ sealed class AiSettingsForm : Form
 
         urlLabel = Add("Server address", 12.5f, Ui.Dim, bold: true);
         baseUrl = Field(new TextBox { BorderStyle = BorderStyle.FixedSingle, PlaceholderText = "http://localhost:11434/v1" });
-        urlHint = Add("Ollama: http://localhost:11434/v1 · LM Studio: http://localhost:1234/v1 ", 11, Ui.Faint, height: (int)(32 * k));
+        urlHint = Add(UrlHint, 11, Ui.Faint, height: (int)(32 * k));
+        baseUrl.TextChanged += (_, _) => ShowUrlHint();
 
         keyLabel = Add("API key", 12.5f, Ui.Dim, bold: true);
         key = Field(new TextBox { BorderStyle = BorderStyle.FixedSingle, UseSystemPasswordChar = true, PlaceholderText = "Paste your key" });
@@ -446,6 +447,16 @@ sealed class AiSettingsForm : Form
     protected override void OnFormClosed(FormClosedEventArgs e) { open = null; base.OnFormClosed(e); }
 
     AiProviderKind Kind => AiProviders.All[Math.Max(0, provider.SelectedIndex)];
+
+    const string UrlHint = "Ollama: http://localhost:11434/v1 · LM Studio: http://localhost:1234/v1 ";
+
+    /// Plain http to another computer sends the key and history unencrypted; say so under the address.
+    void ShowUrlHint()
+    {
+        var risky = AiFormat.IsPlainHttpRemote(baseUrl.Text);
+        urlHint.Text = risky ? "Plain http to another computer: your key and history travel unencrypted. Use https, or a server on this PC or your own network." : UrlHint;
+        urlHint.ForeColor = risky ? Ui.Warn : Ui.Faint;
+    }
 
     AiSettings Current => new(Kind, model.Text.Trim(), baseUrl.Text.Trim(), key.Text.Trim());
 

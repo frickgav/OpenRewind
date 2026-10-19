@@ -107,9 +107,13 @@ Each lookup shows in the chat with the arguments the AI asked for and exactly wh
 back. Times in answers link back to that moment in the timeline. Each answer shows the
 tokens it used and what they cost; the header shows the chat's total and AI Settings keeps a
 running total per provider. Prices are built in for Claude and GPT-6 models and come with
-OpenRouter's model list; for other models you can type the price. Blocked apps and sites are
-never recorded, so the AI never sees them. With a local model (Ollama, LM Studio) nothing leaves
-your computer at all.
+OpenRouter's model list; for other models you can type the price. Lookups leave out every app,
+site and window on your block list, including anything saved before you blocked it; audio
+transcripts are not filtered by app. Web links in an answer only open if you or a lookup
+supplied that address, so text on screen can't trick the AI into a link that sends your data
+elsewhere. With a local model (Ollama, LM Studio) nothing leaves your computer at all; a custom
+server reached over plain http on another network gets a warning, since your key would travel
+unencrypted.
 
 ## Mac app
 
