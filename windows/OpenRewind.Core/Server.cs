@@ -114,10 +114,14 @@ public sealed class Api
     /// Platform facts for /health (permissions etc.).
     readonly Func<Dictionary<string, object?>> healthExtras;
 
-    public Api(Database db, Config config, Func<Dictionary<string, object?>>? healthExtras = null)
+    /// Search by Meaning, while it is on (mode=meaning on /search).
+    readonly Func<MeaningService?> meaning;
+
+    public Api(Database db, Config config, Func<Dictionary<string, object?>>? healthExtras = null, Func<MeaningService?>? meaning = null)
     {
         this.db = db; this.config = config;
         this.healthExtras = healthExtras ?? (() => new());
+        this.meaning = meaning ?? (() => null);
     }
 
     public HttpResponse Handle(HttpRequest req)
@@ -140,6 +144,7 @@ public sealed class Api
                     ["frames_total"] = s.Count,
                     ["last_frame_at"] = s.Last,
                     ["data_dir"] = config.Home,
+                    ["search_by_meaning"] = meaning()?.Embedder != null,
                 };
                 foreach (var kv in healthExtras()) h[kv.Key] = kv.Value;
                 return HttpResponse.Json(h);
@@ -182,6 +187,7 @@ public sealed class Api
         var wantAudio = (type == "audio" || type == "all") && string.IsNullOrEmpty(s.AppName) && string.IsNullOrEmpty(s.WindowName);
         // To page through a merged list: take the top (offset + limit) of each source, merge by time, then slice.
         var fetch = offset + limit;
+        if (Get("mode")?.ToLowerInvariant() == "meaning") return SearchByMeaning(s, wantScreen, wantAudio, offset, limit, Clip);
         var items = new List<(string Ts, object Item)>();
         int total = 0;
         if (wantScreen)
@@ -216,6 +222,50 @@ public sealed class Api
         }
         var page = items.OrderByDescending(i => i.Ts, StringComparer.Ordinal).Skip(offset).Take(limit).Select(i => i.Item);
         return HttpResponse.Json(new { data = page, pagination = new { limit, offset, total } });
+    }
+
+    /// mode=meaning: the moments closest in meaning to q, best first, in the same shape as the word search
+    /// plus a "score". Blocked apps and sites are left out.
+    HttpResponse SearchByMeaning(SearchQuery s, bool screen, bool audio, int offset, int limit, Func<string, string> clip)
+    {
+        if (meaning() is not MeaningService m || m.Embedder == null) return HttpResponse.Error("Search by Meaning is off", 400);
+        if (string.IsNullOrWhiteSpace(s.Q)) return HttpResponse.Json(new { data = Array.Empty<object>(), pagination = new { limit, offset, total = 0 } });
+        bool Has(string have, string? want) => string.IsNullOrEmpty(want) || have.Contains(want, StringComparison.OrdinalIgnoreCase);
+        var hits = m.Search(s.Q, new MeaningQuery
+        {
+            Start = s.StartTime, End = s.EndTime, Screen = screen, Audio = audio, Limit = Math.Min(200, offset + limit),
+            Match = (app, window) => Has(app, s.AppName) && Has(window, s.WindowName),
+        });
+        var page = hits.Skip(offset).Take(limit).Select(h =>
+        {
+            if (h.IsAudio)
+            {
+                var c = db.ChunkById(h.FirstId);
+                var start = c != null && Time.ParseIso(c.Timestamp) is DateTime cs && Time.ParseIso(h.Timestamp) is DateTime hs ? (hs - cs).TotalSeconds : 0;
+                return (object)new
+                {
+                    type = "Audio",
+                    content = new
+                    {
+                        chunk_id = h.FirstId, transcription_id = h.Id, transcription = clip(h.Text), timestamp = h.Timestamp,
+                        start_time = start, end_time = start, device_name = c?.Device ?? "", device_type = c?.IsInput == false ? "Output" : "Input",
+                        file_path = c?.FilePath ?? "", speaker = (object?)null, tags = Array.Empty<string>(), score = h.Score,
+                    },
+                };
+            }
+            var f = db.FrameById(h.FirstId);
+            return new
+            {
+                type = "OCR",
+                content = new
+                {
+                    frame_id = h.FirstId, text = clip(h.Text), timestamp = h.Timestamp, app_name = h.AppName, window_name = h.WindowName,
+                    focused = f?.Focused ?? true, file_path = f?.SnapshotPath ?? "", text_source = f?.TextSource ?? "ocr", offset_index = 0,
+                    tags = Array.Empty<string>(), score = h.Score,
+                },
+            };
+        });
+        return HttpResponse.Json(new { data = page, pagination = new { limit, offset, total = hits.Count } });
     }
 
     HttpResponse AudioFile(string idStr)
