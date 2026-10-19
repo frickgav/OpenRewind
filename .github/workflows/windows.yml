@@ -2,9 +2,9 @@ name: Windows app
 
 on:
   push:
-    paths: ["windows/**", "Sources/openrewind/WebUI.swift", "scripts/build-windows.ps1", "scripts/launch-check-windows.ps1", ".github/workflows/windows.yml"]
+    paths: ["windows/**", "Sources/openrewind/WebUI.swift", "scripts/build-windows.ps1", "scripts/launch-check-windows.ps1", "scripts/mcp-check-windows.ps1", ".github/workflows/windows.yml"]
   pull_request:
-    paths: ["windows/**", "Sources/openrewind/WebUI.swift", "scripts/build-windows.ps1", "scripts/launch-check-windows.ps1", ".github/workflows/windows.yml"]
+    paths: ["windows/**", "Sources/openrewind/WebUI.swift", "scripts/build-windows.ps1", "scripts/launch-check-windows.ps1", "scripts/mcp-check-windows.ps1", ".github/workflows/windows.yml"]
   workflow_dispatch:
 
 permissions:
@@ -31,6 +31,11 @@ jobs:
         if: matrix.arch == 'x64'
         shell: pwsh
         run: scripts/launch-check-windows.ps1 -ExePath dist/win-x64/OpenRewind.exe
+      # Start it as an AI app does (OpenRewind.exe mcp, pipes for stdin/stdout) and talk MCP to it.
+      - name: MCP check
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: scripts/mcp-check-windows.ps1 -ExePath dist/win-x64/OpenRewind.exe
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: OpenRewind-win-${{ matrix.arch }}

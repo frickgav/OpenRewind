@@ -59,6 +59,14 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
 - **Settings → Local Search Server** turns on the API and browser search page at
   http://127.0.0.1:3031. Off by default. Only this PC can connect. The terminal commands
   `record` and `serve` always start it.
+- **Settings → Allow AI Apps to Read My History (MCP)** lets Claude Desktop, Claude Code, Cursor
+  and other MCP apps search your history with the Ask AI lookups. Off by default. Blocked apps and
+  sites are left out of screen text (a blocked app shows as "(blocked app)" in the activity
+  summary); audio transcripts are not filtered by app.
+  **Settings → Connect AI Apps…** shows what to paste into each app, with the path of your
+  `OpenRewind.exe` filled in and a Copy button. The app starts `OpenRewind.exe mcp` itself, with no
+  tray icon, and reads the database read-only, so OpenRewind does not have to be running. See
+  [Use with Claude and other AI apps (MCP)](../README.md#use-with-claude-and-other-ai-apps-mcp).
 - **Settings → Launch at Login** starts it when you sign in.
 - **Updates**: a newer release shows a banner at the top of the timeline (✕ hides it until the
   next version) and a row in the tray menu. **Settings → Download Updates Automatically** (on by
@@ -120,6 +128,7 @@ on your PC. OpenRewind records audio without it; the clips are transcribed once 
 .\OpenRewind.exe doctor
 .\OpenRewind.exe record          # record + API, no tray icon
 .\OpenRewind.exe delete older:week
+.\OpenRewind.exe mcp             # MCP server for AI apps over stdin/stdout (what they start)
 .\OpenRewind.exe --help
 ```
 

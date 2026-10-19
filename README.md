@@ -83,6 +83,8 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
 - **Ask AI** (menu bar or tray → Ask AI…) answers questions like "what did I work on today?"
   with your own key: Anthropic, OpenAI, Gemini, OpenRouter (any model it offers), or any
   OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
+- **Claude, Cursor and other AI apps** can search your history too, through MCP, once you turn
+  it on. See [Use with Claude and other AI apps (MCP)](#use-with-claude-and-other-ai-apps-mcp).
 
 ## Ask AI
 
@@ -111,7 +113,8 @@ back. Times in answers link back to that moment in the timeline. Each answer sho
 tokens it used and what they cost; the header shows the chat's total and AI Settings keeps a
 running total per provider. Prices are built in for Claude and GPT-6 models and come with
 OpenRouter's model list; for other models you can type the price. Lookups leave out every app,
-site and window on your block list, including anything saved before you blocked it; audio
+site and window on your block list, including anything saved before you blocked it (the activity
+summary still counts a blocked app's time, as "(blocked app)", without its name); audio
 transcripts are not filtered by app. Web links in an answer only open if you or a lookup
 supplied that address, so text on screen can't trick the AI into a link that sends your data
 elsewhere. With a local model (Ollama, LM Studio) nothing leaves your computer at all; a custom
@@ -135,14 +138,83 @@ Get things out of the timeline, on the Mac and on Windows:
 - The share button at the top of the timeline (or a right-click on the screenshot on Windows) has
   all of these, plus **Copy All Text** and **Mark Clip Start / End Here**.
 
-Clips are made from the screenshots already saved, never from a new recording, so blocked apps
-stay blurred. Screenshots from apps, windows or sites that are on your block list now are left
-out (and can't be copied or saved), even ones saved before you blocked them. With the app filter
-on, a clip has only that app's screenshots, as the timeline shows them. A screenshot lasts until
-the next one, at most a minute, so long breaks are skipped. A clip covers at most 2 hours; videos
-are at most 1920 pixels wide and GIFs 1280, with at most 600 pictures (fast parts drop pictures
-to stay under that). MP4 uses H.264 (AVAssetWriter on the Mac, the encoder built into Windows);
-GIFs use ImageIO on the Mac and a small encoder in OpenRewind on Windows.
+What is left out:
+
+- Screenshots whose front app, window or site is on your block list **now** are left out of
+  clips and can't be copied, saved or read for text, even ones saved before you blocked it. With
+  the app filter on, a clip has only that app's screenshots, as the timeline shows them.
+- Clips are made from the screenshots already saved, never from a new recording. Blurring of
+  other windows happens when a screenshot is taken, using the block list as it was then. So an
+  app you block today is still visible, unblurred, in older screenshots where another app was in
+  front and it was showing beside it. Check a clip before you share it if you blocked something
+  recently.
+- Copies go to the system clipboard. On Windows OpenRewind marks them so they stay out of
+  clipboard history (Win+V) and cloud clipboard sync. On the Mac, Universal Clipboard can still
+  hand a copy to your other Apple devices nearby while Handoff is on; turn Handoff off in System
+  Settings → General → AirDrop & Handoff to stop that. The Live Text menu on the Mac has only
+  Copy and Select All; web search, translate and look up are taken out.
+
+A screenshot lasts until the next one, at most a minute, so long breaks are skipped. A clip
+covers at most 2 hours; videos are at most 1920 pixels wide and GIFs 1280, with at most 600
+pictures (fast parts drop pictures to stay under that). MP4 uses H.264 (AVAssetWriter on the
+Mac, the encoder built into Windows). GIFs use a small encoder in OpenRewind on both, which
+writes as it goes, only stores the part of each picture that changed, and stops at once on
+Cancel.
+
+## Use with Claude and other AI apps (MCP)
+
+Claude Desktop, Claude Code, Cursor and other apps that support the
+[Model Context Protocol](https://modelcontextprotocol.io) can look things up in your history
+with the same lookups as Ask AI (the table above). Ask them "what was I reading about
+databases yesterday?" and they search OpenRewind on your computer.
+
+It is **off by default**. Turn on **Settings → Allow AI Apps to Read My History (MCP)**, then
+open **Settings → Connect AI Apps…**: it shows the setup for Claude Desktop, Claude Code and
+Cursor with this copy's path filled in, each with a **Copy** button. For Claude Desktop it looks
+like this (Mac path shown; on Windows it is the path of your `OpenRewind.exe`):
+
+```json
+{
+  "mcpServers": {
+    "openrewind": {
+      "command": "/Applications/OpenRewind.app/Contents/MacOS/OpenRewind",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+That goes in `~/Library/Application Support/Claude/claude_desktop_config.json` (Windows:
+`%APPDATA%\Claude\claude_desktop_config.json`); Cursor uses the same lines in `~/.cursor/mcp.json`.
+For Claude Code, run once:
+
+```bash
+claude mcp add --scope user openrewind /Applications/OpenRewind.app/Contents/MacOS/OpenRewind mcp
+```
+
+How it works:
+
+- The AI app starts `OpenRewind mcp` (Windows: `OpenRewind.exe mcp`, or `--mcp`) and talks to it
+  over stdin/stdout. It shows no icon or window, records nothing and never changes the database:
+  it opens it read-only, so it works whether or not OpenRewind is running.
+- Lookups are the same as in Ask AI and capped the same way. Blocked apps, sites and windows are
+  left out of screen text, searches and screenshots; in the activity summary a blocked app shows
+  only as "(blocked app)" with its time. **Audio transcripts are not filtered by app**, so a call
+  or video heard while a blocked app was open can show up in `search_audio`. One activity summary
+  covers at most 31 days. Screenshots are only shared when **Let AI look at screenshots** is on in
+  AI Settings.
+- Names you add with `OPENREWIND_EXCLUDE` are not applied here: the AI app starts OpenRewind with
+  its own environment. They are still never recorded; only frames saved before you added a name
+  can show up. Put apps on **Blocked Apps & Sites** to hide them everywhere.
+- Each moment comes with its exact local time (like `2026-10-18T14:30:05-07:00`), which the AI
+  can pass back to read more around it.
+- While the switch is off, the AI app still lists OpenRewind, but every lookup answers that you
+  need to turn it on. Turning it off takes effect on the next lookup.
+- What the AI app reads goes to that app's AI provider, like anything else you ask it.
+- Text on your screen (web pages, emails, messages) reaches the AI app as data. Unlike Ask AI,
+  OpenRewind cannot stop an AI app from opening a link or running a command that such text asks
+  for, and many AI apps (Claude Code, Cursor) can do both. OpenRewind tells the AI to treat it as
+  data only, but keep an eye on what it does with your history.
 
 ## Mac app
 
