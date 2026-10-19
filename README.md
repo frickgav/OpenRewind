@@ -83,6 +83,8 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
 - **Ask AI** (menu bar or tray → Ask AI…) answers questions like "what did I work on today?"
   with your own key: Anthropic, OpenAI, Gemini, OpenRouter (any model it offers), or any
   OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
+- **Insights** (menu bar or tray → Insights…) shows where your time went today or this week,
+  worked out on your computer without AI. See [Insights](#insights).
 
 ## Ask AI
 
@@ -118,6 +120,30 @@ elsewhere. With a local model (Ollama, LM Studio) nothing leaves your computer a
 server reached over plain http on another network gets a warning, since your key would travel
 unencrypted.
 
+## Insights
+
+Open it from the menu bar or tray (**Insights…**). Switch between **Day** and **Week**, and use
+‹ › (or ← →) for the day or week before or after. It shows:
+
+- **Active time**: how long you used the computer, and the change from the day or week before
+  (up to the same time while the day or week is still going).
+- **Apps** and **Websites**: time in each, as bars, the top 10 and then "Other", each with the change
+  from the day or week before.
+- **When you were active**: a strip of the day's hours, or for a week a grid of days by hours.
+- **Focus sessions**: the longest stretches of 10 minutes or more mostly in one app (short looks at
+  another app, under a minute, don't break one).
+- **App switches**: how often the app in front changed while you were using the computer.
+
+Click an app to open the timeline showing only that app, at the first moment you used it that
+day or week. Click a website or a focus session to jump to it.
+
+Everything is worked out from the saved screenshots' app, window and address, on your computer;
+nothing is sent anywhere and no AI is used. Apps, sites and windows on your block list are left out
+entirely, including anything saved before you blocked them. Time counts from one screenshot to the
+next. A gap of more than 2 minutes (locked, asleep or paused) does not count, and once nothing has
+changed on screen for 5 minutes the rest does not count until something changes. The window follows
+**Settings → Timeline Look**.
+
 ## Mac app
 
 ```bash
@@ -145,6 +171,7 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
   search only finds that app's screen text (and speech heard while it was in front).
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
+- **Insights…** shows where your time went today or this week (see [Insights](#insights)).
 - **Settings → Timeline Shortcut**: **Change Shortcut…** waits for the new key combination
   (⌘, ⌥ or ⌃ with a key, or an F-key alone); **Reset** goes back to ⌥⌘T.
 - **Settings → Screenshot Resolution**: Full (100%), High (75%), Medium (50%, default) or
