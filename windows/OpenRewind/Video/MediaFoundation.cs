@@ -111,168 +111,168 @@ struct PropVariant
 interface IMFAttributes
 {
     // IMFAttributes
-    int GetItem([In] ref Guid key, IntPtr value);
-    int GetItemType([In] ref Guid key, out int type);
-    int CompareItem([In] ref Guid key, IntPtr value, out bool result);
-    int Compare(IntPtr theirs, int matchType, out bool result);
-    int GetUINT32([In] ref Guid key, out uint value);
-    int GetUINT64([In] ref Guid key, out ulong value);
-    int GetDouble([In] ref Guid key, out double value);
-    int GetGUID([In] ref Guid key, out Guid value);
-    int GetStringLength([In] ref Guid key, out uint length);
-    int GetString([In] ref Guid key, IntPtr buffer, uint size, out uint length);
-    int GetAllocatedString([In] ref Guid key, out IntPtr value, out uint length);
-    int GetBlobSize([In] ref Guid key, out uint size);
-    int GetBlob([In] ref Guid key, [Out] byte[] buffer, uint size, out uint written);
-    int GetAllocatedBlob([In] ref Guid key, out IntPtr buffer, out uint size);
-    int GetUnknown([In] ref Guid key, [In] ref Guid iid, out IntPtr value);
-    int SetItem([In] ref Guid key, IntPtr value);
-    int DeleteItem([In] ref Guid key);
-    int DeleteAllItems();
-    int SetUINT32([In] ref Guid key, uint value);
-    int SetUINT64([In] ref Guid key, ulong value);
-    int SetDouble([In] ref Guid key, double value);
-    int SetGUID([In] ref Guid key, [In] ref Guid value);
-    int SetString([In] ref Guid key, [MarshalAs(UnmanagedType.LPWStr)] string value);
-    int SetBlob([In] ref Guid key, [In] byte[] buffer, uint size);
-    int SetUnknown([In] ref Guid key, IntPtr value);
-    int LockStore();
-    int UnlockStore();
-    int GetCount(out uint count);
-    int GetItemByIndex(uint index, out Guid key, IntPtr value);
-    int CopyAllItems(IntPtr destination);
+    [PreserveSig] int GetItem([In] ref Guid key, IntPtr value);
+    [PreserveSig] int GetItemType([In] ref Guid key, out int type);
+    [PreserveSig] int CompareItem([In] ref Guid key, IntPtr value, [MarshalAs(UnmanagedType.Bool)] out bool result);
+    [PreserveSig] int Compare(IntPtr theirs, int matchType, [MarshalAs(UnmanagedType.Bool)] out bool result);
+    [PreserveSig] int GetUINT32([In] ref Guid key, out uint value);
+    [PreserveSig] int GetUINT64([In] ref Guid key, out ulong value);
+    [PreserveSig] int GetDouble([In] ref Guid key, out double value);
+    [PreserveSig] int GetGUID([In] ref Guid key, out Guid value);
+    [PreserveSig] int GetStringLength([In] ref Guid key, out uint length);
+    [PreserveSig] int GetString([In] ref Guid key, IntPtr buffer, uint size, out uint length);
+    [PreserveSig] int GetAllocatedString([In] ref Guid key, out IntPtr value, out uint length);
+    [PreserveSig] int GetBlobSize([In] ref Guid key, out uint size);
+    [PreserveSig] int GetBlob([In] ref Guid key, [Out] byte[] buffer, uint size, out uint written);
+    [PreserveSig] int GetAllocatedBlob([In] ref Guid key, out IntPtr buffer, out uint size);
+    [PreserveSig] int GetUnknown([In] ref Guid key, [In] ref Guid iid, out IntPtr value);
+    [PreserveSig] int SetItem([In] ref Guid key, IntPtr value);
+    [PreserveSig] int DeleteItem([In] ref Guid key);
+    [PreserveSig] int DeleteAllItems();
+    [PreserveSig] int SetUINT32([In] ref Guid key, uint value);
+    [PreserveSig] int SetUINT64([In] ref Guid key, ulong value);
+    [PreserveSig] int SetDouble([In] ref Guid key, double value);
+    [PreserveSig] int SetGUID([In] ref Guid key, [In] ref Guid value);
+    [PreserveSig] int SetString([In] ref Guid key, [MarshalAs(UnmanagedType.LPWStr)] string value);
+    [PreserveSig] int SetBlob([In] ref Guid key, [In] byte[] buffer, uint size);
+    [PreserveSig] int SetUnknown([In] ref Guid key, IntPtr value);
+    [PreserveSig] int LockStore();
+    [PreserveSig] int UnlockStore();
+    [PreserveSig] int GetCount(out uint count);
+    [PreserveSig] int GetItemByIndex(uint index, out Guid key, IntPtr value);
+    [PreserveSig] int CopyAllItems(IntPtr destination);
 }
 
 [ComImport, Guid("44ae0fa8-ea31-4109-8d2e-4cae4997c555"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 interface IMFMediaType
 {
     // IMFAttributes
-    int GetItem([In] ref Guid key, IntPtr value);
-    int GetItemType([In] ref Guid key, out int type);
-    int CompareItem([In] ref Guid key, IntPtr value, out bool result);
-    int Compare(IntPtr theirs, int matchType, out bool result);
-    int GetUINT32([In] ref Guid key, out uint value);
-    int GetUINT64([In] ref Guid key, out ulong value);
-    int GetDouble([In] ref Guid key, out double value);
-    int GetGUID([In] ref Guid key, out Guid value);
-    int GetStringLength([In] ref Guid key, out uint length);
-    int GetString([In] ref Guid key, IntPtr buffer, uint size, out uint length);
-    int GetAllocatedString([In] ref Guid key, out IntPtr value, out uint length);
-    int GetBlobSize([In] ref Guid key, out uint size);
-    int GetBlob([In] ref Guid key, [Out] byte[] buffer, uint size, out uint written);
-    int GetAllocatedBlob([In] ref Guid key, out IntPtr buffer, out uint size);
-    int GetUnknown([In] ref Guid key, [In] ref Guid iid, out IntPtr value);
-    int SetItem([In] ref Guid key, IntPtr value);
-    int DeleteItem([In] ref Guid key);
-    int DeleteAllItems();
-    int SetUINT32([In] ref Guid key, uint value);
-    int SetUINT64([In] ref Guid key, ulong value);
-    int SetDouble([In] ref Guid key, double value);
-    int SetGUID([In] ref Guid key, [In] ref Guid value);
-    int SetString([In] ref Guid key, [MarshalAs(UnmanagedType.LPWStr)] string value);
-    int SetBlob([In] ref Guid key, [In] byte[] buffer, uint size);
-    int SetUnknown([In] ref Guid key, IntPtr value);
-    int LockStore();
-    int UnlockStore();
-    int GetCount(out uint count);
-    int GetItemByIndex(uint index, out Guid key, IntPtr value);
-    int CopyAllItems(IntPtr destination);
+    [PreserveSig] int GetItem([In] ref Guid key, IntPtr value);
+    [PreserveSig] int GetItemType([In] ref Guid key, out int type);
+    [PreserveSig] int CompareItem([In] ref Guid key, IntPtr value, [MarshalAs(UnmanagedType.Bool)] out bool result);
+    [PreserveSig] int Compare(IntPtr theirs, int matchType, [MarshalAs(UnmanagedType.Bool)] out bool result);
+    [PreserveSig] int GetUINT32([In] ref Guid key, out uint value);
+    [PreserveSig] int GetUINT64([In] ref Guid key, out ulong value);
+    [PreserveSig] int GetDouble([In] ref Guid key, out double value);
+    [PreserveSig] int GetGUID([In] ref Guid key, out Guid value);
+    [PreserveSig] int GetStringLength([In] ref Guid key, out uint length);
+    [PreserveSig] int GetString([In] ref Guid key, IntPtr buffer, uint size, out uint length);
+    [PreserveSig] int GetAllocatedString([In] ref Guid key, out IntPtr value, out uint length);
+    [PreserveSig] int GetBlobSize([In] ref Guid key, out uint size);
+    [PreserveSig] int GetBlob([In] ref Guid key, [Out] byte[] buffer, uint size, out uint written);
+    [PreserveSig] int GetAllocatedBlob([In] ref Guid key, out IntPtr buffer, out uint size);
+    [PreserveSig] int GetUnknown([In] ref Guid key, [In] ref Guid iid, out IntPtr value);
+    [PreserveSig] int SetItem([In] ref Guid key, IntPtr value);
+    [PreserveSig] int DeleteItem([In] ref Guid key);
+    [PreserveSig] int DeleteAllItems();
+    [PreserveSig] int SetUINT32([In] ref Guid key, uint value);
+    [PreserveSig] int SetUINT64([In] ref Guid key, ulong value);
+    [PreserveSig] int SetDouble([In] ref Guid key, double value);
+    [PreserveSig] int SetGUID([In] ref Guid key, [In] ref Guid value);
+    [PreserveSig] int SetString([In] ref Guid key, [MarshalAs(UnmanagedType.LPWStr)] string value);
+    [PreserveSig] int SetBlob([In] ref Guid key, [In] byte[] buffer, uint size);
+    [PreserveSig] int SetUnknown([In] ref Guid key, IntPtr value);
+    [PreserveSig] int LockStore();
+    [PreserveSig] int UnlockStore();
+    [PreserveSig] int GetCount(out uint count);
+    [PreserveSig] int GetItemByIndex(uint index, out Guid key, IntPtr value);
+    [PreserveSig] int CopyAllItems(IntPtr destination);
     // IMFMediaType
-    int GetMajorType(out Guid type);
-    int IsCompressedFormat(out bool compressed);
-    int IsEqual(IntPtr other, out uint flags);
-    int GetRepresentation(Guid representation, out IntPtr value);
-    int FreeRepresentation(Guid representation, IntPtr value);
+    [PreserveSig] int GetMajorType(out Guid type);
+    [PreserveSig] int IsCompressedFormat([MarshalAs(UnmanagedType.Bool)] out bool compressed);
+    [PreserveSig] int IsEqual(IntPtr other, out uint flags);
+    [PreserveSig] int GetRepresentation(Guid representation, out IntPtr value);
+    [PreserveSig] int FreeRepresentation(Guid representation, IntPtr value);
 }
 
 [ComImport, Guid("c40a00f2-b93a-4d80-ae8c-5a1c634f58e4"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 interface IMFSample
 {
     // IMFAttributes
-    int GetItem([In] ref Guid key, IntPtr value);
-    int GetItemType([In] ref Guid key, out int type);
-    int CompareItem([In] ref Guid key, IntPtr value, out bool result);
-    int Compare(IntPtr theirs, int matchType, out bool result);
-    int GetUINT32([In] ref Guid key, out uint value);
-    int GetUINT64([In] ref Guid key, out ulong value);
-    int GetDouble([In] ref Guid key, out double value);
-    int GetGUID([In] ref Guid key, out Guid value);
-    int GetStringLength([In] ref Guid key, out uint length);
-    int GetString([In] ref Guid key, IntPtr buffer, uint size, out uint length);
-    int GetAllocatedString([In] ref Guid key, out IntPtr value, out uint length);
-    int GetBlobSize([In] ref Guid key, out uint size);
-    int GetBlob([In] ref Guid key, [Out] byte[] buffer, uint size, out uint written);
-    int GetAllocatedBlob([In] ref Guid key, out IntPtr buffer, out uint size);
-    int GetUnknown([In] ref Guid key, [In] ref Guid iid, out IntPtr value);
-    int SetItem([In] ref Guid key, IntPtr value);
-    int DeleteItem([In] ref Guid key);
-    int DeleteAllItems();
-    int SetUINT32([In] ref Guid key, uint value);
-    int SetUINT64([In] ref Guid key, ulong value);
-    int SetDouble([In] ref Guid key, double value);
-    int SetGUID([In] ref Guid key, [In] ref Guid value);
-    int SetString([In] ref Guid key, [MarshalAs(UnmanagedType.LPWStr)] string value);
-    int SetBlob([In] ref Guid key, [In] byte[] buffer, uint size);
-    int SetUnknown([In] ref Guid key, IntPtr value);
-    int LockStore();
-    int UnlockStore();
-    int GetCount(out uint count);
-    int GetItemByIndex(uint index, out Guid key, IntPtr value);
-    int CopyAllItems(IntPtr destination);
+    [PreserveSig] int GetItem([In] ref Guid key, IntPtr value);
+    [PreserveSig] int GetItemType([In] ref Guid key, out int type);
+    [PreserveSig] int CompareItem([In] ref Guid key, IntPtr value, [MarshalAs(UnmanagedType.Bool)] out bool result);
+    [PreserveSig] int Compare(IntPtr theirs, int matchType, [MarshalAs(UnmanagedType.Bool)] out bool result);
+    [PreserveSig] int GetUINT32([In] ref Guid key, out uint value);
+    [PreserveSig] int GetUINT64([In] ref Guid key, out ulong value);
+    [PreserveSig] int GetDouble([In] ref Guid key, out double value);
+    [PreserveSig] int GetGUID([In] ref Guid key, out Guid value);
+    [PreserveSig] int GetStringLength([In] ref Guid key, out uint length);
+    [PreserveSig] int GetString([In] ref Guid key, IntPtr buffer, uint size, out uint length);
+    [PreserveSig] int GetAllocatedString([In] ref Guid key, out IntPtr value, out uint length);
+    [PreserveSig] int GetBlobSize([In] ref Guid key, out uint size);
+    [PreserveSig] int GetBlob([In] ref Guid key, [Out] byte[] buffer, uint size, out uint written);
+    [PreserveSig] int GetAllocatedBlob([In] ref Guid key, out IntPtr buffer, out uint size);
+    [PreserveSig] int GetUnknown([In] ref Guid key, [In] ref Guid iid, out IntPtr value);
+    [PreserveSig] int SetItem([In] ref Guid key, IntPtr value);
+    [PreserveSig] int DeleteItem([In] ref Guid key);
+    [PreserveSig] int DeleteAllItems();
+    [PreserveSig] int SetUINT32([In] ref Guid key, uint value);
+    [PreserveSig] int SetUINT64([In] ref Guid key, ulong value);
+    [PreserveSig] int SetDouble([In] ref Guid key, double value);
+    [PreserveSig] int SetGUID([In] ref Guid key, [In] ref Guid value);
+    [PreserveSig] int SetString([In] ref Guid key, [MarshalAs(UnmanagedType.LPWStr)] string value);
+    [PreserveSig] int SetBlob([In] ref Guid key, [In] byte[] buffer, uint size);
+    [PreserveSig] int SetUnknown([In] ref Guid key, IntPtr value);
+    [PreserveSig] int LockStore();
+    [PreserveSig] int UnlockStore();
+    [PreserveSig] int GetCount(out uint count);
+    [PreserveSig] int GetItemByIndex(uint index, out Guid key, IntPtr value);
+    [PreserveSig] int CopyAllItems(IntPtr destination);
     // IMFSample
-    int GetSampleFlags(out uint flags);
-    int SetSampleFlags(uint flags);
-    int GetSampleTime(out long time);
-    int SetSampleTime(long time);
-    int GetSampleDuration(out long duration);
-    int SetSampleDuration(long duration);
-    int GetBufferCount(out uint count);
-    int GetBufferByIndex(uint index, out IMFMediaBuffer buffer);
-    int ConvertToContiguousBuffer(out IMFMediaBuffer buffer);
-    int AddBuffer(IMFMediaBuffer buffer);
-    int RemoveBufferByIndex(uint index);
-    int RemoveAllBuffers();
-    int GetTotalLength(out uint length);
-    int CopyToBuffer(IMFMediaBuffer buffer);
+    [PreserveSig] int GetSampleFlags(out uint flags);
+    [PreserveSig] int SetSampleFlags(uint flags);
+    [PreserveSig] int GetSampleTime(out long time);
+    [PreserveSig] int SetSampleTime(long time);
+    [PreserveSig] int GetSampleDuration(out long duration);
+    [PreserveSig] int SetSampleDuration(long duration);
+    [PreserveSig] int GetBufferCount(out uint count);
+    [PreserveSig] int GetBufferByIndex(uint index, out IMFMediaBuffer buffer);
+    [PreserveSig] int ConvertToContiguousBuffer(out IMFMediaBuffer buffer);
+    [PreserveSig] int AddBuffer(IMFMediaBuffer buffer);
+    [PreserveSig] int RemoveBufferByIndex(uint index);
+    [PreserveSig] int RemoveAllBuffers();
+    [PreserveSig] int GetTotalLength(out uint length);
+    [PreserveSig] int CopyToBuffer(IMFMediaBuffer buffer);
 }
 
 [ComImport, Guid("045fa593-8799-42b8-bc8d-8968c6453507"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 interface IMFMediaBuffer
 {
-    int Lock(out IntPtr buffer, out uint maxLength, out uint currentLength);
-    int Unlock();
-    int GetCurrentLength(out uint length);
-    int SetCurrentLength(uint length);
-    int GetMaxLength(out uint length);
+    [PreserveSig] int Lock(out IntPtr buffer, out uint maxLength, out uint currentLength);
+    [PreserveSig] int Unlock();
+    [PreserveSig] int GetCurrentLength(out uint length);
+    [PreserveSig] int SetCurrentLength(uint length);
+    [PreserveSig] int GetMaxLength(out uint length);
 }
 
 [ComImport, Guid("3137f1cd-fe5e-4805-a5d8-fb477448cb3d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 interface IMFSinkWriter
 {
-    int AddStream(IMFMediaType type, out uint index);
-    int SetInputMediaType(uint index, IMFMediaType type, IMFAttributes? encodingParameters);
-    int BeginWriting();
-    int WriteSample(uint index, IMFSample sample);
-    int SendStreamTick(uint index, long timestamp);
-    int PlaceMarker(uint index, IntPtr context);
-    int NotifyEndOfSegment(uint index);
-    int Flush(uint index);
-    int FinalizeWriting();  // IMFSinkWriter::Finalize
-    int GetServiceForStream(uint index, [In] ref Guid service, [In] ref Guid iid, out IntPtr value);
-    int GetStatistics(uint index, IntPtr statistics);
+    [PreserveSig] int AddStream(IMFMediaType type, out uint index);
+    [PreserveSig] int SetInputMediaType(uint index, IMFMediaType type, IMFAttributes? encodingParameters);
+    [PreserveSig] int BeginWriting();
+    [PreserveSig] int WriteSample(uint index, IMFSample sample);
+    [PreserveSig] int SendStreamTick(uint index, long timestamp);
+    [PreserveSig] int PlaceMarker(uint index, IntPtr context);
+    [PreserveSig] int NotifyEndOfSegment(uint index);
+    [PreserveSig] int Flush(uint index);
+    [PreserveSig] int FinalizeWriting();  // IMFSinkWriter::Finalize
+    [PreserveSig] int GetServiceForStream(uint index, [In] ref Guid service, [In] ref Guid iid, out IntPtr value);
+    [PreserveSig] int GetStatistics(uint index, IntPtr statistics);
 }
 
 [ComImport, Guid("70ae66f2-c809-4e4f-8915-bdcb406b7993"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 interface IMFSourceReader
 {
-    int GetStreamSelection(uint index, out bool selected);
-    int SetStreamSelection(uint index, bool selected);
-    int GetNativeMediaType(uint index, uint typeIndex, out IMFMediaType type);
-    int GetCurrentMediaType(uint index, out IMFMediaType type);
-    int SetCurrentMediaType(uint index, IntPtr reserved, IMFMediaType type);
-    int SetCurrentPosition([In] ref Guid timeFormat, [In] ref PropVariant position);
-    int ReadSample(uint index, uint controlFlags, out uint actualIndex, out uint flags, out long timestamp, out IMFSample? sample);
-    int Flush(uint index);
-    int GetServiceForStream(uint index, [In] ref Guid service, [In] ref Guid iid, out IntPtr value);
-    int GetPresentationAttribute(uint index, [In] ref Guid attribute, out PropVariant value);
+    [PreserveSig] int GetStreamSelection(uint index, [MarshalAs(UnmanagedType.Bool)] out bool selected);
+    [PreserveSig] int SetStreamSelection(uint index, [MarshalAs(UnmanagedType.Bool)] bool selected);
+    [PreserveSig] int GetNativeMediaType(uint index, uint typeIndex, out IMFMediaType type);
+    [PreserveSig] int GetCurrentMediaType(uint index, out IMFMediaType type);
+    [PreserveSig] int SetCurrentMediaType(uint index, IntPtr reserved, IMFMediaType type);
+    [PreserveSig] int SetCurrentPosition([In] ref Guid timeFormat, [In] ref PropVariant position);
+    [PreserveSig] int ReadSample(uint index, uint controlFlags, out uint actualIndex, out uint flags, out long timestamp, out IMFSample? sample);
+    [PreserveSig] int Flush(uint index);
+    [PreserveSig] int GetServiceForStream(uint index, [In] ref Guid service, [In] ref Guid iid, out IntPtr value);
+    [PreserveSig] int GetPresentationAttribute(uint index, [In] ref Guid attribute, out PropVariant value);
 }
