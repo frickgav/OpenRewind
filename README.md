@@ -83,6 +83,8 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
 - **Ask AI** (menu bar or tray → Ask AI…) answers questions like "what did I work on today?"
   with your own key: Anthropic, OpenAI, Gemini, OpenRouter (any model it offers), or any
   OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
+- **Journal** (menu bar or tray → Journal…): one page per day with your top apps, sites and
+  windows, worked out on your computer, plus an optional AI recap. See [Journal](#journal).
 
 ## Ask AI
 
@@ -117,6 +119,36 @@ supplied that address, so text on screen can't trick the AI into a link that sen
 elsewhere. With a local model (Ollama, LM Studio) nothing leaves your computer at all; a custom
 server reached over plain http on another network gets a warning, since your key would travel
 unencrypted.
+
+## Journal
+
+Open it from the menu bar or tray (**Journal…**). Each page is one day: ‹ and › go to the day
+before or after, the date picker jumps to any day, and **Today** comes back.
+
+Every page has a part worked out on your computer, with no AI and nothing sent anywhere:
+
+- first and last activity and the total active time (a screenshot counts until the next one, at most 2 minutes)
+- top apps, top websites and top window or document titles
+- when audio was recorded (microphone, system audio or both)
+
+Apps, sites and windows on your block list are never shown: a blocked app is left out of every
+list, and a blocked site or window keeps only its app name. Click a time to open that moment in the
+timeline.
+
+**Recap**: with an AI provider set up in **AI Settings**, **Write Recap** asks your model for a
+short recap: what you worked on, who you talked to, and open loops to follow up. It uses the same
+lookups as Ask AI, so the block list applies the same way, and **What was sent** lists each lookup
+and exactly what went to the provider. The page shows the tokens and cost. Times in the recap link
+to that moment in the timeline. Recaps are saved in the database (`journal_recaps`), so a day is not
+written (or paid for) again; **Rewrite** replaces it.
+
+**Settings → Write Each Day's Recap Automatically** (also a switch in the Journal window) is off by
+default because it spends tokens. When on, each day's recap is written once, the first time the app
+is running after that day ends; days with nothing recorded are skipped. Deleting recordings, by hand
+or with **Keep … Recordings For**, also deletes the recaps of the days they were from.
+
+**Copy as Markdown** and **Save as Markdown…** export the page (recap included, with the times as
+plain text).
 
 ## Mac app
 
@@ -320,7 +352,7 @@ Delete the folder to wipe everything, or from the terminal:
 ## Not yet (Rewind had these)
 
 - Speaker identification (who said what)
-- Meeting summaries (Ask AI can summarize transcripts when asked, but nothing runs on its own)
+- Meeting summaries (Ask AI and the Journal recap summarize the day's transcripts, but not each meeting on its own)
 - UI input events (clicks, keys)
 - Browser URL per frame
 - Video chunk encoding (ffmpeg) instead of JPEGs
