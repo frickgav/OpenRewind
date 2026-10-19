@@ -258,6 +258,83 @@ public class AiTests : IDisposable
         Assert.Equal(local.ToUniversalTime(), AiTime.FromLink(link));
     }
 
+    [Fact]
+    public void BlockedAppsAndSitesStayOutOfLookups()
+    {
+        // Saved before the user blocked them.
+        var now = DateTime.UtcNow;
+        AddFrame(now.AddMinutes(-30), "Signal", "Chat with Sam", "secret plan alpha");
+        AddFrame(now.AddMinutes(-25), "Chrome", "Chase Online", "secret balance alpha", "https://www.chase.com/acct");
+        AddFrame(now.AddMinutes(-20), "Chrome", "Statement", "secret statement alpha", "https://secure.chase.com/s");
+        AddFrame(now.AddMinutes(-15), "Code", "notes.md", "secret notes alpha");
+        var tools = new AiTools(db) { Blocked = new Blocklist(new[] { new BlockedApp("signal", "Signal") }, new[] { "Chase" }, true) };
+
+        var hits = tools.Run(new AiToolCall("1", "search_screen", new JsonObject { ["query"] = "secret alpha" }));
+        Assert.Contains("notes.md", hits);
+        Assert.DoesNotContain("plan", hits);
+        Assert.DoesNotContain("balance", hits);
+        Assert.DoesNotContain("statement", hits);
+
+        var text = tools.Run(new AiToolCall("2", "get_screen_text", new JsonObject
+        {
+            ["start"] = AiTime.Label(now.AddMinutes(-31)), ["end"] = AiTime.Label(now.AddMinutes(-14)),
+        }));
+        Assert.Contains("secret notes", text);
+        Assert.DoesNotContain("Chat with Sam", text);
+        Assert.DoesNotContain("chase.com", text);
+
+        // Time in a blocked app still shows, without its window titles or addresses.
+        var summary = tools.Run(new AiToolCall("3", "activity_summary", new JsonObject { ["start"] = "1h ago" }));
+        Assert.DoesNotContain("Chat with Sam", summary);
+        Assert.DoesNotContain("chase", summary, StringComparison.OrdinalIgnoreCase);
+
+        tools.Screenshots = f => new byte[] { 9 };
+        var (shot, image) = tools.Execute(new AiToolCall("4", "view_screenshot", new JsonObject { ["time"] = AiTime.Label(now.AddMinutes(-30)) }));
+        Assert.Null(image);
+        Assert.Contains("blocked", shot);
+    }
+
+    [Fact]
+    public async Task OnlyLinksTheUserOrALookupSuppliedOpen()
+    {
+        AddFrame(DateTime.UtcNow.AddMinutes(-5), "Chrome", "Docs", "how to deploy", "https://docs.example.com/deploy");
+        var client = new FakeClient();
+        client.Replies.Enqueue(new AiReply("", new() { new("c1", "search_screen", new JsonObject { ["query"] = "deploy" }) }, new AiUsage(1, 1)));
+        client.Replies.Enqueue(new AiReply("See the docs.", new(), new AiUsage(1, 1)));
+        var convo = new AiConversation();
+        await convo.Ask("what about https://news.example.org/a?", client, new AiTools(db), _ => { });
+
+        Assert.True(convo.MayOpen("https://docs.example.com/deploy"));
+        Assert.True(convo.MayOpen("https://news.example.org/a"));
+        Assert.True(convo.MayOpen("openrewind://t/100"));
+        Assert.False(convo.MayOpen("https://evil.example/?d=secret"));
+        Assert.False(convo.MayOpen("file:///etc/passwd"));
+
+        var (text, links) = AiMarkdown.Plain("[2:15 PM](https://evil.example/?d=x) and [docs](https://docs.example.com/deploy)", convo.MayOpen);
+        Assert.Equal("2:15 PM (https://evil.example/?d=x) and docs", text);
+        Assert.Equal("https://docs.example.com/deploy", Assert.Single(links).Url);
+
+        convo.Clear();
+        Assert.False(convo.MayOpen("https://docs.example.com/deploy"));
+    }
+
+    [Theory]
+    [InlineData("http://203.0.113.5:11434/v1", true)]
+    [InlineData("http://ollama.example.com/v1", true)]
+    [InlineData("https://ollama.example.com/v1", false)]
+    [InlineData("http://localhost:11434/v1", false)]
+    [InlineData("http://127.0.0.1:1234/v1", false)]
+    [InlineData("http://192.168.1.20:11434/v1", false)]
+    [InlineData("http://10.0.0.4/v1", false)]
+    [InlineData("http://172.20.0.2/v1", false)]
+    [InlineData("http://100.101.5.6/v1", false)]
+    [InlineData("http://mac-studio.local:11434/v1", false)]
+    [InlineData("http://gpu-box:11434/v1", false)]
+    [InlineData("http://[::1]:11434/v1", false)]
+    [InlineData("not a url", false)]
+    public void WarnsAboutPlainHttpToOtherComputers(string address, bool risky) =>
+        Assert.Equal(risky, AiFormat.IsPlainHttpRemote(address));
+
     sealed class FakeClient : IAiClient
     {
         public readonly Queue<AiReply> Replies = new();

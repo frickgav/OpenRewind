@@ -6,13 +6,24 @@ namespace OpenRewind;
 
 /// What the AI can look up in the local database. A whole day of screen text is far too much to
 /// send, so the model asks for summaries and searches instead, and every answer is capped in size.
-/// Blocked apps and sites are never stored, so they never show up here either.
-/// The Mac app has the same tools in AITools.swift.
+/// Frames of apps, sites and windows on the block list are left out of every answer, including
+/// ones saved before the user blocked them. The Mac app has the same tools in AITools.swift.
 public sealed class AiTools
 {
     readonly Database db;
 
     public AiTools(Database db) { this.db = db; }
+
+    /// What to leave out; null means the block list recording uses right now.
+    public Blocklist? Blocked;
+
+    /// True for a frame the block list covers now, by app name, private-window title, or a blocked
+    /// word in the title or web address.
+    public bool Hides(string app, string window, string url)
+    {
+        var list = Blocked ?? Blocklist.Current;
+        return list.BlocksWindow(app, app, window) || list.HasKeyword(url);
+    }
 
     /// Reads a frame's screenshot as a small JPEG. Set only while the user has turned on
     /// "Let AI look at screenshots"; null means view_screenshot is not offered at all.
@@ -100,6 +111,7 @@ public sealed class AiTools
         if (Screenshots == null) return ("Error: the user has not allowed screenshots. Use the text tools.", null);
         if (AiTime.Parse(call.Args["time"]) is not DateTime t) return ("Error: time is required, e.g. '2026-10-18 14:30'.", null);
         if (db.FrameNear(t) is not Frame f) return ("No screenshot was saved near that time.", null);
+        if (Hides(f.AppName, f.WindowName, f.BrowserUrl)) return ("That moment is from a blocked app or site, so its screenshot can't be shown.", null);
         var image = Screenshots(f);
         var what = $"Screenshot from {AiTime.Label(f.Timestamp)} {f.AppName}" + (f.WindowName.Length > 0 ? $" — “{f.WindowName}”" : "")
                    + $" (link: {AiTime.Link(f.Timestamp)})";
@@ -115,7 +127,9 @@ public sealed class AiTools
             case "activity_summary":
                 var start = AiTime.Parse(a["start"]) ?? DateTime.Now.Date.ToUniversalTime();
                 var end = AiTime.Parse(a["end"]) ?? DateTime.UtcNow;
-                out_ = AiActivity.Summary(db.ActivityRows(start, end), start, end);
+                // Time in a blocked app still counts, as on the timeline, but not its window titles or addresses.
+                var rows = db.ActivityRows(start, end).Select(r => Hides(r.App, r.Window, r.Url) ? r with { Window = "", Url = "" } : r).ToList();
+                out_ = AiActivity.Summary(rows, start, end);
                 break;
             case "search_screen": out_ = SearchScreen(a); break;
             case "search_audio": out_ = SearchAudio(a); break;
@@ -143,6 +157,7 @@ public sealed class AiTools
         var lines = new List<string>();
         foreach (var f in rows)
         {
+            if (Hides(f.AppName, f.WindowName, f.BrowserUrl)) continue;
             var snip = Snippet(f.Text, q);
             // While typing, many frames in a row show the same thing.
             if (!seen.Add($"{f.AppName}|{f.WindowName}|{(snip.Length > 80 ? snip[..80] : snip)}")) continue;
@@ -172,7 +187,7 @@ public sealed class AiTools
     string ScreenText(DateTime start, DateTime end, string app)
     {
         var s = new SearchQuery { AppName = app, StartTime = Time.Iso(start), EndTime = Time.Iso(end), Limit = 400 };
-        var rows = Enumerable.Reverse(db.Search(s).Rows).Where(f => f.Text.Length > 0);
+        var rows = Enumerable.Reverse(db.Search(s).Rows).Where(f => f.Text.Length > 0 && !Hides(f.AppName, f.WindowName, f.BrowserUrl));
         // Skip frames whose text did not change.
         var unique = new List<Frame>();
         foreach (var f in rows) if (unique.Count == 0 || unique[^1].Text != f.Text) unique.Add(f);
