@@ -147,15 +147,18 @@ public sealed class VideoCompactor
     }
 
     /// One pass. `compress`: also turn older stills into video (the setting). `keepGoing` is asked between
-    /// videos, so turning the setting off or quitting stops it soon.
-    public Result RunOnce(bool compress, DateTime now, Func<bool>? keepGoing = null)
+    /// videos (quitting stops the pass soon); `keepCompressing` only between new videos (the setting was
+    /// turned off: rewrites after a delete still finish).
+    public Result RunOnce(bool compress, DateTime now, Func<bool>? keepGoing = null, Func<bool>? keepCompressing = null)
     {
-        keepGoing ??= () => true;
+        var go = keepGoing ?? (() => true);
+        var compressing = keepCompressing ?? (() => true);
+        keepGoing = () => go() && compressing();
         CleanUp();
         int rewritten = 0, failed = 0, frames = 0, videos = 0;
         foreach (var seg in db.Segments(onlyNeedingRewrite: true))
         {
-            if (!keepGoing()) break;
+            if (!go()) break;
             if (Rewrite(seg)) rewritten++; else failed++;
         }
         if (!compress) return new(0, 0, rewritten, failed);

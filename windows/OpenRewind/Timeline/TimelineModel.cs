@@ -206,17 +206,11 @@ sealed class TimelineModel
         Notify();
     }
 
-    /// Read the file into memory so the JPEG is not locked (retention may delete it).
-    static Image? ReadImage(string path)
-    {
-        try { return Image.FromStream(new MemoryStream(File.ReadAllBytes(path))); }
-        catch { return null; }
-    }
-
+    /// Still or video frame, read into memory (the file is not kept open: retention may delete it).
     Image? LoadImage(TimelineFrame f)
     {
         if (imageCache.TryGetValue(f.Id, out var img)) return img;
-        if (ReadImage(f.Path) is not Image loaded) return null;
+        if (FrameImages.Load(f.Source) is not Image loaded) return null;
         imageCache[f.Id] = loaded;
         cacheOrder.Add(f.Id);
         if (cacheOrder.Count > 24) { imageCache.Remove(cacheOrder[0]); cacheOrder.RemoveAt(0); }
@@ -232,7 +226,7 @@ sealed class TimelineModel
         if (date > (f.End != null ? AppFilter.Until(f) : f.Time.AddSeconds(60))) return null;
         if (thumbCache.TryGetValue(f.Id, out var cached)) return (f, cached);
         Image? thumb = null;
-        if (ReadImage(f.Path) is Image full)
+        if (FrameImages.Load(f.Source) is Image full)
         {
             using (full)
             {
@@ -324,7 +318,7 @@ sealed class TimelineModel
         Task.Run(() =>
         {
             // Its own copy of the picture: GDI+ images can't be shared across threads.
-            using var bmp = ReadImage(f.Path) as Bitmap;
+            using var bmp = FrameImages.Load(f.Source);
             var found = bmp == null ? new List<RectangleF>() : Ocr.Find(bmp, terms);
             ui?.Post(_ =>
             {

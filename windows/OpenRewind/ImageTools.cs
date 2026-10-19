@@ -72,31 +72,18 @@ static class ImageTools
         return out_;
     }
 
-    /// A saved screenshot as a JPEG for the AI: at most 1568 pixels on the long side, which is
-    /// what the providers shrink images to anyway. Null if the file is gone or unreadable.
-    public static byte[]? ForAi(string path)
-    {
-        try
-        {
-            using var image = new Bitmap(path);
-            using var small = Scaled(image, Math.Min(1, 1568.0 / Math.Max(image.Width, image.Height)));
-            using var ps = new EncoderParameters(1);
-            ps.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 75L);
-            using var ms = new MemoryStream();
-            small.Save(ms, jpeg, ps);
-            return ms.ToArray();
-        }
-        catch (Exception e) when (e is IOException or ArgumentException or UnauthorizedAccessException) { return null; }
-    }
+    /// A saved screenshot (still or video frame) as a JPEG for the AI: at most 1568 pixels on the long
+    /// side, which is what the providers shrink images to anyway. Null if it is gone or unreadable.
+    public static byte[]? ForAi(FrameSource f) => FrameImages.Jpeg(f, maxSide: 1568, quality: 75);
 
-    static readonly ImageCodecInfo jpeg = ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Jpeg.Guid);
+    public static readonly ImageCodecInfo JpegCodec = ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Jpeg.Guid);
 
     public static void WriteJpeg(Bitmap image, string path, long quality = 70)
     {
         using var ps = new EncoderParameters(1);
         ps.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
         var tmp = path + ".tmp";
-        image.Save(tmp, jpeg, ps);
+        image.Save(tmp, JpegCodec, ps);
         File.Move(tmp, path, overwrite: true);
     }
 }

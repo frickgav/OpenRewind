@@ -26,6 +26,8 @@ sealed class Engine
         Config = config;
         Db = db;
         Recorder = new Recorder(config, db);
+        // Close a video before a delete removes it (Windows cannot delete an open file).
+        db.ReleasingVideos += paths => { foreach (var v in paths) FrameImages.Release(v); };
     }
 
     public bool ServerOn => server != null;
@@ -40,7 +42,7 @@ sealed class Engine
             ["accessibility_permission"] = Config.UseAccessibility,
             ["ocr_available"] = Ocr.Available,
             ["platform"] = "windows",
-        });
+        }, f => FrameImages.Jpeg(f.Source));
         var s = new Server(Config.Port, api.Handle);
         s.Start();
         server = s;
