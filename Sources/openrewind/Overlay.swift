@@ -61,6 +61,12 @@ final class OverlayController {
         installMonitor()
     }
 
+    /// Open the timeline at a moment (links in the AI chat).
+    func show(at date: Date) {
+        show()
+        model.jump(to: date)
+    }
+
     /// Open the timeline with the guided tour on it.
     func showTutorial() {
         show()

@@ -72,6 +72,23 @@ static class ImageTools
         return out_;
     }
 
+    /// A saved screenshot as a JPEG for the AI: at most 1568 pixels on the long side, which is
+    /// what the providers shrink images to anyway. Null if the file is gone or unreadable.
+    public static byte[]? ForAi(string path)
+    {
+        try
+        {
+            using var image = new Bitmap(path);
+            using var small = Scaled(image, Math.Min(1, 1568.0 / Math.Max(image.Width, image.Height)));
+            using var ps = new EncoderParameters(1);
+            ps.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 75L);
+            using var ms = new MemoryStream();
+            small.Save(ms, jpeg, ps);
+            return ms.ToArray();
+        }
+        catch (Exception e) when (e is IOException or ArgumentException or UnauthorizedAccessException) { return null; }
+    }
+
     static readonly ImageCodecInfo jpeg = ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Jpeg.Guid);
 
     public static void WriteJpeg(Bitmap image, string path, long quality = 70)
