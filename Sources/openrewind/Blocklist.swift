@@ -101,32 +101,60 @@ enum SiteRules {
         var s = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !s.isEmpty, !s.contains(where: { $0.isWhitespace }) else { return nil }
         if !s.contains("://") { s = "https://" + s }
-        guard let c = URLComponents(string: s), isWeb(c) else { return nil }
+        guard let c = components(s), isWeb(c) else { return nil }
         let h = host(c.host ?? "")
         guard !h.isEmpty, h.contains(".") || h == "localhost" else { return nil }
-        var path = c.percentEncodedPath
+        var path = unescape(c.percentEncodedPath)
         while path.hasSuffix("/") { path.removeLast() }
-        let query = pathQuery(c).query
+        let query = unescape(pathQuery(c).query)
         if !query.isEmpty && path.isEmpty { path = "/" }
         return h + path + query
     }
 
-    /// True when the address is on the rule's site, or is the rule's page or below it.
+    /// True when the address is on the rule's site, or is the rule's page or below it. A link with a
+    /// query ("youtube.com/watch?v=abc") covers that page with those parameters in any order, among others.
     static func matches(_ rule: String, _ url: String?) -> Bool {
-        guard let url, !url.isEmpty, !rule.isEmpty, let c = URLComponents(string: url), isWeb(c) else { return false }
+        guard let url, !url.isEmpty, !rule.isEmpty, let c = components(url), isWeb(c) else { return false }
         let cut = rule.firstIndex { $0 == "/" || $0 == "?" }
-        let ruleHost = cut.map { String(rule[..<$0]) } ?? rule
+        let ruleHost = host(cut.map { String(rule[..<$0]) } ?? rule)
         let h = host(c.host ?? "")
         guard h == ruleHost || h.hasSuffix("." + ruleHost) else { return false }
         guard let cut else { return true }
-        // Percent-encoded, so plain ASCII: lower-casing keeps the lengths.
-        let rest = Array(rule[cut...].lowercased().utf8)
+        let q = rule[cut...].firstIndex(of: "?")
+        let rulePath = unescape(String(rule[cut..<(q ?? rule.endIndex)])).lowercased()
         let pq = pathQuery(c)
-        let have = Array((pq.path + pq.query).lowercased().utf8)
-        guard have.starts(with: rest) else { return false }
-        // "/repo" covers "/repo/issues" and "/repo?tab=x", not "/repository".
-        if have.count == rest.count { return true }
-        return "/?&#".utf8.contains(have[rest.count])
+        let path = unescape(pq.path).lowercased()
+        guard let q else {
+            // "/repo" covers "/repo/issues" and "/repo?tab=x", not "/repository".
+            guard path.hasPrefix(rulePath) else { return false }
+            return path.count == rulePath.count || path.dropFirst(rulePath.count).first == "/"
+        }
+        func trimmed(_ p: String) -> Substring { var p = Substring(p); while p.hasSuffix("/") { p.removeLast() }; return p }
+        guard trimmed(path) == trimmed(rulePath) else { return false }
+        let have = params(pq.query)
+        return params(String(rule[q...])).isSubset(of: have)
+    }
+
+    /// "?b=2&a=1" → {"a=1", "b=2"}, lower case.
+    private static func params(_ query: String) -> Set<String> {
+        Set(unescape(String(query.drop { $0 == "?" })).lowercased().split(separator: "&").map(String.init))
+    }
+
+    /// Decodes escapes of letters, digits and "-._~", which mean the same either way ("%73ecret" is "secret").
+    /// Other escapes ("%2F", "%20") are kept, since decoding them can change what the address means.
+    static func unescape(_ s: String) -> String {
+        guard s.contains("%") else { return s }
+        let b = Array(s.utf8)
+        var out: [UInt8] = []
+        var i = 0
+        while i < b.count {
+            if b[i] == UInt8(ascii: "%"), i + 2 < b.count, let v = UInt8(String(decoding: b[(i + 1)...(i + 2)], as: UTF8.self), radix: 16) {
+                let c = Character(UnicodeScalar(v))
+                if v < 128, c.isLetter || c.isNumber || "-._~".contains(c) { out.append(v); i += 3; continue }
+            }
+            out.append(b[i]); i += 1
+        }
+        return String(decoding: out, as: UTF8.self)
     }
 
     /// The part of a rule people recognize: "chase.com" for both "chase.com" and "chase.com/login".
@@ -134,11 +162,64 @@ enum SiteRules {
         rule.firstIndex { $0 == "/" || $0 == "?" }.map { String(rule[..<$0]) } ?? rule
     }
 
-    /// Lower case, without "www.".
+    /// Lower case, without "www.", and in the form browsers report ("bücher.de" → "xn--bcher-kva.de").
     static func host(_ host: String) -> String {
         var h = host.trimmingCharacters(in: .whitespaces).lowercased()
         while h.hasSuffix(".") { h.removeLast() }
+        if !h.allSatisfy(\.isASCII) {
+            h = h.split(separator: ".", omittingEmptySubsequences: false)
+                .map { $0.allSatisfy(\.isASCII) ? String($0) : "xn--" + punycode(String($0)) }.joined(separator: ".")
+        }
         return h.hasPrefix("www.") ? String(h.dropFirst(4)) : h
+    }
+
+    /// RFC 3492 Punycode of one domain label, without the "xn--" prefix.
+    static func punycode(_ label: String) -> String {
+        let input = label.unicodeScalars.map { Int($0.value) }
+        let base = 36, tMin = 1, tMax = 26, skew = 38, damp = 700
+        func digit(_ d: Int) -> Character { Character(UnicodeScalar(UInt8(d < 26 ? d + 97 : d + 22))) }
+        func adapt(_ delta: Int, _ points: Int, _ first: Bool) -> Int {
+            var d = first ? delta / damp : delta / 2
+            d += d / points
+            var k = 0
+            while d > ((base - tMin) * tMax) / 2 { d /= base - tMin; k += base }
+            return k + (base - tMin + 1) * d / (d + skew)
+        }
+        var out = String(input.filter { $0 < 128 }.map { Character(UnicodeScalar(UInt8($0))) })
+        let basic = out.count
+        var handled = basic
+        if basic > 0 { out.append("-") }
+        var n = 128, delta = 0, bias = 72
+        while handled < input.count {
+            let m = input.filter { $0 >= n }.min()!
+            delta += (m - n) * (handled + 1)
+            n = m
+            for c in input {
+                if c < n { delta += 1 }
+                if c == n {
+                    var q = delta, k = base
+                    while true {
+                        let t = k <= bias ? tMin : (k >= bias + tMax ? tMax : k - bias)
+                        if q < t { break }
+                        out.append(digit(t + (q - t) % (base - t)))
+                        q = (q - t) / (base - t)
+                        k += base
+                    }
+                    out.append(digit(q))
+                    bias = adapt(delta, handled + 1, handled == basic)
+                    delta = 0
+                    handled += 1
+                }
+            }
+            delta += 1
+            n += 1
+        }
+        return out
+    }
+
+    /// Parses an address, also one typed with letters that need escaping ("bücher.de", "/wiki/Ö").
+    private static func components(_ s: String) -> URLComponents? {
+        URLComponents(string: s) ?? URL(string: s).flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }
     }
 
     private static func isWeb(_ c: URLComponents) -> Bool {
@@ -153,26 +234,53 @@ enum SiteRules {
     }
 }
 
-/// Which browser windows show a blocked site. Only the window in front can be asked for its address,
-/// so each window keeps the last address seen while it was in front; that keeps a blocked tab hidden
-/// after you click away to another window. Checked against the current rules, so removing a site
-/// shows its windows again at once.
+/// Which browser windows show a blocked site. Each window keeps the address read for it and the title it
+/// had then. A new title means a tab switch or a new page, so the address is read again (needsRead), for
+/// windows in front and behind alike. Checked against the current rules, so removing a site shows its
+/// windows again at once.
 final class SiteWindows {
-    private var lastURL: [CGWindowID: String] = [:]
+    private struct Seen { var url: String?; var title: String; var unknown: Bool }
+    private var seen: [CGWindowID: Seen] = [:]
     private let lock = NSLock()
 
-    /// The window in front shows `url`. Nil means the address could not be read: keep what we knew.
-    func saw(_ window: CGWindowID, url: String?) {
-        guard window != 0, let url else { return }
+    /// True when the window's address should be read: it was never read, or its title changed since.
+    func needsRead(_ window: CGWindowID, title: String?) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        if lastURL.count > 500 { lastURL.removeAll() }  // closed windows; the ones in use are seen again soon
-        lastURL[window] = url
+        return seen[window].map { $0.title != (title ?? "") } ?? true
+    }
+
+    func knows(_ window: CGWindowID) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return seen[window] != nil
+    }
+
+    /// The window showed `url` with this title. Nil means the address could not be read: with the same
+    /// title as the last good read it is most likely the same page, so that address stays; otherwise the
+    /// window is unknown, and hidden until it can be read (when its title changes again).
+    func saw(_ window: CGWindowID, title: String?, url: String?) {
+        guard window != 0 else { return }
+        let title = title ?? ""
+        lock.lock(); defer { lock.unlock() }
+        if let url {
+            seen[window] = Seen(url: url, title: title, unknown: false)
+        } else if let s = seen[window], !s.unknown, s.title == title {
+            return
+        } else {
+            seen[window] = Seen(url: nil, title: title, unknown: true)
+        }
+    }
+
+    /// Forget windows that are gone (closed, minimized, on another Space); they are read again when they come back.
+    func prune(keeping onScreen: Set<CGWindowID>) {
+        lock.lock(); defer { lock.unlock() }
+        seen = seen.filter { onScreen.contains($0.key) }
     }
 
     func blocks(_ window: CGWindowID, _ list: Blocklist) -> Bool {
         guard !list.sites.isEmpty else { return false }
-        lock.lock(); let url = lastURL[window]; lock.unlock()
-        return list.blocksURL(url)
+        lock.lock(); let s = seen[window]; lock.unlock()
+        guard let s else { return false }
+        return s.unknown || list.blocksURL(s.url)
     }
 }
 

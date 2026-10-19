@@ -24,8 +24,9 @@ static class UiaText
 
     public static bool IsBrowser(string? exePath) => exePath != null && browsers.Contains(Path.GetFileNameWithoutExtension(exePath));
 
-    /// Only the address of the browser tab on screen, quickly: checked before every screenshot when
-    /// sites are blocked, so a blocked tab is hidden in the same screenshot.
+    /// Only the address of the tab a browser window shows, quickly: checked before every screenshot when
+    /// sites are blocked, so a blocked tab is hidden in the same screenshot. Pages that are not on the web
+    /// ("chrome://newtab/") are returned as they are; null means the address could not be read.
     public static string? Url(IntPtr hwnd) => FocusedWindow(hwnd, true, maxNodes: 1500, maxMillis: 400, urlOnly: true).Url;
 
     /// Text of the window, and for a browser the address of the tab on screen (or null).
@@ -61,7 +62,9 @@ static class UiaText
                             var type = el.CurrentControlType;
                             if (type == UIA_ControlTypeIds.UIA_DocumentControlTypeId || (type == UIA_ControlTypeIds.UIA_EditControlTypeId && barUrl == null))
                             {
-                                var u = WebAddress.Normalize(el.GetCurrentPropertyValue(UIA_PropertyIds.UIA_ValueValuePropertyId) as string);
+                                var raw = el.GetCurrentPropertyValue(UIA_PropertyIds.UIA_ValueValuePropertyId) as string;
+                                // For blocked sites, a page that is not on the web (a new tab, settings) still counts as read.
+                                var u = WebAddress.Normalize(raw) ?? (urlOnly && raw != null && raw.Contains("://") ? raw.Trim() : null);
                                 if (type == UIA_ControlTypeIds.UIA_DocumentControlTypeId) docUrl = u; else barUrl = u;
                             }
                         }
