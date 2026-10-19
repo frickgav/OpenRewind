@@ -9,6 +9,8 @@ sealed class Recorder
     readonly Config config;
     readonly Database db;
     readonly HashSet<string> excluded;
+    /// Browser windows showing a blocked site (see Blocklist.Sites).
+    readonly SiteWindows siteWindows = new();
     byte[]? lastThumb;
     string lastText = "", lastKey = "";
     DateTime lastWrite = DateTime.MinValue;
@@ -56,12 +58,14 @@ sealed class Recorder
         // Our own timeline is open: nothing new to record.
         if (Capture.IsOwnWindow(win)) return;
         var list = Blocklist.Current;
+        // Blocked sites: which tab the browser in front shows, read just before the screenshot.
+        if (list.Sites.Count > 0 && UiaText.IsBrowser(win.ExePath)) siteWindows.Saw(win.Hwnd, UiaText.Url(win.Hwnd));
         var screen = Screen.FromPoint(Cursor.Position);
-        var wins = Redactor.Windows(list);
+        var wins = Redactor.Windows(list, siteWindows);
         using var image = Capture.Screenshot(screen);
         Redactor.Apply(image, screen.Bounds, wins);
         // A blocked window in front: keep the app name for the timeline, but not its title or text.
-        if (list.BlocksWindow(Blocklist.IdFor(win.ExePath), win.AppName, win.WindowName))
+        if (list.BlocksWindow(Blocklist.IdFor(win.ExePath), win.AppName, win.WindowName) || siteWindows.Blocks(win.Hwnd, list))
             Ingest(image, win with { WindowName = "" }, readWindowText: false);
         else
             Ingest(image, win);
@@ -86,6 +90,12 @@ sealed class Recorder
             var w = UiaText.FocusedWindow(window.Hwnd, UiaText.IsBrowser(window.ExePath));
             if (w.Text is string ax) { text = ax; source = "accessibility"; }
             url = w.Url ?? "";
+            // The tab changed to a blocked site after the check above, so the screenshot is not blurred: drop it.
+            if (Blocklist.Current.BlocksUrl(url))
+            {
+                siteWindows.Saw(window.Hwnd, url);
+                return null;
+            }
         }
         if (text.Length == 0) text = Ocr.Recognize(image);
         // Pixels moved (cursor blink, animation) but the text is the same: nothing new to search.
