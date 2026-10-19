@@ -27,6 +27,14 @@ security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 # this on a shared machine. -x makes the key non-extractable: codesign can use it, nothing can copy it.
 security import "$P12" -k "$KEYCHAIN" -P "$MACOS_CERTIFICATE_PASSWORD" -f pkcs12 -x -T /usr/bin/codesign
 rm -f "$P12"
+# A Developer ID .p12 usually holds only your certificate; codesign also needs Apple's intermediate.
+# Harmless for the self-signed certificate.
+for CA in DeveloperIDG2CA.cer DeveloperIDCA.cer; do
+  if curl -fsSL "https://www.apple.com/certificateauthority/$CA" -o "$TMP/$CA"; then
+    security import "$TMP/$CA" -k "$KEYCHAIN" >/dev/null 2>&1 || true
+    rm -f "$TMP/$CA"
+  fi
+done
 # Lets codesign use the key without a dialog.
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
 # shellcheck disable=SC2046

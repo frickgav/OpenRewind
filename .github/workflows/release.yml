@@ -45,6 +45,25 @@ jobs:
             exit 1
           fi
           scripts/import-signing-cert.sh
+      # With a Developer ID certificate, notarize too (an App Store Connect API key, see "Signing" in
+      # the README). Without these secrets the build is signed but not notarized.
+      - name: Load the notarization key
+        env:
+          APPLE_NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          if [ -z "$APPLE_NOTARY_KEY" ]; then
+            echo "::warning::No APPLE_NOTARY_KEY secret: the .dmg won't be notarized"
+            exit 0
+          fi
+          KEY="$RUNNER_TEMP/notary/AuthKey.p8"
+          (umask 077; mkdir -p "$(dirname "$KEY")"; printf '%s\n' "$APPLE_NOTARY_KEY" > "$KEY")
+          {
+            echo "NOTARY_KEY_PATH=$KEY"
+            echo "NOTARY_KEY_ID=$APPLE_NOTARY_KEY_ID"
+            echo "NOTARY_ISSUER=$APPLE_NOTARY_ISSUER_ID"
+          } >> "$GITHUB_ENV"
       - name: Build the app and .dmg
         run: |
           export VERSION="${VERSION#v}"
@@ -53,7 +72,9 @@ jobs:
           codesign --display --requirements - dist/OpenRewind.app 2>&1 | grep -E '^designated => .*(certificate (leaf|root)|anchor apple generic)'
       - name: Remove the signing keychain
         if: always()
-        run: scripts/import-signing-cert.sh --remove
+        run: |
+          scripts/import-signing-cert.sh --remove
+          rm -rf "$RUNNER_TEMP/notary"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: mac
