@@ -85,6 +85,8 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
   OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
 - **Journal** (menu bar or tray → Journal…): one page per day with your top apps, sites and
   windows, worked out on your computer, plus an optional AI recap. See [Journal](#journal).
+- **Claude, Cursor and other AI apps** can search your history too, through MCP, once you turn
+  it on. See [Use with Claude and other AI apps (MCP)](#use-with-claude-and-other-ai-apps-mcp).
 
 ## Ask AI
 
@@ -113,7 +115,8 @@ back. Times in answers link back to that moment in the timeline. Each answer sho
 tokens it used and what they cost; the header shows the chat's total and AI Settings keeps a
 running total per provider. Prices are built in for Claude and GPT-6 models and come with
 OpenRouter's model list; for other models you can type the price. Lookups leave out every app,
-site and window on your block list, including anything saved before you blocked it; audio
+site and window on your block list, including anything saved before you blocked it (the activity
+summary still counts a blocked app's time, as "(blocked app)", without its name); audio
 transcripts are not filtered by app. Web links in an answer only open if you or a lookup
 supplied that address, so text on screen can't trick the AI into a link that sends your data
 elsewhere. With a local model (Ollama, LM Studio) nothing leaves your computer at all; a custom
@@ -136,19 +139,94 @@ list, and a blocked site or window keeps only its app name. Click a time to open
 timeline.
 
 **Recap**: with an AI provider set up in **AI Settings**, **Write Recap** asks your model for a
-short recap: what you worked on, who you talked to, and open loops to follow up. It uses the same
-lookups as Ask AI, so the block list applies the same way, and **What was sent** lists each lookup
-and exactly what went to the provider. The page shows the tokens and cost. Times in the recap link
-to that moment in the timeline. Recaps are saved in the database (`journal_recaps`), so a day is not
-written (or paid for) again; **Rewrite** replaces it.
+short recap: what you worked on, who you talked to, and open loops to follow up. It sends that
+day's history with your key: app and window names, web addresses, transcripts and some screen text.
+
+- It uses the same lookups as Ask AI, and every lookup (including the ones the model asks for) is
+  limited to that day. **What was sent** lists each lookup and exactly what went to the provider.
+- Blocked sites and windows are left out, and a blocked app shows only as "(blocked app)" with its
+  time. **Audio transcripts are not filtered by app**, so a call heard while a blocked app was open
+  is still sent.
+- The page shows the tokens and cost. Times in the recap link to that moment in the timeline.
+- Recaps are saved in the database (`journal_recaps`), so a day is not written (or paid for) again;
+  **Rewrite** replaces it. One written before the day was over says so.
+- Each recap remembers the block list it was written with. If you block something new later, older
+  recaps are hidden (and left out of exports) until you rewrite them, since they may mention it.
 
 **Settings → Write Each Day's Recap Automatically** (also a switch in the Journal window) is off by
-default because it spends tokens. When on, each day's recap is written once, the first time the app
-is running after that day ends; days with nothing recorded are skipped. Deleting recordings, by hand
-or with **Keep … Recordings For**, also deletes the recaps of the days they were from.
+default because it spends tokens. When on, it writes **yesterday's** recap the first time the app is
+running on the next day, with the AI provider it was turned on for; after you switch providers in
+AI Settings it pauses until you turn it on again.
 
-**Copy as Markdown** and **Save as Markdown…** export the page (recap included, with the times as
-plain text).
+- Days with nothing recorded are skipped. A day the app is not running the day after (say, a long
+  weekend with the computer off) gets no automatic recap; open it and use **Write Recap**.
+- A recap you wrote by hand during the day is replaced by one of the whole day.
+- If it fails (offline at login, a busy provider), it tries again 10 minutes later, at most 3 times
+  for that day.
+
+**Deleting recordings**: deleting a time range by hand (**Delete Recordings → Last Hour**, **Today** …) also
+deletes the recaps of the days it touches, and deleting all recordings deletes every recap. **Keep …
+Recordings For** deletes a day's recap only once nothing of that day (screen or audio) is left, so
+with **Keep For 1 Day** yesterday's recap stays while part of yesterday does.
+
+**Copy as Markdown** and **Save as Markdown…** export the page. In the recap, times become plain
+text, any other link or image becomes its text and address in plain text, and HTML is escaped, so
+opening the file never loads anything.
+
+## Use with Claude and other AI apps (MCP)
+
+Claude Desktop, Claude Code, Cursor and other apps that support the
+[Model Context Protocol](https://modelcontextprotocol.io) can look things up in your history
+with the same lookups as Ask AI (the table above). Ask them "what was I reading about
+databases yesterday?" and they search OpenRewind on your computer.
+
+It is **off by default**. Turn on **Settings → Allow AI Apps to Read My History (MCP)**, then
+open **Settings → Connect AI Apps…**: it shows the setup for Claude Desktop, Claude Code and
+Cursor with this copy's path filled in, each with a **Copy** button. For Claude Desktop it looks
+like this (Mac path shown; on Windows it is the path of your `OpenRewind.exe`):
+
+```json
+{
+  "mcpServers": {
+    "openrewind": {
+      "command": "/Applications/OpenRewind.app/Contents/MacOS/OpenRewind",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+That goes in `~/Library/Application Support/Claude/claude_desktop_config.json` (Windows:
+`%APPDATA%\Claude\claude_desktop_config.json`); Cursor uses the same lines in `~/.cursor/mcp.json`.
+For Claude Code, run once:
+
+```bash
+claude mcp add --scope user openrewind /Applications/OpenRewind.app/Contents/MacOS/OpenRewind mcp
+```
+
+How it works:
+
+- The AI app starts `OpenRewind mcp` (Windows: `OpenRewind.exe mcp`, or `--mcp`) and talks to it
+  over stdin/stdout. It shows no icon or window, records nothing and never changes the database:
+  it opens it read-only, so it works whether or not OpenRewind is running.
+- Lookups are the same as in Ask AI and capped the same way. Blocked apps, sites and windows are
+  left out of screen text, searches and screenshots; in the activity summary a blocked app shows
+  only as "(blocked app)" with its time. **Audio transcripts are not filtered by app**, so a call
+  or video heard while a blocked app was open can show up in `search_audio`. One activity summary
+  covers at most 31 days. Screenshots are only shared when **Let AI look at screenshots** is on in
+  AI Settings.
+- Names you add with `OPENREWIND_EXCLUDE` are not applied here: the AI app starts OpenRewind with
+  its own environment. They are still never recorded; only frames saved before you added a name
+  can show up. Put apps on **Blocked Apps & Sites** to hide them everywhere.
+- Each moment comes with its exact local time (like `2026-10-18T14:30:05-07:00`), which the AI
+  can pass back to read more around it.
+- While the switch is off, the AI app still lists OpenRewind, but every lookup answers that you
+  need to turn it on. Turning it off takes effect on the next lookup.
+- What the AI app reads goes to that app's AI provider, like anything else you ask it.
+- Text on your screen (web pages, emails, messages) reaches the AI app as data. Unlike Ask AI,
+  OpenRewind cannot stop an AI app from opening a link or running a command that such text asks
+  for, and many AI apps (Claude Code, Cursor) can do both. OpenRewind tells the AI to treat it as
+  data only, but keep an eye on what it does with your history.
 
 ## Mac app
 

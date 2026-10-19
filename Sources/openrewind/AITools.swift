@@ -14,6 +14,13 @@ struct AITools {
     /// "Let AI look at screenshots"; nil means view_screenshot is not offered at all.
     var screenshots: ((Frame) -> Data?)?
 
+    /// One summary covers at most this many days, so a question about a whole year does not load
+    /// every frame of it (set for AI apps outside OpenRewind, see MCPServer).
+    var maxSummaryDays: Int?
+
+    /// What the activity summary calls a blocked app: its time still counts, but not its name.
+    static let blockedAppLabel = "(blocked app)"
+
     /// The tools to send with a request.
     var offered: [AIToolSpec] { screenshots == nil ? Self.specs : Self.specs + [Self.screenshotSpec] }
 
@@ -110,13 +117,20 @@ struct AITools {
         let out: String
         switch call.name {
         case "activity_summary":
-            let start = AITime.parse(a["start"]) ?? Calendar.current.startOfDay(for: Date())
+            var start = AITime.parse(a["start"]) ?? Calendar.current.startOfDay(for: Date())
             let end = AITime.parse(a["end"]) ?? Date()
-            // Time in a blocked app still counts, as on the timeline, but not its window titles or addresses.
-            let rows = db.activityRows(from: start, to: end).map { r in
-                hides(app: r.app, window: r.window, url: r.url) ? ActivityRow(time: r.time, app: r.app, window: "", url: "") : r
+            var note = ""
+            if let days = maxSummaryDays, end.timeIntervalSince(start) > Double(days) * 86400 {
+                start = end.addingTimeInterval(-Double(days) * 86400)
+                note = "Only the last \(days) days of that range are summarized. Ask again with an earlier end for older days.\n"
             }
-            out = AIActivity.summary(rows: rows, start: start, end: end)
+            // Time in a blocked app still counts, as on the timeline, but not its name, window titles or addresses.
+            let rows = db.activityRows(from: start, to: end).map { r in
+                let app = blocklist.blocksApp(bundleID: nil, name: r.app) ? AITools.blockedAppLabel : r.app
+                return hides(app: r.app, window: r.window, url: r.url) ? ActivityRow(time: r.time, app: app, window: "", url: "")
+                    : ActivityRow(time: r.time, app: app, window: r.window, url: r.url)
+            }
+            out = note + AIActivity.summary(rows: rows, start: start, end: end)
         case "search_screen":
             out = searchScreen(a)
         case "search_audio":

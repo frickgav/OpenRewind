@@ -25,11 +25,15 @@ public sealed class AiTools
         return list.BlocksWindow(app, app, window) || list.BlocksUrl(url) || list.HasKeyword(url);
     }
 
-    /// What a blocked app is called in lookups, so its name never reaches the provider.
+    /// One summary covers at most this many days, so a question about a whole year does not load
+    /// every frame of it (set for AI apps outside OpenRewind, see McpServer).
+    public int? MaxSummaryDays;
+
+    /// What the activity summary calls a blocked app: its time still counts, but not its name.
     public const string BlockedAppLabel = "(blocked app)";
 
-    /// True for an app on the block list. The journal leaves such apps out of its lists entirely.
-    public bool HidesApp(string app) => (Blocked ?? Blocklist.Current).BlocksApp(app, app);
+    /// True when the app itself is on the block list (not just one of its windows or sites).
+    public bool BlocksAppName(string app) => (Blocked ?? Blocklist.Current).BlocksApp(app, app);
 
     /// Reads a frame's screenshot as a small JPEG. Set only while the user has turned on
     /// "Let AI look at screenshots"; null means view_screenshot is not offered at all.
@@ -133,11 +137,18 @@ public sealed class AiTools
             case "activity_summary":
                 var start = AiTime.Parse(a["start"]) ?? DateTime.Now.Date.ToUniversalTime();
                 var end = AiTime.Parse(a["end"]) ?? DateTime.UtcNow;
+                var note = "";
+                if (MaxSummaryDays is int days && end - start > TimeSpan.FromDays(days))
+                {
+                    start = end.AddDays(-days);
+                    note = $"Only the last {days} days of that range are summarized. Ask again with an earlier end for older days.\n";
+                }
                 // Time in a blocked app still counts, as on the timeline, but not its name, window titles or addresses.
-                var rows = db.ActivityRows(start, end).Select(r =>
-                    HidesApp(r.App) ? r with { App = BlockedAppLabel, Window = "", Url = "" }
-                    : Hides(r.App, r.Window, r.Url) ? r with { Window = "", Url = "" } : r).ToList();
-                out_ = AiActivity.Summary(rows, start, end);
+                var rows = db.ActivityRows(start, end)
+                    .Select(r => Hides(r.App, r.Window, r.Url) ? r with { Window = "", Url = "" } : r)
+                    .Select(r => BlocksAppName(r.App) ? r with { App = BlockedAppLabel } : r)
+                    .ToList();
+                out_ = note + AiActivity.Summary(rows, start, end);
                 break;
             case "search_screen": out_ = SearchScreen(a); break;
             case "search_audio": out_ = SearchAudio(a); break;

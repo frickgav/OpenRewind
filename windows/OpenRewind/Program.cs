@@ -20,6 +20,8 @@ static class Program
       OpenRewind delete <15m|1h|today|all|older:week>
                                   Delete recordings in that range
       OpenRewind doctor           Check what works on this PC
+      OpenRewind mcp              MCP server for AI apps, over stdin/stdout (also --mcp).
+                                  Turn on Settings → Allow AI Apps to Read My History first
 
     Options:
       --port N        API port (default 3031)
@@ -50,14 +52,16 @@ static class Program
         catch (Exception e)
         {
             Crash.Write("startup", e);
-            if (!args.Any(a => !a.StartsWith('-'))) Crash.Tell(e);
+            if (!args.Any(a => !a.StartsWith('-')) && !args.Contains("--mcp")) Crash.Tell(e);
             return 1;
         }
     }
 
     static int Run(string[] args)
     {
-        var command = args.FirstOrDefault(a => !a.StartsWith('-')) ?? "app";
+        var command = args.Contains("--mcp") ? "mcp" : args.FirstOrDefault(a => !a.StartsWith('-')) ?? "app";
+        // Started by an AI app with stdin/stdout as pipes: no console, no tray, no windows.
+        if (command == "mcp") return McpCommand.Run(args);
         // A WinExe has no console; print to the terminal that started us, if any.
         if (command != "app") Native.AttachConsole(Native.ATTACH_PARENT_PROCESS);
         if (args.Contains("-h") || args.Contains("--help") || command == "help") { Console.WriteLine(Usage); return 0; }
