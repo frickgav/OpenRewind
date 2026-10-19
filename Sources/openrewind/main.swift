@@ -45,7 +45,13 @@ if args.contains("-h") || args.contains("--help") || command == "help" {
 let config = Config.load(arguments: args)
 if command == "app" { openLogFile(in: config.home) }
 let db: Database
-do { db = try Database(path: config.dbPath) } catch {
+do {
+    // Encrypt Recordings: load the data key before the database, which may be encrypted with it.
+    let key = try Encryption.loadKey(config: config, interactive: command == "app")
+    RecordingFile.key = key
+    RecordingFile.encryptNew = Encryption.isOn && key != nil
+    db = try Database(path: config.dbPath, key: key, createEncrypted: RecordingFile.encryptNew)
+} catch {
     log("cannot open database at \(config.dbPath.path): \(error)"); exit(1)
 }
 let engine = Engine(config: config, db: db)
@@ -158,6 +164,7 @@ case "delete":
 case "doctor":
     print("data dir:        \(config.home.path)")
     print("frames stored:   \(db.stats().count)")
+    print("encryption:      \(Encryption.isOn ? "on" : "off")\(Encryption.isDone ? "" : " (converting)") · database \(db.isEncrypted ? "encrypted" : "plain")")
     print("screen record:   \(Capture.hasScreenPermission ? "ok" : "MISSING")")
     print("accessibility:   \(Accessibility.isTrusted ? "ok" : "missing (OCR fallback)")")
     let a = db.audioStats()

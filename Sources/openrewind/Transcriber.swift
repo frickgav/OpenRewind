@@ -68,7 +68,8 @@ final class Transcriber {
     func transcribe(_ chunk: AudioChunk) {
         let started = Date()
         do {
-            let segments = try whisper(chunk.filePath)
+            // whisper-cli needs a file: an encrypted clip is decrypted to a private temp file for the run.
+            let segments = try RecordingFile.withPlainCopy(chunk.filePath) { try whisper($0) }
             try db.saveTranscripts(chunk: chunk, segments: segments)
             let words = segments.reduce(0) { $0 + $1.text.split(separator: " ").count }
             log("transcribed chunk \(chunk.id): \(segments.count) segments, \(words) words in \(String(format: "%.1f", Date().timeIntervalSince(started)))s")

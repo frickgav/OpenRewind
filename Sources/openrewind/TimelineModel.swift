@@ -78,7 +78,7 @@ final class TimelineModel: ObservableObject {
         if let img = thumbCache[f.id] { return (f, img) }
         let opts = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 480,
                      kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary
-        guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: f.path) as CFURL, nil),
+        guard let data = RecordingFile.data(f.path), let src = CGImageSourceCreateWithData(data as CFData, nil),
               let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts) else { return (f, nil) }
         let img = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
         thumbCache[f.id] = img
@@ -272,7 +272,7 @@ final class TimelineModel: ObservableObject {
 
     private func loadImage(_ f: TimelineFrame) -> NSImage? {
         if let img = imageCache[f.id] { return img }
-        guard let img = NSImage(contentsOfFile: f.path) else { return nil }
+        guard let data = RecordingFile.data(f.path), let img = NSImage(data: data) else { return nil }
         imageCache[f.id] = img
         cacheOrder.append(f.id)
         if cacheOrder.count > 24 { imageCache.removeValue(forKey: cacheOrder.removeFirst()) }
@@ -299,7 +299,7 @@ final class TimelineModel: ObservableObject {
     func play(_ a: TimelineAudio) {
         stopAudio()
         do {
-            let p = try AVAudioPlayer(contentsOf: URL(fileURLWithPath: a.path))
+            let p = try AVAudioPlayer(data: RecordingFile.read(a.path))
             p.currentTime = max(0, playhead.timeIntervalSince(a.start))
             p.play()
             player = p

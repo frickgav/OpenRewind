@@ -1,5 +1,5 @@
 import Foundation
-import SQLite3
+import SQLCipher
 
 let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
@@ -27,18 +27,30 @@ struct SearchQuery {
     var offset = 0
 }
 
-enum DBError: Error { case open(String), prepare(String), step(String) }
+enum DBError: Error {
+    case open(String), prepare(String), step(String)
+    /// The database is encrypted and the key is not loaded, or the key does not open it.
+    case locked(String)
+}
 
 /// Thin SQLite wrapper around the `frames` + `frames_fts` tables:
 /// one row per captured frame, FTS5 index over text, app and window.
+/// The file is plain SQLite, or SQLCipher-encrypted with the data key (see Vault.swift).
 final class Database {
     var db: OpaquePointer?
     let lock = NSLock()
+    let path: URL
+    /// Set by `init` and `convert(key:)` (Vault.swift).
+    var isEncrypted = false
 
-    init(path: URL) throws {
-        if sqlite3_open_v2(path.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) != SQLITE_OK {
-            throw DBError.open(String(cString: sqlite3_errmsg(db)))
-        }
+    /// `key` opens an encrypted database; `createEncrypted` makes a new one encrypted with it.
+    init(path: URL, key: Data? = nil, createEncrypted: Bool = false) throws {
+        self.path = path
+        Database.recoverSwap(path)
+        let encrypted = Database.isEncryptedFile(path) || (createEncrypted && key != nil && !Database.hasData(path))
+        if encrypted && key == nil { throw DBError.locked("the database is encrypted and the key is not on this Mac") }
+        db = try Database.connect(path, key: encrypted ? key : nil)
+        isEncrypted = encrypted
         try exec("PRAGMA journal_mode=WAL;")
         try exec("PRAGMA busy_timeout=5000;")
         try migrate()
@@ -105,6 +117,11 @@ final class Database {
 
     func exec(_ sql: String) throws {
         lock.lock(); defer { lock.unlock() }
+        try execLocked(sql)
+    }
+
+    /// `exec` for callers that already hold `lock`.
+    func execLocked(_ sql: String) throws {
         var err: UnsafeMutablePointer<CChar>?
         if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
             let m = err.map { String(cString: $0) } ?? "unknown"

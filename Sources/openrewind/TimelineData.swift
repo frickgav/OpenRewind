@@ -1,5 +1,5 @@
 import Foundation
-import SQLite3
+import SQLCipher
 
 struct TimelineFrame {
     var id: Int64
@@ -60,7 +60,7 @@ extension Database {
             guard let t = Time.iso.date(from: col(st, 1)) else { continue }
             let path = col(st, 4)
             // 16 kHz mono 16-bit WAV: 32,000 bytes per second after the 44-byte header.
-            let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int) ?? 0
+            let size = RecordingFile.plainLength(path)
             guard size > 44 else { continue }
             out.append(TimelineAudio(id: sqlite3_column_int64(st, 0), start: t, duration: Double(size - 44) / 32_000,
                                      device: col(st, 2), isInput: sqlite3_column_int(st, 3) != 0, path: path))

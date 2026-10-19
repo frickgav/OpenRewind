@@ -28,6 +28,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         set { defaults.set(newValue, forKey: pausedUntilKey) }
     }
     private var isPaused: Bool { pausedUntil != nil }
+    private let appLock = AppLock()
+    private var encryption: Encryption!
     /// The AI chat keeps its conversation while its window is closed.
     private lazy var aiChat: AIChatModel = {
         let m = AIChatModel(db: engine.db)
@@ -85,6 +87,10 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         overlay = OverlayController(db: engine.db)
         overlay.chat = { [unowned self] in self.aiChat }
+        appLock.onLock = { [weak self] in self?.hideHistory() }
+        engine.serverLocked = { [appLock] in !appLock.isUnlocked }
+        encryption = Encryption(engine: engine)
+        encryption.resume()
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
         menu.delegate = self
@@ -106,23 +112,46 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// The first-run setup; ends in the guided tour if the user asks for it.
     @objc private func showSetup() {
-        Onboarding.show(db: engine.db) { [weak self] tour in if tour { self?.overlay.showTutorial() } }
+        appLock.run("change OpenRewind's setup") { [weak self] in
+            guard let self else { return }
+            Onboarding.show(db: self.engine.db) { [weak self] tour in if tour { self?.overlay.showTutorial() } }
+        }
     }
 
-    @objc private func showTutorial() { overlay.showTutorial() }
+    @objc private func showTutorial() {
+        appLock.run("see your timeline") { [weak self] in self?.overlay.showTutorial() }
+    }
 
     @objc private func showBlockedApps() {
-        SetupWindows.shared.show("blocked", title: "Blocked Apps & Sites", size: NSSize(width: 600, height: 860), resizable: true) {
-            BlockedAppsView(db: engine.db)
+        appLock.run("change blocked apps and sites") { [weak self] in
+            guard let self else { return }
+            SetupWindows.shared.show("blocked", title: "Blocked Apps & Sites", size: NSSize(width: 600, height: 860), resizable: true) {
+                BlockedAppsView(db: self.engine.db)
+            }
         }
     }
 
     @objc private func showAIChat() {
-        let chat = aiChat
-        chat.reloadSettings()
-        SetupWindows.shared.show("ai", title: "Ask OpenRewind", size: NSSize(width: 560, height: 720), resizable: true) {
-            AIChatView(model: chat)
+        appLock.run("ask about your history") { [weak self] in
+            guard let self else { return }
+            let chat = self.aiChat
+            chat.reloadSettings()
+            SetupWindows.shared.show("ai", title: "Ask OpenRewind", size: NSSize(width: 560, height: 720), resizable: true) {
+                AIChatView(model: chat)
+            }
         }
+    }
+
+    /// Open the timeline, after Touch ID or the password when App Lock is on; close it if it is open.
+    private func toggleTimeline() {
+        if overlay.isVisible { overlay.hide() } else { appLock.run("see your timeline") { [weak self] in self?.overlay.show() } }
+    }
+
+    /// The app locked (screen locked, Mac asleep): close everything that shows history. Recording goes on.
+    private func hideHistory() {
+        if overlay.isVisible { overlay.hide(restoreFocus: false) }
+        SetupWindows.shared.close("ai")
+        SetupWindows.shared.close("blocked")
     }
 
     @objc private func showAISettings() {
@@ -259,6 +288,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let m = NSMenu()
         m.addItem(action("Blocked Apps & Sites…", #selector(showBlockedApps)))
         m.addItem(action("AI Settings…", #selector(showAISettings)))
+        m.addItem(encryptionMenu())
         m.addItem(.separator())
         let sc = Shortcut.load(defaults)
         let shortcut = NSMenuItem(title: "Timeline Shortcut: \(sc.label)", action: nil, keyEquivalent: "")
@@ -342,7 +372,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @discardableResult
     private func registerHotKey(_ sc: Shortcut) -> Bool {
         hotKey = nil  // unregister the old one first
-        hotKey = HotKey(keyCode: sc.keyCode, modifiers: sc.modifiers) { [weak self] in self?.overlay.toggle() }
+        hotKey = HotKey(keyCode: sc.keyCode, modifiers: sc.modifiers) { [weak self] in self?.toggleTimeline() }
         return hotKey?.registered == true
     }
 
@@ -437,6 +467,82 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let raw = sender.representedObject as? String else { return }
         defaults.set(raw, forKey: OverlayLook.key)
         log("timeline look set to \(raw)")
+    }
+
+    // MARK: encryption & lock
+
+    private func encryptionMenu() -> NSMenuItem {
+        let item = NSMenuItem(title: "Encryption & Lock", action: nil, keyEquivalent: "")
+        item.image = NSImage(systemSymbolName: "lock", accessibilityDescription: nil)
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+        let enc = action("Encrypt Recordings", #selector(toggleEncryption))
+        enc.state = encryption.on ? .on : .off
+        enc.toolTip = "Encrypt screenshots, audio and the database on disk. The key stays in your login Keychain."
+        sub.addItem(enc)
+        let status = NSMenuItem(title: "   " + encryption.status(), action: nil, keyEquivalent: "")
+        status.isEnabled = false
+        sub.addItem(status)
+        let export = action("Export Recovery Key…", #selector(exportRecoveryKey))
+        export.isEnabled = encryption.hasKey
+        sub.addItem(export)
+        sub.addItem(.separator())
+
+        let lock = action("Require Touch ID or Password to Open Timeline", #selector(toggleAppLock))
+        lock.state = appLock.enabled ? .on : .off
+        lock.toolTip = "Ask for Touch ID or your Mac password before showing the timeline, search, Ask AI and other history. Recording keeps going."
+        sub.addItem(lock)
+        let after = NSMenuItem(title: "Lock Again After", action: nil, keyEquivalent: "")
+        after.isEnabled = appLock.enabled
+        let am = NSMenu()
+        for choice in AppLock.timeoutChoices {
+            let i = action(choice.title + (choice.minutes == 15 ? " (Default)" : ""), #selector(setLockMinutes(_:)))
+            i.tag = choice.minutes
+            i.state = appLock.minutes == choice.minutes ? .on : .off
+            am.addItem(i)
+        }
+        after.submenu = am
+        sub.addItem(after)
+        item.submenu = sub
+        return item
+    }
+
+    @objc private func toggleEncryption() {
+        if !encryption.on { encryption.turnOn() }
+        else { appLock.run("stop encrypting recordings") { [weak self] in self?.encryption.turnOff() } }
+    }
+
+    @objc private func exportRecoveryKey() {
+        appLock.run("save the recovery key") { [weak self] in _ = self?.encryption.exportKey() }
+    }
+
+    @objc private func setLockMinutes(_ sender: NSMenuItem) { appLock.minutes = sender.tag }
+
+    @objc private func toggleAppLock() {
+        if appLock.enabled {
+            // Turning it off is a change only the person it protects should make.
+            appLock.unlock("stop asking for Touch ID or your password") { [weak self] ok in
+                guard ok, let self else { return }
+                self.appLock.enabled = false
+                log("app lock off")
+            }
+            return
+        }
+        if let why = AppLock.unavailableReason() {
+            NSApp.activate(ignoringOtherApps: true)
+            let a = NSAlert()
+            a.messageText = "Touch ID or a password is needed"
+            a.informativeText = "\(why)\n\nSet a login password for your Mac account in System Settings → Users & Groups, then try again."
+            a.runModal()
+            return
+        }
+        appLock.enabled = true
+        // Check it works now, so nobody is locked out by a prompt that never answers.
+        appLock.unlock("check that unlocking works for OpenRewind") { [weak self] ok in
+            guard let self else { return }
+            if !ok { self.appLock.enabled = false; return }
+            log("app lock on")
+        }
     }
 
     // MARK: permissions
@@ -692,14 +798,19 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         PermissionHelper.shared.show(.screen)
     }
 
-    @objc private func openTimeline() { overlay.show() }
+    @objc private func openTimeline() {
+        appLock.run("see your timeline") { [weak self] in self?.overlay.show() }
+    }
 
     /// The browser page when the local server is on, else the timeline's own search box.
     @objc private func openSearch() {
-        if engine.serverOn {
-            NSWorkspace.shared.open(URL(string: "http://127.0.0.1:\(engine.config.port)/")!)
-        } else {
-            overlay.showSearch()
+        appLock.run("search your history") { [weak self] in
+            guard let self else { return }
+            if self.engine.serverOn {
+                NSWorkspace.shared.open(URL(string: "http://127.0.0.1:\(self.engine.config.port)/")!)
+            } else {
+                self.overlay.showSearch()
+            }
         }
     }
 
@@ -712,7 +823,12 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         do { try engine.startServer(exitOnFailure: false) } catch { log("cannot start server: \(error)") }
     }
 
-    @objc private func openData() { NSWorkspace.shared.open(engine.config.home) }
+    @objc private func openData() {
+        appLock.run("open its data folder") { [weak self] in
+            guard let self else { return }
+            NSWorkspace.shared.open(self.engine.config.home)
+        }
+    }
 
     @objc private func toggleLogin() {
         do {
@@ -723,7 +839,10 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func quit() { NSApp.terminate(nil) }
+    @objc private func quit() {
+        encryption.stop()
+        NSApp.terminate(nil)
+    }
 }
 
 /// The macOS privacy permissions OpenRewind uses.

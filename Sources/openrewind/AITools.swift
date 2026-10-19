@@ -1,6 +1,6 @@
 import Foundation
 import CoreGraphics
-import SQLite3
+import SQLCipher
 
 /// What the AI can look up in the local database. A whole day of screen text is far too much to
 /// send, so the model asks for summaries and searches instead, and every answer is capped in size.
@@ -24,7 +24,7 @@ struct AITools {
     /// A saved screenshot as a JPEG for the AI: at most 1568 pixels on the long side, which is what
     /// the providers shrink images to anyway.
     static func jpegForAI(_ path: String) -> Data? {
-        guard let img = ImageTools.load(URL(fileURLWithPath: path)) else { return nil }
+        guard let img = RecordingFile.image(path) else { return nil }
         let scale = min(1, 1568 / CGFloat(max(img.width, img.height)))
         return ImageTools.jpegData(scale < 1 ? ImageTools.scaled(img, by: scale) : img, quality: 0.75)
     }

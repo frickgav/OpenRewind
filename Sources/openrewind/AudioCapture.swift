@@ -109,7 +109,7 @@ enum WAV {
         d.append(contentsOf: Array("data".utf8)); u32(bytes)
         d.reserveCapacity(d.count + samples.count * 2)
         for s in samples { u16(UInt16(bitPattern: Int16(max(-1, min(1, s)) * 32767))) }
-        try d.write(to: url, options: .atomic)
+        try RecordingFile.write(d, to: url)  // encrypted when Encrypt Recordings is on
     }
 
     /// Decode any audio file macOS can read into 16 kHz mono samples.

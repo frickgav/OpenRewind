@@ -93,7 +93,7 @@ final class Server {
     }
 
     private func respond(_ conn: NWConnection, _ r: HTTPResponse) {
-        let reason = [200: "OK", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed", 500: "Internal Server Error"][r.status] ?? "OK"
+        let reason = [200: "OK", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed", 423: "Locked", 500: "Internal Server Error"][r.status] ?? "OK"
         var head = "HTTP/1.1 \(r.status) \(reason)\r\n"
         head += "Content-Type: \(r.contentType)\r\nContent-Length: \(r.body.count)\r\n"
         head += "Cache-Control: no-store\r\nConnection: close\r\n\r\n"
@@ -107,6 +107,9 @@ final class Server {
 struct API {
     let db: Database
     let config: Config
+    /// True while the app is locked (AppLock): search, screenshots and audio answer 423 until the user unlocks.
+    var locked: () -> Bool = { false }
+    static let lockedMessage = "OpenRewind is locked. Open the timeline to unlock it, then try again."
 
     func handle(_ req: HTTPRequest) -> HTTPResponse {
         guard req.method == "GET" else { return .error("method not allowed", status: 405) }
@@ -127,6 +130,11 @@ struct API {
                 "accessibility_permission": Accessibility.isTrusted,
                 "data_dir": config.home.path,
             ])
+        default:
+            break
+        }
+        if locked() { return .error(API.lockedMessage, status: 423) }
+        switch req.path {
         case "/search":
             return search(req.query)
         case "/apps":
@@ -205,10 +213,10 @@ struct API {
     private func audioFile(_ idStr: String) -> HTTPResponse {
         guard let id = Int64(idStr), let c = db.chunk(id: id) else { return .error("audio not found", status: 404) }
         let path = URL(fileURLWithPath: c.filePath).standardizedFileURL.path
-        guard path.hasPrefix(config.dataDir.standardizedFileURL.path),
-              let data = FileManager.default.contents(atPath: path) else {
+        guard path.hasPrefix(config.dataDir.standardizedFileURL.path), FileManager.default.fileExists(atPath: path) else {
             return .error("audio file missing", status: 404)
         }
+        guard let data = RecordingFile.data(path) else { return .error("cannot read audio", status: 500) }
         return HTTPResponse(contentType: "audio/wav", body: data)
     }
 
@@ -216,13 +224,13 @@ struct API {
         guard let id = Int64(idStr), let f = db.frame(id: id) else { return .error("frame not found", status: 404) }
         // Only serve files inside our own data dir.
         let path = URL(fileURLWithPath: f.snapshotPath).standardizedFileURL.path
-        guard path.hasPrefix(config.dataDir.standardizedFileURL.path),
-              let data = FileManager.default.contents(atPath: path) else {
+        guard path.hasPrefix(config.dataDir.standardizedFileURL.path), FileManager.default.fileExists(atPath: path) else {
             return .error("snapshot missing", status: 404)
         }
+        guard let data = RecordingFile.data(path) else { return .error("cannot read snapshot", status: 500) }
         // Chrome and Firefox cannot show HEIC: send JPEG.
         if path.hasSuffix(".heic") {
-            guard let img = ImageTools.load(URL(fileURLWithPath: path)), let jpg = ImageTools.jpegData(img) else {
+            guard let img = ImageTools.image(from: data), let jpg = ImageTools.jpegData(img) else {
                 return .error("cannot decode snapshot", status: 500)
             }
             return HTTPResponse(contentType: "image/jpeg", body: jpg)
