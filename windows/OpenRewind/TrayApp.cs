@@ -76,6 +76,17 @@ sealed class TrayApp : ApplicationContext
     }
     OnboardingForm? setup;
 
+    /// Turning it on shows how to add OpenRewind to each AI app.
+    void ToggleMcp()
+    {
+        settings.McpEnabled = !settings.McpEnabled;
+        settings.Save();
+        Log.Write($"AI apps (MCP) {(settings.McpEnabled ? "allowed" : "not allowed")}");
+        if (settings.McpEnabled) ShowConnectAiApps();
+    }
+
+    void ShowConnectAiApps() => ConnectAiAppsForm.ShowFor(settings, engine.Config);
+
     void ShowAiChat() => AiChatForm.ShowFor(settings, aiTools, aiConversation, OpenMoment, OpenAiSettings);
 
     /// The chat for the overlay; the same one the Ask AI window shows.
@@ -164,6 +175,10 @@ sealed class TrayApp : ApplicationContext
         var server = Toggle($"Local Search Server (127.0.0.1:{engine.Config.Port})", engine.ServerOn, ToggleServer);
         server.ToolTipText = "Search in the browser and let local scripts read your history through the API. Only this PC can connect.";
         s.DropDownItems.Add(server);
+        var mcp = Toggle("Allow AI Apps to Read My History (MCP)", settings.McpEnabled, ToggleMcp);
+        mcp.ToolTipText = "Let Claude, Cursor and other AI apps search your history. They read it on this PC; blocked apps and sites are left out.";
+        s.DropDownItems.Add(mcp);
+        s.DropDownItems.Add(Item("Connect AI Apps…", ShowConnectAiApps));
         s.DropDownItems.Add(new ToolStripSeparator());
         var auto = Toggle("Download Updates Automatically", updater.AutoDownload, () => updater.AutoDownload = !updater.AutoDownload);
         auto.ToolTipText = "Download new versions in the background. They are installed only when you click Update.";
