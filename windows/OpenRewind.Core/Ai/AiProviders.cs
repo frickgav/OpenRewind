@@ -7,11 +7,11 @@ namespace OpenRewind;
 
 /// The AI services a user can bring their own key for. Requests go straight from this PC to the
 /// provider; OpenRewind has no server in between. Same list as AIProviders.swift on the Mac.
-public enum AiProviderKind { Anthropic, OpenAI, Gemini, Custom }
+public enum AiProviderKind { Anthropic, OpenAI, Gemini, OpenRouter, Custom }
 
 public static class AiProviders
 {
-    public static readonly AiProviderKind[] All = { AiProviderKind.Anthropic, AiProviderKind.OpenAI, AiProviderKind.Gemini, AiProviderKind.Custom };
+    public static readonly AiProviderKind[] All = { AiProviderKind.Anthropic, AiProviderKind.OpenAI, AiProviderKind.Gemini, AiProviderKind.OpenRouter, AiProviderKind.Custom };
 
     /// Stable name used in settings and the credential store.
     public static string Id(this AiProviderKind k) => k switch
@@ -19,6 +19,7 @@ public static class AiProviders
         AiProviderKind.Anthropic => "anthropic",
         AiProviderKind.OpenAI => "openai",
         AiProviderKind.Gemini => "gemini",
+        AiProviderKind.OpenRouter => "openrouter",
         _ => "custom",
     };
 
@@ -29,6 +30,7 @@ public static class AiProviders
         AiProviderKind.Anthropic => "Anthropic (Claude)",
         AiProviderKind.OpenAI => "OpenAI",
         AiProviderKind.Gemini => "Google Gemini",
+        AiProviderKind.OpenRouter => "OpenRouter (any model)",
         _ => "Custom (OpenAI-compatible)",
     };
 
@@ -37,15 +39,16 @@ public static class AiProviders
         AiProviderKind.Anthropic => "https://api.anthropic.com",
         AiProviderKind.OpenAI => "https://api.openai.com/v1",
         AiProviderKind.Gemini => "https://generativelanguage.googleapis.com/v1beta",
+        AiProviderKind.OpenRouter => "https://openrouter.ai/api/v1",
         _ => "http://localhost:11434/v1",
     };
 
     /// Starting suggestions only: any model name can be typed, and Refresh asks the provider for its list.
     public static string[] SuggestedModels(this AiProviderKind k) => k switch
     {
-        AiProviderKind.Anthropic => new[] { "claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5" },
-        AiProviderKind.OpenAI => new[] { "gpt-5", "gpt-5-mini" },
-        AiProviderKind.Gemini => new[] { "gemini-2.5-flash", "gemini-2.5-pro" },
+        AiProviderKind.Anthropic => new[] { "claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-1" },
+        AiProviderKind.OpenAI => new[] { "gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra" },
+        AiProviderKind.Gemini => new[] { "gemini-3.8-flash", "gemini-4-argon", "gemini-3.5-flash-lite" },
         _ => Array.Empty<string>(),
     };
 
@@ -57,6 +60,7 @@ public static class AiProviders
         AiProviderKind.Anthropic => "https://console.anthropic.com/settings/keys",
         AiProviderKind.OpenAI => "https://platform.openai.com/api-keys",
         AiProviderKind.Gemini => "https://aistudio.google.com/apikey",
+        AiProviderKind.OpenRouter => "https://openrouter.ai/keys",
         _ => null,
     };
 }
@@ -80,11 +84,52 @@ public sealed class AiMessage
     /// For Tool: which call this answers.
     public string ToolCallId = "";
     public string ToolName = "";
+    /// For Tool: a JPEG screenshot that goes with the result (view_screenshot).
+    public byte[]? Image;
+    /// For Assistant from Anthropic: the content blocks exactly as they came. Claude's thinking blocks
+    /// must be sent back unchanged during tool use, so they are replayed from here.
+    public JsonArray? Raw;
 }
 
 public sealed record AiToolSpec(string Name, string Description, JsonObject Parameters);
 
-public sealed record AiReply(string Text, List<AiToolCall> ToolCalls);
+/// Tokens one or more requests used. Input counts everything the provider read, cached or not.
+public readonly record struct AiUsage(long Input, long Output)
+{
+    public static AiUsage operator +(AiUsage a, AiUsage b) => new(a.Input + b.Input, a.Output + b.Output);
+    public bool IsZero => Input == 0 && Output == 0;
+
+    public double? Cost(AiPrice? p) => p is { } x ? (Input * x.Input + Output * x.Output) / 1_000_000 : null;
+
+    /// "12,345 tokens in, 678 out · $0.06"
+    public string Describe(AiPrice? p) =>
+        $"{Input:N0} tokens in, {Output:N0} out" + (Cost(p) is double c ? $" · {AiPrice.Money(c)}" : "");
+}
+
+/// US dollars per million tokens.
+public readonly record struct AiPrice(double Input, double Output)
+{
+    /// List prices from the providers' pricing pages (October 2026). OpenRouter sends its prices with
+    /// the model list; for anything else the user types the price in AI Settings.
+    static readonly (string Prefix, AiPrice Price)[] Known =
+    {
+        ("gpt-6-astra", new(10, 50)), ("gpt-6.1-sol", new(2, 10)), ("gpt-6-luna", new(0.10, 0.50)),
+        ("claude-opus-5-5", new(4, 20)), ("claude-sonnet-5-5", new(2, 10)), ("claude-haiku-5-5", new(0.10, 0.50)),
+        ("claude-opus-5", new(5, 25)), ("claude-sonnet-5", new(2, 10)), ("claude-fable-5", new(10, 50)),
+        ("claude-opus-4", new(5, 25)), ("claude-sonnet-4", new(3, 15)), ("claude-haiku-4-5", new(1, 5)),
+    };
+
+    public static AiPrice? Default(string model)
+    {
+        foreach (var (prefix, price) in Known.OrderByDescending(k => k.Prefix.Length))
+            if (model.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return price;
+        return null;
+    }
+
+    public static string Money(double d) => d < 0.01 && d > 0 ? $"${d:0.0000}" : $"${d:N2}";
+}
+
+public sealed record AiReply(string Text, List<AiToolCall> ToolCalls, AiUsage Usage = default, JsonArray? Raw = null);
 
 public sealed class AiException : Exception
 {
@@ -128,6 +173,10 @@ public sealed class AiClient : IAiClient
             case AiProviderKind.Gemini:
                 return AiFormat.GeminiReply(await Post($"{Base}/models/{GeminiModel}:generateContent",
                     AiFormat.GeminiBody(system, messages, tools), GoogleHeaders, ct));
+            case AiProviderKind.OpenAI:
+                // Newer OpenAI models only take tools on the Responses endpoint.
+                return AiFormat.ResponsesReply(await Post($"{Base}/responses",
+                    AiFormat.ResponsesBody(settings.Model, system, messages, tools), Bearer, ct));
             default:
                 return AiFormat.OpenAIReply(await Post($"{Base}/chat/completions",
                     AiFormat.OpenAIBody(settings.Model, system, messages, tools), Bearer, ct));
@@ -135,7 +184,18 @@ public sealed class AiClient : IAiClient
     }
 
     /// The provider's current model names, for the model picker.
-    public async Task<List<string>> ListModels(CancellationToken ct = default)
+    public async Task<List<string>> ListModels(CancellationToken ct = default) =>
+        (await ListModelsWithPrices(ct)).Select(m => m.Id).ToList();
+
+    /// Model names, with prices where the provider lists them (OpenRouter does).
+    public async Task<List<(string Id, AiPrice? Price)>> ListModelsWithPrices(CancellationToken ct = default)
+    {
+        if (settings.Kind == AiProviderKind.OpenRouter)
+            return AiFormat.OpenRouterModels(await Get($"{Base}/models", Bearer, ct));
+        return (await ListModelNames(ct)).Select(id => (id, (AiPrice?)null)).ToList();
+    }
+
+    async Task<List<string>> ListModelNames(CancellationToken ct)
     {
         switch (settings.Kind)
         {
@@ -219,6 +279,9 @@ public static class AiFormat
                 case AiRole.User:
                     out_.Add(new JsonObject { ["role"] = "user", ["content"] = m.Text });
                     break;
+                case AiRole.Assistant when m.Raw != null:
+                    out_.Add(new JsonObject { ["role"] = "assistant", ["content"] = m.Raw.DeepClone() });
+                    break;
                 case AiRole.Assistant:
                     var content = new JsonArray();
                     if (m.Text.Length > 0) content.Add(new JsonObject { ["type"] = "text", ["text"] = m.Text });
@@ -228,7 +291,14 @@ public static class AiFormat
                     break;
                 case AiRole.Tool:
                     // All results for one assistant turn go back in a single user message.
-                    var block = new JsonObject { ["type"] = "tool_result", ["tool_use_id"] = m.ToolCallId, ["content"] = m.Text };
+                    JsonNode result = m.Image == null ? m.Text : new JsonArray(
+                        new JsonObject { ["type"] = "text", ["text"] = m.Text },
+                        new JsonObject
+                        {
+                            ["type"] = "image",
+                            ["source"] = new JsonObject { ["type"] = "base64", ["media_type"] = "image/jpeg", ["data"] = Convert.ToBase64String(m.Image) },
+                        });
+                    var block = new JsonObject { ["type"] = "tool_result", ["tool_use_id"] = m.ToolCallId, ["content"] = result };
                     if (out_.Count > 0 && out_[^1] is JsonObject last && (string?)last["role"] == "user" && last["content"] is JsonArray blocks)
                         blocks.Add(block);
                     else
@@ -260,16 +330,32 @@ public static class AiFormat
                     break;
             }
         }
-        return new AiReply(text.ToString(), calls);
+        var u = json["usage"];
+        var usage = new AiUsage(L(u?["input_tokens"]) + L(u?["cache_creation_input_tokens"]) + L(u?["cache_read_input_tokens"]), L(u?["output_tokens"]));
+        return new AiReply(text.ToString(), calls, usage, json["content"]?.DeepClone() as JsonArray);
     }
+
+    static long L(JsonNode? n) => n is JsonValue v && v.TryGetValue(out long x) ? x : n is JsonValue d && d.TryGetValue(out double y) ? (long)y : 0;
 
     // MARK: OpenAI and OpenAI-compatible servers
 
     public static JsonObject OpenAIBody(string model, string system, IReadOnlyList<AiMessage> messages, IReadOnlyList<AiToolSpec> tools)
     {
         var out_ = new JsonArray { new JsonObject { ["role"] = "system", ["content"] = system } };
+        // Tool messages can only hold text, so screenshots follow the tool answers as a user message.
+        var images = new List<byte[]>();
+        void FlushImages()
+        {
+            if (images.Count == 0) return;
+            var parts = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = "The screenshot(s) view_screenshot returned, in order:" });
+            foreach (var img in images)
+                parts.Add(new JsonObject { ["type"] = "image_url", ["image_url"] = new JsonObject { ["url"] = "data:image/jpeg;base64," + Convert.ToBase64String(img) } });
+            out_.Add(new JsonObject { ["role"] = "user", ["content"] = parts });
+            images.Clear();
+        }
         foreach (var m in messages)
         {
+            if (m.Role != AiRole.Tool) FlushImages();
             switch (m.Role)
             {
                 case AiRole.User:
@@ -287,9 +373,11 @@ public static class AiFormat
                     break;
                 case AiRole.Tool:
                     out_.Add(new JsonObject { ["role"] = "tool", ["tool_call_id"] = m.ToolCallId, ["content"] = m.Text });
+                    if (m.Image != null) images.Add(m.Image);
                     break;
             }
         }
+        FlushImages();
         var body = new JsonObject { ["model"] = model, ["messages"] = out_ };
         // OpenAI refuses an empty tools list.
         if (tools.Count > 0)
@@ -314,7 +402,9 @@ public static class AiFormat
             catch (JsonException) { args = new(); }
             calls.Add(new AiToolCall((string?)c?["id"] ?? Guid.NewGuid().ToString(), (string?)f?["name"] ?? "", args));
         }
-        return new AiReply(msg["content"] is JsonValue v && v.TryGetValue(out string? s) ? s : "", calls);
+        var u = json["usage"];
+        return new AiReply(msg["content"] is JsonValue v && v.TryGetValue(out string? s) ? s : "", calls,
+                           new AiUsage(L(u?["prompt_tokens"]), L(u?["completion_tokens"])));
     }
 
     /// The OpenAI model list also has embeddings, speech and image models; keep the chat ones.
@@ -323,6 +413,96 @@ public static class AiFormat
         string[] skip = { "embedding", "whisper", "tts", "dall-e", "image", "audio", "realtime", "moderation", "transcribe", "search", "davinci", "babbage" };
         id = id.ToLowerInvariant();
         return (id.StartsWith("gpt") || id.StartsWith('o') || id.StartsWith("chatgpt")) && !skip.Any(id.Contains);
+    }
+
+    /// OpenRouter's list: {"data":[{"id":"openai/gpt-6-luna","pricing":{"prompt":"0.0000001","completion":"0.0000005"}}]}
+    /// with prices in dollars per token.
+    public static List<(string Id, AiPrice? Price)> OpenRouterModels(JsonObject json)
+    {
+        static double? PerMillion(JsonNode? n) =>
+            double.TryParse(n?.ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d) && d >= 0
+                ? Math.Round(d * 1_000_000, 6) : null;
+        return (json["data"] as JsonArray ?? new())
+            .Select(m => ((string?)m?["id"], PerMillion(m?["pricing"]?["prompt"]), PerMillion(m?["pricing"]?["completion"])))
+            .Where(m => m.Item1 != null)
+            .Select(m => (m.Item1!, m.Item2 is double i && m.Item3 is double o ? new AiPrice(i, o) : (AiPrice?)null))
+            .OrderBy(m => m.Item1, StringComparer.Ordinal).ToList();
+    }
+
+    // MARK: OpenAI Responses
+
+    /// OpenAI's /v1/responses. `store: false` keeps the conversation off OpenAI's servers, so the
+    /// whole history goes in every request; the model's own output items (reasoning included) are
+    /// replayed exactly as they came.
+    public static JsonObject ResponsesBody(string model, string system, IReadOnlyList<AiMessage> messages, IReadOnlyList<AiToolSpec> tools)
+    {
+        var input = new JsonArray();
+        var images = new List<byte[]>();
+        void FlushImages()
+        {
+            if (images.Count == 0) return;
+            var parts = new JsonArray(new JsonObject { ["type"] = "input_text", ["text"] = "The screenshot(s) view_screenshot returned, in order:" });
+            foreach (var img in images)
+                parts.Add(new JsonObject { ["type"] = "input_image", ["image_url"] = "data:image/jpeg;base64," + Convert.ToBase64String(img) });
+            input.Add(new JsonObject { ["role"] = "user", ["content"] = parts });
+            images.Clear();
+        }
+        foreach (var m in messages)
+        {
+            if (m.Role != AiRole.Tool) FlushImages();
+            switch (m.Role)
+            {
+                case AiRole.User:
+                    input.Add(new JsonObject { ["role"] = "user", ["content"] = m.Text });
+                    break;
+                case AiRole.Assistant when m.Raw != null:
+                    foreach (var item in m.Raw) input.Add(item?.DeepClone());
+                    break;
+                case AiRole.Assistant:
+                    if (m.Text.Length > 0) input.Add(new JsonObject { ["role"] = "assistant", ["content"] = m.Text });
+                    foreach (var c in m.ToolCalls)
+                        input.Add(new JsonObject { ["type"] = "function_call", ["call_id"] = c.Id, ["name"] = c.Name, ["arguments"] = c.Args.ToJsonString() });
+                    break;
+                case AiRole.Tool:
+                    input.Add(new JsonObject { ["type"] = "function_call_output", ["call_id"] = m.ToolCallId, ["output"] = m.Text });
+                    if (m.Image != null) images.Add(m.Image);
+                    break;
+            }
+        }
+        FlushImages();
+        var body = new JsonObject { ["model"] = model, ["instructions"] = system, ["input"] = input, ["store"] = false };
+        if (tools.Count > 0)
+            body["tools"] = new JsonArray(tools.Select(t => (JsonNode)new JsonObject
+            {
+                // Strict mode wants every argument required; ours are mostly optional.
+                ["type"] = "function", ["name"] = t.Name, ["description"] = t.Description, ["parameters"] = t.Parameters.DeepClone(), ["strict"] = false,
+            }).ToArray());
+        return body;
+    }
+
+    public static AiReply ResponsesReply(JsonObject json)
+    {
+        var output = json["output"] as JsonArray ?? throw new AiException("The provider sent no answer.");
+        var text = new StringBuilder();
+        var calls = new List<AiToolCall>();
+        foreach (var item in output)
+        {
+            switch ((string?)item?["type"])
+            {
+                case "message":
+                    foreach (var part in item!["content"] as JsonArray ?? new())
+                        if ((string?)part?["type"] == "output_text") text.Append((string?)part!["text"]);
+                    break;
+                case "function_call":
+                    JsonObject args;
+                    try { args = JsonNode.Parse((string?)item!["arguments"] ?? "{}") as JsonObject ?? new(); }
+                    catch (JsonException) { args = new(); }
+                    calls.Add(new AiToolCall((string?)item!["call_id"] ?? Guid.NewGuid().ToString(), (string?)item["name"] ?? "", args));
+                    break;
+            }
+        }
+        var u = json["usage"];
+        return new AiReply(text.ToString(), calls, new AiUsage(L(u?["input_tokens"]), L(u?["output_tokens"])), (JsonArray)output.DeepClone());
     }
 
     // MARK: Gemini
@@ -353,11 +533,15 @@ public static class AiFormat
                     {
                         ["functionResponse"] = new JsonObject { ["name"] = m.ToolName, ["response"] = new JsonObject { ["result"] = m.Text } },
                     };
+                    JsonArray target;
                     if (out_.Count > 0 && out_[^1] is JsonObject last && (string?)last["role"] == "user"
                         && last["parts"] is JsonArray lp && lp.FirstOrDefault()?["functionResponse"] != null)
-                        lp.Add(part);
+                        target = lp;
                     else
-                        out_.Add(new JsonObject { ["role"] = "user", ["parts"] = new JsonArray(part) });
+                        out_.Add(new JsonObject { ["role"] = "user", ["parts"] = target = new JsonArray() });
+                    target.Add(part);
+                    if (m.Image != null)
+                        target.Add(new JsonObject { ["inlineData"] = new JsonObject { ["mimeType"] = "image/jpeg", ["data"] = Convert.ToBase64String(m.Image) } });
                     break;
             }
         }
@@ -391,7 +575,9 @@ public static class AiFormat
                 calls.Add(new AiToolCall((string?)f["id"] ?? $"call_{calls.Count + 1}", (string?)f["name"] ?? "",
                                          f["args"]?.DeepClone() as JsonObject ?? new(), (string?)p["thoughtSignature"]));
         }
-        return new AiReply(text.ToString(), calls);
+        var u = json["usageMetadata"];
+        return new AiReply(text.ToString(), calls,
+                           new AiUsage(L(u?["promptTokenCount"]), L(u?["candidatesTokenCount"]) + L(u?["thoughtsTokenCount"])));
     }
 
     // MARK: errors

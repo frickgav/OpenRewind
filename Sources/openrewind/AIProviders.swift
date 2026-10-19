@@ -4,7 +4,7 @@ import Security
 /// The AI services a user can bring their own key for. Requests go straight from this Mac to the
 /// provider; OpenRewind has no server in between. The Windows app has the same list in AiProviders.cs.
 enum AIProviderKind: String, CaseIterable, Identifiable {
-    case anthropic, openai, gemini, custom
+    case anthropic, openai, gemini, openrouter, custom
 
     var id: String { rawValue }
 
@@ -13,6 +13,7 @@ enum AIProviderKind: String, CaseIterable, Identifiable {
         case .anthropic: return "Anthropic (Claude)"
         case .openai: return "OpenAI"
         case .gemini: return "Google Gemini"
+        case .openrouter: return "OpenRouter (any model)"
         case .custom: return "Custom (OpenAI-compatible)"
         }
     }
@@ -22,6 +23,7 @@ enum AIProviderKind: String, CaseIterable, Identifiable {
         case .anthropic: return "https://api.anthropic.com"
         case .openai: return "https://api.openai.com/v1"
         case .gemini: return "https://generativelanguage.googleapis.com/v1beta"
+        case .openrouter: return "https://openrouter.ai/api/v1"
         case .custom: return "http://localhost:11434/v1"
         }
     }
@@ -29,10 +31,10 @@ enum AIProviderKind: String, CaseIterable, Identifiable {
     /// Starting suggestions only: any model name can be typed, and "Refresh" asks the provider for its list.
     var suggestedModels: [String] {
         switch self {
-        case .anthropic: return ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"]
-        case .openai: return ["gpt-5", "gpt-5-mini"]
-        case .gemini: return ["gemini-2.5-flash", "gemini-2.5-pro"]
-        case .custom: return []
+        case .anthropic: return ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-1"]
+        case .openai: return ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"]
+        case .gemini: return ["gemini-3.8-flash", "gemini-4-argon", "gemini-3.5-flash-lite"]
+        case .openrouter, .custom: return []
         }
     }
 
@@ -44,6 +46,7 @@ enum AIProviderKind: String, CaseIterable, Identifiable {
         case .anthropic: return URL(string: "https://console.anthropic.com/settings/keys")
         case .openai: return URL(string: "https://platform.openai.com/api-keys")
         case .gemini: return URL(string: "https://aistudio.google.com/apikey")
+        case .openrouter: return URL(string: "https://openrouter.ai/keys")
         case .custom: return nil
         }
     }
@@ -100,6 +103,105 @@ struct AISettings {
         get { d.bool(forKey: "aiPrivacyAccepted") }
         set { d.set(newValue, forKey: "aiPrivacyAccepted") }
     }
+
+    /// Let the AI ask for screenshots (view_screenshot). Off unless the user turns it on.
+    static var screenshotsAllowed: Bool {
+        get { d.bool(forKey: "aiScreenshots") }
+        set { d.set(newValue, forKey: "aiScreenshots") }
+    }
+
+    /// The price the user typed for a model, else the one from OpenRouter's list, else the built-in one.
+    static func price(for model: String) -> AIPrice? {
+        for key in ["aiPrices", "aiListedPrices"] {
+            if let p = (d.dictionary(forKey: key)?[model] as? [Double]), p.count == 2 { return AIPrice(input: p[0], output: p[1]) }
+        }
+        return AIPrice.builtIn(model)
+    }
+
+    /// nil removes the typed price, so the listed or built-in one applies again.
+    static func setPrice(_ p: AIPrice?, for model: String) {
+        var all = d.dictionary(forKey: "aiPrices") ?? [:]
+        if let p { all[model] = [p.input, p.output] } else { all.removeValue(forKey: model) }
+        d.set(all, forKey: "aiPrices")
+    }
+
+    static func rememberListedPrices(_ list: [(id: String, price: AIPrice?)]) {
+        var all = d.dictionary(forKey: "aiListedPrices") ?? [:]
+        for m in list { if let p = m.price { all[m.id] = [p.input, p.output] } }
+        d.set(all, forKey: "aiListedPrices")
+    }
+
+    /// Everything used with one provider since the user last reset it.
+    static func total(_ kind: AIProviderKind) -> AITotal? {
+        guard let t = d.dictionary(forKey: "aiTotal.\(kind.rawValue)") else { return nil }
+        return AITotal(input: (t["input"] as? NSNumber)?.intValue ?? 0, output: (t["output"] as? NSNumber)?.intValue ?? 0,
+                       cost: (t["cost"] as? NSNumber)?.doubleValue ?? 0, unpriced: t["unpriced"] as? Bool ?? false,
+                       since: t["since"] as? Date ?? Date())
+    }
+
+    static func add(_ used: AIUsage, cost: Double?, to kind: AIProviderKind) {
+        guard !used.isZero else { return }
+        var t = total(kind) ?? AITotal(input: 0, output: 0, cost: 0, unpriced: false, since: Date())
+        t.input += used.input
+        t.output += used.output
+        t.cost += cost ?? 0
+        if cost == nil { t.unpriced = true }
+        d.set(["input": t.input, "output": t.output, "cost": t.cost, "unpriced": t.unpriced, "since": t.since] as [String: Any],
+              forKey: "aiTotal.\(kind.rawValue)")
+    }
+
+    static func resetTotal(_ kind: AIProviderKind) { d.removeObject(forKey: "aiTotal.\(kind.rawValue)") }
+}
+
+struct AITotal {
+    var input: Int, output: Int
+    var cost: Double
+    /// Some requests went to a model with no price, so `cost` is too low.
+    var unpriced: Bool
+    var since: Date
+}
+
+/// Tokens one or more requests used. `input` counts everything the provider read, cached or not.
+struct AIUsage: Equatable {
+    var input = 0, output = 0
+    static func + (a: AIUsage, b: AIUsage) -> AIUsage { AIUsage(input: a.input + b.input, output: a.output + b.output) }
+    var isZero: Bool { input == 0 && output == 0 }
+
+    func cost(_ p: AIPrice?) -> Double? {
+        guard let p else { return nil }
+        return (Double(input) * p.input + Double(output) * p.output) / 1_000_000
+    }
+
+    /// "12,345 tokens in, 678 out · $0.06"
+    func describe(_ p: AIPrice?) -> String {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        let s = "\(f.string(from: input as NSNumber) ?? "\(input)") tokens in, \(f.string(from: output as NSNumber) ?? "\(output)") out"
+        return cost(p).map { s + " · " + AIPrice.money($0) } ?? s
+    }
+}
+
+/// US dollars per million tokens.
+struct AIPrice: Equatable {
+    var input: Double, output: Double
+
+    /// List prices from the providers' pricing pages (October 2026). OpenRouter sends its prices with
+    /// the model list; for anything else the user types the price in AI Settings.
+    private static let known: [(String, AIPrice)] = [
+        ("gpt-6-astra", AIPrice(input: 10, output: 50)), ("gpt-6.1-sol", AIPrice(input: 2, output: 10)), ("gpt-6-luna", AIPrice(input: 0.10, output: 0.50)),
+        ("claude-opus-5-5", AIPrice(input: 4, output: 20)), ("claude-sonnet-5-5", AIPrice(input: 2, output: 10)), ("claude-haiku-5-5", AIPrice(input: 0.10, output: 0.50)),
+        ("claude-opus-5", AIPrice(input: 5, output: 25)), ("claude-sonnet-5", AIPrice(input: 2, output: 10)), ("claude-fable-5", AIPrice(input: 10, output: 50)),
+        ("claude-opus-4", AIPrice(input: 5, output: 25)), ("claude-sonnet-4", AIPrice(input: 3, output: 15)), ("claude-haiku-4-5", AIPrice(input: 1, output: 5)),
+    ]
+
+    static func builtIn(_ model: String) -> AIPrice? {
+        let m = model.lowercased()
+        return known.sorted { $0.0.count > $1.0.count }.first { m.hasPrefix($0.0) }?.1
+    }
+
+    static func money(_ d: Double) -> String {
+        d > 0 && d < 0.01 ? String(format: "$%.4f", d) : String(format: "$%.2f", d)
+    }
 }
 
 /// API keys in the login Keychain, one item per provider. Never written to settings or the database.
@@ -148,6 +250,11 @@ struct AIMessage {
     /// For `.tool`: which call this answers.
     var toolCallId = ""
     var toolName = ""
+    /// For `.tool`: a JPEG screenshot that goes with the result (view_screenshot).
+    var image: Data?
+    /// For `.assistant` from Anthropic or OpenAI: the output exactly as it came. Thinking and
+    /// reasoning items must be sent back unchanged during tool use, so they are replayed from here.
+    var raw: [[String: Any]]?
 }
 
 struct AIToolSpec {
@@ -160,6 +267,8 @@ struct AIToolSpec {
 struct AIReply {
     var text: String
     var toolCalls: [AIToolCall]
+    var usage = AIUsage()
+    var raw: [[String: Any]]?
 }
 
 struct AIError: LocalizedError {
@@ -191,7 +300,12 @@ struct AIClient {
             let json = try await post("\(base)/v1/messages", body,
                                       headers: ["x-api-key": key, "anthropic-version": "2023-06-01"])
             return AIFormat.anthropicReply(json)
-        case .openai, .custom:
+        case .openai:
+            // Newer OpenAI models only take tools on the Responses endpoint.
+            let body = AIFormat.responsesBody(model: settings.model, system: system, messages: messages, tools: tools)
+            let json = try await post("\(base)/responses", body, headers: bearer)
+            return try AIFormat.responsesReply(json)
+        case .openrouter, .custom:
             let body = AIFormat.openAIBody(model: settings.model, system: system, messages: messages, tools: tools)
             let json = try await post("\(base)/chat/completions", body, headers: bearer)
             return try AIFormat.openAIReply(json)
@@ -202,9 +316,17 @@ struct AIClient {
         }
     }
 
+    /// Model names, with prices where the provider lists them (OpenRouter does).
+    func listModelsWithPrices() async throws -> [(id: String, price: AIPrice?)] {
+        if settings.kind == .openrouter { return AIFormat.openRouterModels(try await get("\(base)/models", headers: bearer)) }
+        return try await listModels().map { (id: $0, price: nil) }
+    }
+
     /// The provider's current model names, for the model picker.
     func listModels() async throws -> [String] {
         switch settings.kind {
+        case .openrouter:
+            return try await listModelsWithPrices().map { $0.id }
         case .anthropic:
             let json = try await get("\(base)/v1/models?limit=100", headers: ["x-api-key": key, "anthropic-version": "2023-06-01"])
             return ((json["data"] as? [[String: Any]]) ?? []).compactMap { $0["id"] as? String }
@@ -267,13 +389,21 @@ enum AIFormat {
             case .user:
                 out.append(["role": "user", "content": m.text])
             case .assistant:
+                if let raw = m.raw {
+                    out.append(["role": "assistant", "content": raw])
+                    continue
+                }
                 var content: [[String: Any]] = []
                 if !m.text.isEmpty { content.append(["type": "text", "text": m.text]) }
                 for c in m.toolCalls { content.append(["type": "tool_use", "id": c.id, "name": c.name, "input": c.args]) }
                 out.append(["role": "assistant", "content": content])
             case .tool:
                 // All results for one assistant turn go back in a single user message.
-                let block: [String: Any] = ["type": "tool_result", "tool_use_id": m.toolCallId, "content": m.text]
+                var block: [String: Any] = ["type": "tool_result", "tool_use_id": m.toolCallId, "content": m.text]
+                if let img = m.image {
+                    block["content"] = [["type": "text", "text": m.text],
+                                        ["type": "image", "source": ["type": "base64", "media_type": "image/jpeg", "data": img.base64EncodedString()]]]
+                }
                 if var last = out.last, last["role"] as? String == "user", var blocks = last["content"] as? [[String: Any]] {
                     blocks.append(block)
                     last["content"] = blocks
@@ -301,14 +431,113 @@ enum AIFormat {
             default: break
             }
         }
-        return AIReply(text: text, toolCalls: calls)
+        let u = (json["usage"] as? [String: Any]) ?? [:]
+        let usage = AIUsage(input: num(u["input_tokens"]) + num(u["cache_creation_input_tokens"]) + num(u["cache_read_input_tokens"]),
+                            output: num(u["output_tokens"]))
+        return AIReply(text: text, toolCalls: calls, usage: usage, raw: json["content"] as? [[String: Any]])
+    }
+
+    static func num(_ v: Any?) -> Int { (v as? NSNumber)?.intValue ?? 0 }
+
+    static func jsonText(_ v: Any) -> String {
+        (try? JSONSerialization.data(withJSONObject: v)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+    }
+
+    // MARK: OpenAI Responses
+
+    /// OpenAI's /v1/responses. `store: false` keeps the conversation off OpenAI's servers, so the
+    /// whole history goes in every request; the model's own output items (reasoning included) are
+    /// replayed exactly as they came.
+    static func responsesBody(model: String, system: String, messages: [AIMessage], tools: [AIToolSpec]) -> [String: Any] {
+        var input: [[String: Any]] = []
+        var images: [Data] = []
+        func flushImages() {
+            guard !images.isEmpty else { return }
+            var parts: [[String: Any]] = [["type": "input_text", "text": "The screenshot(s) view_screenshot returned, in order:"]]
+            for img in images { parts.append(["type": "input_image", "image_url": "data:image/jpeg;base64," + img.base64EncodedString()]) }
+            input.append(["role": "user", "content": parts])
+            images = []
+        }
+        for m in messages {
+            if m.role != .tool { flushImages() }
+            switch m.role {
+            case .user:
+                input.append(["role": "user", "content": m.text])
+            case .assistant:
+                if let raw = m.raw {
+                    input += raw
+                } else {
+                    if !m.text.isEmpty { input.append(["role": "assistant", "content": m.text]) }
+                    for c in m.toolCalls {
+                        input.append(["type": "function_call", "call_id": c.id, "name": c.name, "arguments": jsonText(c.args)])
+                    }
+                }
+            case .tool:
+                input.append(["type": "function_call_output", "call_id": m.toolCallId, "output": m.text])
+                if let img = m.image { images.append(img) }
+            }
+        }
+        flushImages()
+        var body: [String: Any] = ["model": model, "instructions": system, "input": input, "store": false]
+        if !tools.isEmpty {
+            // Strict mode wants every argument required; ours are mostly optional.
+            body["tools"] = tools.map { ["type": "function", "name": $0.name, "description": $0.description,
+                                         "parameters": $0.parameters, "strict": false] as [String: Any] }
+        }
+        return body
+    }
+
+    static func responsesReply(_ json: [String: Any]) throws -> AIReply {
+        guard let output = json["output"] as? [[String: Any]] else { throw AIError(message: "The provider sent no answer.") }
+        var text = "", calls: [AIToolCall] = []
+        for item in output {
+            switch (item["type"] as? String) ?? "" {
+            case "message":
+                for part in (item["content"] as? [[String: Any]]) ?? [] where part["type"] as? String == "output_text" {
+                    text += (part["text"] as? String) ?? ""
+                }
+            case "function_call":
+                let raw = (item["arguments"] as? String) ?? "{}"
+                let args = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] ?? [:]
+                calls.append(AIToolCall(id: (item["call_id"] as? String) ?? UUID().uuidString, name: (item["name"] as? String) ?? "", args: args))
+            default: break
+            }
+        }
+        let u = (json["usage"] as? [String: Any]) ?? [:]
+        return AIReply(text: text, toolCalls: calls, usage: AIUsage(input: num(u["input_tokens"]), output: num(u["output_tokens"])), raw: output)
+    }
+
+    /// OpenRouter's list, with prices in dollars per token as text:
+    /// {"data":[{"id":"openai/gpt-6-luna","pricing":{"prompt":"0.0000001","completion":"0.0000005"}}]}
+    static func openRouterModels(_ json: [String: Any]) -> [(id: String, price: AIPrice?)] {
+        func perMillion(_ v: Any?) -> Double? {
+            let d = (v as? String).flatMap { Double($0) } ?? (v as? NSNumber)?.doubleValue
+            guard let d, d >= 0 else { return nil }
+            return (d * 1_000_000 * 1_000_000).rounded() / 1_000_000
+        }
+        return ((json["data"] as? [[String: Any]]) ?? []).compactMap { m -> (id: String, price: AIPrice?)? in
+            guard let id = m["id"] as? String else { return nil }
+            let p = (m["pricing"] as? [String: Any]) ?? [:]
+            if let i = perMillion(p["prompt"]), let o = perMillion(p["completion"]) { return (id: id, price: AIPrice(input: i, output: o)) }
+            return (id: id, price: nil)
+        }.sorted { $0.id < $1.id }
     }
 
     // MARK: OpenAI and OpenAI-compatible servers
 
     static func openAIBody(model: String, system: String, messages: [AIMessage], tools: [AIToolSpec]) -> [String: Any] {
         var out: [[String: Any]] = [["role": "system", "content": system]]
+        // Tool messages can only hold text, so screenshots follow the tool answers as a user message.
+        var images: [Data] = []
+        func flushImages() {
+            guard !images.isEmpty else { return }
+            var parts: [[String: Any]] = [["type": "text", "text": "The screenshot(s) view_screenshot returned, in order:"]]
+            for img in images { parts.append(["type": "image_url", "image_url": ["url": "data:image/jpeg;base64," + img.base64EncodedString()]]) }
+            out.append(["role": "user", "content": parts])
+            images = []
+        }
         for m in messages {
+            if m.role != .tool { flushImages() }
             switch m.role {
             case .user:
                 out.append(["role": "user", "content": m.text])
@@ -323,8 +552,10 @@ enum AIFormat {
                 out.append(msg)
             case .tool:
                 out.append(["role": "tool", "tool_call_id": m.toolCallId, "content": m.text])
+                if let img = m.image { images.append(img) }
             }
         }
+        flushImages()
         var body: [String: Any] = ["model": model, "messages": out]
         // OpenAI refuses an empty tools list.
         if !tools.isEmpty {
@@ -344,7 +575,9 @@ enum AIFormat {
             let args = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] ?? [:]
             return AIToolCall(id: (c["id"] as? String) ?? UUID().uuidString, name: (f["name"] as? String) ?? "", args: args)
         }
-        return AIReply(text: (msg["content"] as? String) ?? "", toolCalls: calls)
+        let u = (json["usage"] as? [String: Any]) ?? [:]
+        return AIReply(text: (msg["content"] as? String) ?? "", toolCalls: calls,
+                       usage: AIUsage(input: num(u["prompt_tokens"]), output: num(u["completion_tokens"])))
     }
 
     /// The OpenAI model list also has embeddings, speech and image models; keep the chat ones.
@@ -372,14 +605,15 @@ enum AIFormat {
                 }
                 out.append(["role": "model", "parts": parts])
             case .tool:
-                let part: [String: Any] = ["functionResponse": ["name": m.toolName, "response": ["result": m.text]]]
+                var add: [[String: Any]] = [["functionResponse": ["name": m.toolName, "response": ["result": m.text]]]]
+                if let img = m.image { add.append(["inlineData": ["mimeType": "image/jpeg", "data": img.base64EncodedString()]]) }
                 if var last = out.last, last["role"] as? String == "user", var parts = last["parts"] as? [[String: Any]],
                    parts.first?["functionResponse"] != nil {
-                    parts.append(part)
+                    parts += add
                     last["parts"] = parts
                     out[out.count - 1] = last
                 } else {
-                    out.append(["role": "user", "parts": [part]])
+                    out.append(["role": "user", "parts": add])
                 }
             }
         }
@@ -404,7 +638,9 @@ enum AIFormat {
                                         args: (f["args"] as? [String: Any]) ?? [:], signature: p["thoughtSignature"] as? String))
             }
         }
-        return AIReply(text: text, toolCalls: calls)
+        let u = (json["usageMetadata"] as? [String: Any]) ?? [:]
+        return AIReply(text: text, toolCalls: calls,
+                       usage: AIUsage(input: num(u["promptTokenCount"]), output: num(u["candidatesTokenCount"]) + num(u["thoughtsTokenCount"])))
     }
 
     // MARK: errors

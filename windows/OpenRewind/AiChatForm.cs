@@ -73,7 +73,7 @@ sealed class AiChatForm : Form
             BackColor = Ui.Bg, Padding = new Padding((int)(16 * k), (int)(8 * k), (int)(16 * k), (int)(8 * k)),
         };
         list.Resize += (_, _) => FitRows();
-        newChat.Click += (_, _) => { cts?.Cancel(); convo.Clear(); list.Controls.Clear(); ShowSuggestions(); };
+        newChat.Click += (_, _) => { cts?.Cancel(); convo.Clear(); list.Controls.Clear(); ShowSuggestions(); ShowSubtitle(); };
 
         // Input: a text box and Send (Stop while working).
         inputBar = new Panel { Dock = DockStyle.Bottom, Height = (int)(64 * k), BackColor = Ui.Bg, Padding = new Padding((int)(12 * k)) };
@@ -103,14 +103,16 @@ sealed class AiChatForm : Form
     public void ShowState()
     {
         var ai = settings.Ai();
-        subtitle.Text = ai.IsReady ? $"{ai.Kind.Title()} · {ai.Model}" : "";
+        ShowSubtitle();
         if (!ai.IsReady)
             ShowNotice("Add your AI key",
-                "OpenRewind can answer questions about what you did and saw, using your own Anthropic, OpenAI or Gemini key, or a local model (Ollama, LM Studio).",
+                "OpenRewind can answer questions about what you did and saw, using your own Anthropic, OpenAI, Gemini or OpenRouter key, or a local model (Ollama, LM Studio).",
                 "Open AI Settings…", openSettings);
         else if (!settings.AiPrivacyAccepted)
             ShowNotice("Before you start",
-                $"To answer, the AI reads parts of your history: screen text, app and window names, web addresses and transcripts. Those parts are sent to {ai.Kind.Title()} using your key, and their privacy terms apply. Screenshots are never sent. Blocked apps and sites are never recorded, so the AI never sees them. Each lookup is listed in the chat so you can see what was sent.",
+                $"To answer, the AI reads parts of your history: screen text, app and window names, web addresses and transcripts. Those parts are sent to {ai.Kind.Title()} using your key, and their privacy terms apply. "
+                + (settings.AiScreenshots ? "You allowed screenshots, so it can also look at a few of those. " : "Screenshots are not sent unless you allow them in AI Settings. ")
+                + "Blocked apps and sites are never recorded, so the AI never sees them. Each lookup is listed in the chat so you can see what was sent.",
                 "Continue", () => { settings.AiPrivacyAccepted = true; settings.Save(); ShowState(); });
         else
         {
@@ -119,6 +121,16 @@ sealed class AiChatForm : Form
             if (list.Controls.Count == 0) ShowSuggestions();
             input.Focus();
         }
+    }
+
+    /// "Anthropic (Claude) · claude-sonnet-5-5 · This chat: 12,345 tokens, $0.04"
+    void ShowSubtitle()
+    {
+        var ai = settings.Ai();
+        if (!ai.IsReady) { subtitle.Text = ""; return; }
+        var used = convo.Used.IsZero ? "" : $" · This chat: {convo.Used.Input + convo.Used.Output:N0} tokens"
+            + (settings.AiPriceFor(ai.Model) != null || convo.Cost > 0 ? $", {AiPrice.Money(convo.Cost)}" : "");
+        subtitle.Text = $"{ai.Kind.Title()} · {ai.Model}{used}";
     }
 
     void ShowNotice(string title, string text, string button, Action act)
@@ -169,9 +181,12 @@ sealed class AiChatForm : Form
         send.Text = "Stop";
         input.Enabled = false;
         AddRow(thinking);
-        try { await convo.Ask(q, new AiClient(ai), tools, AddItem, cts.Token); }
+        tools.Screenshots = settings.AiScreenshots ? f => ImageTools.ForAi(f.SnapshotPath) : null;
+        try { await convo.Ask(q, new AiClient(ai), tools, AddItem, settings.AiPriceFor(ai.Model), cts.Token); }
         finally
         {
+            settings.AddAiUsage(ai.Kind, convo.LastUsed, convo.LastCost);
+            ShowSubtitle();
             list.Controls.Remove(thinking);
             cts.Dispose();
             cts = null;
@@ -187,7 +202,8 @@ sealed class AiChatForm : Form
         {
             AiChatKind.User => UserRow(item.Text),
             AiChatKind.Assistant => AssistantRow(item.Text),
-            AiChatKind.Tool => ToolRow(item.Text, item.Detail),
+            AiChatKind.Tool => ToolRow(item.Text, item.Args, item.Detail),
+            AiChatKind.Usage => UsageRow(item.Text),
             _ => Bubble("⚠ " + item.Text, Ui.Warn, Ui.Bg),
         };
         AddRow(row);
@@ -235,8 +251,15 @@ sealed class AiChatForm : Form
         else if (url.StartsWith("https://") || url.StartsWith("http://")) Updater.Open(url);
     }
 
-    /// "Searched screen for … · 2,345 characters sent"; click to see exactly what was sent.
-    Control ToolRow(string what, string detail)
+    Control UsageRow(string text) => new Label
+    {
+        Text = text, ForeColor = Ui.Faint, BackColor = Ui.Bg, AutoSize = true, Font = Ui.F(11.5f * k),
+        Margin = new Padding(0, 0, 0, (int)(8 * k)),
+    };
+
+    /// "Searched screen for … · 2,345 characters sent"; click to see the lookup the AI asked for
+    /// and exactly what was sent back.
+    Control ToolRow(string what, string args, string detail)
     {
         var panel = new Panel { BackColor = Ui.Bg, Margin = new Padding(0, (int)(2 * k), 0, (int)(2 * k)), Tag = "tool" };
         var head = new Label
@@ -246,14 +269,14 @@ sealed class AiChatForm : Form
         };
         var box = new TextBox
         {
-            Text = detail.Replace("\n", "\r\n"), Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.None,
+            Text = $"The AI asked for:\n{args}\n\nSent back to the AI:\n{detail}".Replace("\n", "\r\n"), Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.None,
             BackColor = Ui.Card, ForeColor = Ui.Dim, Font = new Font("Consolas", 10 * k, GraphicsUnit.Pixel), Dock = DockStyle.Fill, Visible = false,
         };
         head.Click += (_, _) =>
         {
             box.Visible = !box.Visible;
             head.Text = head.Text[..^1] + (box.Visible ? "▾" : "▸");
-            panel.Height = head.Height + (box.Visible ? (int)(200 * k) : 0);
+            panel.Height = head.Height + (box.Visible ? (int)(240 * k) : 0);
         };
         panel.Controls.Add(box);
         panel.Controls.Add(head);
@@ -296,9 +319,10 @@ sealed class AiSettingsForm : Form
     readonly Settings settings;
     readonly float k;
     readonly ComboBox provider, model;
-    readonly TextBox key, baseUrl;
+    readonly TextBox key, baseUrl, priceIn, priceOut;
+    readonly CheckBox screenshots;
     readonly Label status, urlLabel, urlHint, keyLabel;
-    readonly LinkLabel keyLink;
+    readonly LinkLabel keyLink, usage;
     readonly PillButton refresh, test;
     bool working;
 
@@ -318,7 +342,7 @@ sealed class AiSettingsForm : Form
         Icon = Program.AppIcon;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
-        ClientSize = new Size((int)(560 * k), (int)(560 * k));
+        ClientSize = new Size((int)(560 * k), (int)(820 * k));
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Ui.Bg;
         ForeColor = Ui.Text;
@@ -356,7 +380,7 @@ sealed class AiSettingsForm : Form
 
         urlLabel = Add("Server address", 12.5f, Ui.Dim, bold: true);
         baseUrl = Field(new TextBox { BorderStyle = BorderStyle.FixedSingle, PlaceholderText = "http://localhost:11434/v1" });
-        urlHint = Add("Ollama: http://localhost:11434/v1 · LM Studio: http://localhost:1234/v1 · OpenRouter: https://openrouter.ai/api/v1", 11, Ui.Faint, height: (int)(32 * k));
+        urlHint = Add("Ollama: http://localhost:11434/v1 · LM Studio: http://localhost:1234/v1 ", 11, Ui.Faint, height: (int)(32 * k));
 
         keyLabel = Add("API key", 12.5f, Ui.Dim, bold: true);
         key = Field(new TextBox { BorderStyle = BorderStyle.FixedSingle, UseSystemPasswordChar = true, PlaceholderText = "Paste your key" });
@@ -367,11 +391,42 @@ sealed class AiSettingsForm : Form
 
         Add("Model", 12.5f, Ui.Dim, bold: true);
         var bw = (int)(130 * k);
-        model = Field(new ComboBox { DropDownStyle = ComboBoxStyle.DropDown, FlatStyle = FlatStyle.Flat }, w - bw - (int)(8 * k));
+        // Typing filters the list, which matters for OpenRouter's hundreds of models.
+        model = Field(new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDown, FlatStyle = FlatStyle.Flat, MaxDropDownItems = 20,
+            AutoCompleteMode = AutoCompleteMode.SuggestAppend, AutoCompleteSource = AutoCompleteSource.ListItems,
+        }, w - bw - (int)(8 * k));
         refresh = new PillButton("Refresh List") { Font = Ui.F(12.5f * k, true), Bounds = new Rectangle(x + w - bw, model.Top, bw, model.Height) };
-        refresh.Click += async (_, _) => await RefreshModels();
+        refresh.Click += async (_, _) => await RefreshModels(quiet: false);
         Controls.Add(refresh);
         Add("Type any model name, so new models work as soon as they come out. Refresh List asks the provider for its models.", 11, Ui.Faint, height: (int)(34 * k));
+        y += (int)(6 * k);
+
+        Add("Price per million tokens (US$, input / output)", 12.5f, Ui.Dim, bold: true);
+        var half = (w - (int)(8 * k)) / 2;
+        var priceTop = y;
+        priceIn = Field(new TextBox { BorderStyle = BorderStyle.FixedSingle, PlaceholderText = "Input, e.g. 2" }, half);
+        y = priceTop;
+        priceOut = Field(new TextBox { BorderStyle = BorderStyle.FixedSingle, PlaceholderText = "Output, e.g. 10" }, half);
+        priceOut.Left = x + half + (int)(8 * k);
+        Add("Filled in for Claude, GPT-6 and OpenRouter models. For others, copy the price from the provider's pricing page; leave empty to see tokens only.", 11, Ui.Faint, height: (int)(34 * k));
+        model.TextChanged += (_, _) => ShowPrice();
+        y += (int)(6 * k);
+
+        screenshots = new CheckBox
+        {
+            Text = "Let AI look at screenshots", Checked = settings.AiScreenshots, Font = Ui.F(13.5f * k, true), ForeColor = Ui.Text,
+            Location = new Point(x, y), Size = new Size(w, (int)(26 * k)),
+        };
+        Controls.Add(screenshots);
+        y += screenshots.Height + (int)(2 * k);
+        Add("Off by default. When on, the AI can ask for a few screenshots when text is not enough. Those images go to the provider and cost more than text. Blocked apps are blurred in them.", 11, Ui.Faint, height: (int)(50 * k));
+        y += (int)(6 * k);
+
+        usage = new LinkLabel { Font = Ui.F(12 * k), ForeColor = Ui.Dim, LinkColor = Color.FromArgb(115, 165, 255), Location = new Point(x, y), Size = new Size(w, (int)(40 * k)) };
+        usage.LinkClicked += (_, _) => { settings.AiTotals.Remove(Kind.Id()); settings.Save(); ShowUsage(); };
+        Controls.Add(usage);
 
         status = new Label { Font = Ui.F(12 * k), ForeColor = Ui.Dim, Location = new Point(x, ClientSize.Height - (int)(130 * k)), Size = new Size(w, (int)(60 * k)) };
         Controls.Add(status);
@@ -407,34 +462,73 @@ sealed class AiSettingsForm : Form
         keyLink.Text = "Saved in Windows Credential Manager." + (kind.KeyPage() != null ? " Get a key" : "");
         keyLink.Links.Clear();
         if (kind.KeyPage() != null) keyLink.Links.Add(keyLink.Text.Length - 9, 9);
+        ShowPrice();
+        ShowUsage();
         status.Text = "";
+        // OpenRouter lists its models without a key; the others need one.
+        if (kind == AiProviderKind.OpenRouter || (s.Key ?? "").Length > 0) _ = RefreshModels(quiet: true);
+    }
+
+    void ShowPrice()
+    {
+        var p = settings.AiPriceFor(model.Text.Trim());
+        priceIn.Text = p is { } a ? a.Input.ToString(System.Globalization.CultureInfo.CurrentCulture) : "";
+        priceOut.Text = p is { } b ? b.Output.ToString(System.Globalization.CultureInfo.CurrentCulture) : "";
+    }
+
+    /// "Used with OpenAI since 19 Oct: 120,000 tokens in, 8,000 out, about $0.38. Reset"
+    void ShowUsage()
+    {
+        var t = settings.AiTotals.GetValueOrDefault(Kind.Id());
+        if (t == null) { usage.Text = $"Nothing used with {Kind.Title()} yet."; usage.Links.Clear(); return; }
+        var cost = t.Cost > 0 || !t.Unpriced ? $", {(t.Unpriced ? "at least " : "about ")}{AiPrice.Money(t.Cost)}" : "";
+        usage.Text = $"Used with {Kind.Title()} since {t.Since.ToLocalTime():d MMM yyyy}: {t.Input:N0} tokens in, {t.Output:N0} out{cost}. Reset";
+        usage.Links.Clear();
+        usage.Links.Add(usage.Text.Length - 5, 5);
     }
 
     void Save()
     {
         settings.SaveAi(Current);
+        var m = model.Text.Trim();
+        var ok = double.TryParse(priceIn.Text, out var pin) & double.TryParse(priceOut.Text, out var pout);
+        if (ok && pin >= 0 && pout >= 0)
+        {
+            if (AiPrice.Default(m) == new AiPrice(pin, pout)) settings.AiPrices.Remove(m);
+            else settings.AiPrices[m] = new[] { pin, pout };
+        }
+        else if (priceIn.Text.Trim().Length == 0 && priceOut.Text.Trim().Length == 0) settings.AiPrices.Remove(m);
+        settings.AiScreenshots = screenshots.Checked;
         settings.Save();
         status.Text = "Saved.";
+        _ = RefreshModels(quiet: true);
         AiChatForm.SettingsChanged();
     }
 
-    async Task RefreshModels()
+    /// Fills the model list from the provider. Quiet: in the background, saying nothing if it fails.
+    async Task RefreshModels(bool quiet)
     {
         if (working) return;
         var s = Current;
-        Busy(true, $"Asking {s.Kind.Title()} for its models…");
+        if (s.Kind.NeedsKey() && s.Kind != AiProviderKind.OpenRouter && string.IsNullOrEmpty(s.Key)) { if (!quiet) status.Text = "Add your key first."; return; }
+        Busy(true, quiet ? null : $"Asking {s.Kind.Title()} for its models…");
         try
         {
-            var list = await new AiClient(s).ListModels();
-            settings.RememberModels(s.Kind, list);
+            var list = await new AiClient(s).ListModelsWithPrices();
+            if (IsDisposed || Kind != s.Kind) return;
+            foreach (var (id, price) in list)
+                if (price is { } p) settings.AiListedPrices[id] = new[] { p.Input, p.Output };
+            settings.RememberModels(s.Kind, list.Select(m => m.Id));
             var typed = model.Text;
+            model.BeginUpdate();
             model.Items.Clear();
             foreach (var m in settings.SavedModels(s.Kind)) model.Items.Add(m);
+            model.EndUpdate();
             model.Text = typed;
-            status.Text = list.Count == 0 ? "The provider listed no models." : $"Found {list.Count} models. Pick one from the Model list.";
+            if (!quiet) status.Text = list.Count == 0 ? "The provider listed no models." : $"Found {list.Count} models. Type in the Model box to search them.";
         }
-        catch (Exception e) { status.Text = e.Message; }
-        finally { Busy(false); }
+        catch (Exception e) { if (!quiet && !IsDisposed) status.Text = e.Message; }
+        finally { if (!IsDisposed) Busy(false); }
     }
 
     async Task Test()

@@ -98,6 +98,81 @@ public class AiTests : IDisposable
     }
 
     [Fact]
+    public void ClaudeThinkingIsSentBackUnchanged()
+    {
+        var reply = AiFormat.AnthropicReply(JsonNode.Parse("""
+            {"content":[{"type":"thinking","thinking":"hmm","signature":"s1"},{"type":"tool_use","id":"t1","name":"search_screen","input":{"query":"x"}}],
+             "usage":{"input_tokens":100,"cache_read_input_tokens":50,"output_tokens":20}}
+            """)!.AsObject());
+        Assert.Equal(new AiUsage(150, 20), reply.Usage);
+        var msgs = new List<AiMessage>
+        {
+            new() { Role = AiRole.User, Text = "q" },
+            new() { Role = AiRole.Assistant, ToolCalls = reply.ToolCalls, Raw = reply.Raw },
+            new() { Role = AiRole.Tool, Text = "r", ToolCallId = "t1", ToolName = "search_screen", Image = new byte[] { 1, 2, 3 } },
+        };
+        var body = AiFormat.AnthropicBody("claude-x", "sys", msgs, AiTools.Specs);
+        var content = body["messages"]![1]!["content"]!;
+        Assert.Equal("thinking", (string?)content[0]!["type"]);
+        Assert.Equal("s1", (string?)content[0]!["signature"]);
+        var result = body["messages"]![2]!["content"]![0]!["content"]!;
+        Assert.Equal("image", (string?)result[1]!["type"]);
+        Assert.Equal("AQID", (string?)result[1]!["source"]!["data"]);
+    }
+
+    [Fact]
+    public void OpenAIUsesResponsesAndReplaysItsOutput()
+    {
+        var reply = AiFormat.ResponsesReply(JsonNode.Parse("""
+            {"output":[{"type":"reasoning","id":"rs_1","encrypted_content":"enc","summary":[]},
+                       {"type":"function_call","id":"fc_1","call_id":"call_1","name":"search_screen","arguments":"{\"query\":\"x\"}"}],
+             "usage":{"input_tokens":10,"output_tokens":5}}
+            """)!.AsObject());
+        Assert.Equal("x", (string?)reply.ToolCalls[0].Args["query"]);
+        Assert.Equal("call_1", reply.ToolCalls[0].Id);
+        Assert.Equal(new AiUsage(10, 5), reply.Usage);
+        var msgs = new List<AiMessage>
+        {
+            new() { Role = AiRole.User, Text = "q" },
+            new() { Role = AiRole.Assistant, ToolCalls = reply.ToolCalls, Raw = reply.Raw },
+            new() { Role = AiRole.Tool, Text = "r", ToolCallId = "call_1", ToolName = "search_screen", Image = new byte[] { 1 } },
+        };
+        var body = AiFormat.ResponsesBody("gpt-6-luna", "sys", msgs, AiTools.Specs);
+        var input = (JsonArray)body["input"]!;
+        Assert.Equal(new[] { "user", "reasoning", "function_call", "function_call_output", "user" },
+                     input.Select(i => (string?)i!["type"] ?? (string?)i!["role"]));
+        Assert.Equal("enc", (string?)input[1]!["encrypted_content"]);
+        Assert.Equal("input_image", (string?)input[4]!["content"]![1]!["type"]);
+        Assert.False((bool)body["store"]!);
+        Assert.False((bool)body["tools"]![0]!["strict"]!);
+        Assert.Equal("sys", (string?)body["instructions"]);
+
+        var text = AiFormat.ResponsesReply(JsonNode.Parse("""
+            {"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done"}]}]}
+            """)!.AsObject());
+        Assert.Equal("Done", text.Text);
+    }
+
+    [Fact]
+    public void PricesAndOpenRouterModels()
+    {
+        Assert.Equal(new AiPrice(4, 20), AiPrice.Default("claude-opus-5-5"));
+        Assert.Equal(new AiPrice(5, 25), AiPrice.Default("claude-opus-5-20260101"));
+        Assert.Equal(new AiPrice(0.10, 0.50), AiPrice.Default("gpt-6-luna"));
+        Assert.Null(AiPrice.Default("llama3"));
+        Assert.Equal(0.03, new AiUsage(5_000, 1_000).Cost(new AiPrice(2, 20))!.Value, 6);
+        Assert.Equal("5,000 tokens in, 1,000 out · $0.03", new AiUsage(5_000, 1_000).Describe(new AiPrice(2, 20)));
+        Assert.Equal("10 tokens in, 2 out", new AiUsage(10, 2).Describe(null));
+
+        var list = AiFormat.OpenRouterModels(JsonNode.Parse("""
+            {"data":[{"id":"z/model","pricing":{"prompt":"-1","completion":"0"}},{"id":"openai/gpt-6-luna","pricing":{"prompt":"0.0000001","completion":"0.0000005"}}]}
+            """)!.AsObject());
+        Assert.Equal("openai/gpt-6-luna", list[0].Id);
+        Assert.Equal(new AiPrice(0.1, 0.5), list[0].Price);
+        Assert.Null(list[1].Price);
+    }
+
+    [Fact]
     public void ErrorsSayWhatToFix()
     {
         var json = JsonNode.Parse("""{"error":{"message":"invalid x-api-key"}}""")!.AsObject();
@@ -152,6 +227,26 @@ public class AiTests : IDisposable
     }
 
     [Fact]
+    public void ScreenshotsOnlyWhenAllowed()
+    {
+        var t = DateTime.UtcNow.AddMinutes(-20);
+        AddFrame(t, "Chrome", "Chart", "");
+        var tools = new AiTools(db);
+        Assert.DoesNotContain(tools.Offered, s => s.Name == "view_screenshot");
+        var call = new AiToolCall("1", "view_screenshot", new JsonObject { ["time"] = AiTime.Label(t.AddMinutes(1)) });
+        Assert.Null(tools.Execute(call).Image);
+
+        tools.Screenshots = f => new byte[] { 9 };
+        Assert.Contains(tools.Offered, s => s.Name == "view_screenshot");
+        var (text, image) = tools.Execute(call);
+        Assert.Equal(new byte[] { 9 }, image);
+        Assert.Contains("Chrome", text);
+        Assert.Contains("\"time\"", AiTools.Arguments(call));
+        // Nothing within 10 minutes.
+        Assert.Null(tools.Execute(new AiToolCall("2", "view_screenshot", new JsonObject { ["time"] = AiTime.Label(t.AddHours(-2)) })).Image);
+    }
+
+    [Fact]
     public void TimeArgumentsAreLocal()
     {
         var local = new DateTime(2026, 10, 18, 14, 30, 0, DateTimeKind.Local);
@@ -179,14 +274,17 @@ public class AiTests : IDisposable
     {
         AddFrame(DateTime.UtcNow.AddMinutes(-5), "Code", "x", "hello world");
         var client = new FakeClient();
-        client.Replies.Enqueue(new AiReply("", new() { new("c1", "search_screen", new JsonObject { ["query"] = "hello" }) }));
-        client.Replies.Enqueue(new AiReply("You wrote hello world.", new()));
+        client.Replies.Enqueue(new AiReply("", new() { new("c1", "search_screen", new JsonObject { ["query"] = "hello" }) }, new AiUsage(1000, 100)));
+        client.Replies.Enqueue(new AiReply("You wrote hello world.", new(), new AiUsage(2000, 200)));
         var convo = new AiConversation();
         var items = new List<AiChatItem>();
-        await convo.Ask("what did I write?", client, new AiTools(db), items.Add);
-        Assert.Equal(new[] { AiChatKind.User, AiChatKind.Tool, AiChatKind.Assistant }, items.Select(i => i.Kind));
+        await convo.Ask("what did I write?", client, new AiTools(db), items.Add, new AiPrice(1, 10));
+        Assert.Equal(new[] { AiChatKind.User, AiChatKind.Tool, AiChatKind.Assistant, AiChatKind.Usage }, items.Select(i => i.Kind));
         Assert.Contains("hello world", items[1].Detail);
+        Assert.Contains("\"hello\"", items[1].Args);
         Assert.Equal(new[] { 1, 3 }, client.SeenHistory);
+        Assert.Equal(new AiUsage(3000, 300), convo.Used);
+        Assert.Equal(0.006, convo.Cost, 6);
 
         // A failed request leaves no half question behind.
         await convo.Ask("again?", client, new AiTools(db), items.Add);

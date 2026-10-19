@@ -1,9 +1,10 @@
 namespace OpenRewind;
 
-public enum AiChatKind { User, Assistant, Tool, Error }
+public enum AiChatKind { User, Assistant, Tool, Error, Usage }
 
-/// One row in the chat window. For Tool, `Detail` is exactly what was sent to the provider.
-public sealed record AiChatItem(AiChatKind Kind, string Text, string Detail = "");
+/// One row in the chat window. For Tool, `Args` is the lookup as the model asked for it and
+/// `Detail` is exactly what was sent back to the provider.
+public sealed record AiChatItem(AiChatKind Kind, string Text, string Detail = "", string Args = "");
 
 /// The conversation behind the chat window: asks the model, runs the lookups it asks for, repeats.
 /// Same loop as AIChatModel on the Mac.
@@ -13,32 +14,45 @@ public sealed class AiConversation
     public const int MaxRounds = 10;
     /// Characters of earlier tool answers kept in the conversation; older ones are shortened.
     public const int HistoryBudget = 60_000;
+    /// Screenshots kept attached; older ones are dropped because every request sends them again.
+    public const int ImagesKept = 2;
 
     readonly List<AiMessage> history = new();
     public IReadOnlyList<AiMessage> History => history;
 
-    public void Clear() => history.Clear();
+    /// Tokens and cost of this chat so far. Cost leaves out requests to models with no known price.
+    public AiUsage Used { get; private set; }
+    public double Cost { get; private set; }
+    /// Tokens and cost of the last question, all its lookups included.
+    public AiUsage LastUsed { get; private set; }
+    public double? LastCost { get; private set; }
+
+    public void Clear() { history.Clear(); Used = default; Cost = 0; }
 
     /// `add` is called for every row to show, on the caller's context (the UI thread for a form).
-    public async Task Ask(string question, IAiClient client, AiTools tools, Action<AiChatItem> add, CancellationToken ct = default)
+    /// `price` (per million tokens) turns token counts into a cost; null shows tokens only.
+    public async Task Ask(string question, IAiClient client, AiTools tools, Action<AiChatItem> add, AiPrice? price = null, CancellationToken ct = default)
     {
         add(new AiChatItem(AiChatKind.User, question));
         history.Add(new AiMessage { Role = AiRole.User, Text = question });
+        AiUsage used = default;
         try
         {
             for (int round = 0; round < MaxRounds; round++)
             {
                 TrimHistory();
-                var reply = await client.Send(SystemPrompt(DateTime.Now), history, AiTools.Specs, ct);
+                var reply = await client.Send(SystemPrompt(DateTime.Now, tools.Screenshots != null), history, tools.Offered, ct);
+                used += reply.Usage;
                 ct.ThrowIfCancellationRequested();
-                history.Add(new AiMessage { Role = AiRole.Assistant, Text = reply.Text, ToolCalls = reply.ToolCalls });
+                history.Add(new AiMessage { Role = AiRole.Assistant, Text = reply.Text, ToolCalls = reply.ToolCalls, Raw = reply.Raw });
                 if (reply.Text.Length > 0) add(new AiChatItem(AiChatKind.Assistant, reply.Text));
                 if (reply.ToolCalls.Count == 0) return;
                 foreach (var call in reply.ToolCalls)
                 {
-                    var result = await Task.Run(() => tools.Run(call), ct);
-                    history.Add(new AiMessage { Role = AiRole.Tool, Text = result, ToolCallId = call.Id, ToolName = call.Name });
-                    add(new AiChatItem(AiChatKind.Tool, AiTools.Describe(call), result));
+                    var (result, image) = await Task.Run(() => tools.Execute(call), ct);
+                    history.Add(new AiMessage { Role = AiRole.Tool, Text = result, ToolCallId = call.Id, ToolName = call.Name, Image = image });
+                    var detail = image == null ? result : $"{result}\n\n[+ the screenshot as a JPEG image, {image.Length / 1024:N0} KB]";
+                    add(new AiChatItem(AiChatKind.Tool, AiTools.Describe(call), detail, AiTools.Arguments(call)));
                 }
             }
             add(new AiChatItem(AiChatKind.Error, $"Stopped after {MaxRounds} lookups. Try asking something narrower."));
@@ -52,11 +66,27 @@ public sealed class AiConversation
             if (history.Count > 0 && history[^1] is { Role: AiRole.Assistant, ToolCalls.Count: > 0 }) history.RemoveAt(history.Count - 1);
             if (history.Count > 0 && history[^1].Role == AiRole.User) history.RemoveAt(history.Count - 1);
         }
+        finally
+        {
+            // Tokens are paid for even when the question fails halfway.
+            LastUsed = used;
+            LastCost = used.Cost(price);
+            Used += used;
+            Cost += LastCost ?? 0;
+            if (!used.IsZero) add(new AiChatItem(AiChatKind.Usage, used.Describe(price)));
+        }
     }
 
     /// Long chats would send every earlier lookup again; shorten the oldest ones first.
     void TrimHistory()
     {
+        var images = 0;
+        for (int i = history.Count - 1; i >= 0; i--)
+        {
+            if (history[i].Image == null || ++images <= ImagesKept) continue;
+            history[i].Image = null;
+            history[i].Text += "\n[the image is no longer attached]";
+        }
         var total = history.Where(m => m.Role == AiRole.Tool).Sum(m => m.Text.Length);
         foreach (var m in history)
         {
@@ -67,7 +97,7 @@ public sealed class AiConversation
         }
     }
 
-    public static string SystemPrompt(DateTime now) => $"""
+    public static string SystemPrompt(DateTime now, bool screenshots = false) => $"""
         You are the assistant inside OpenRewind, an app that records this user's computer: text read from screenshots, app names, window titles, browser addresses, and transcripts of the microphone and system audio. Everything stays on their computer; you can read it only through the tools.
 
         Now: {now:yyyy-MM-dd HH:mm} local time ({TimeZoneInfo.Local.DisplayName}), {now:dddd d MMMM yyyy}.
@@ -77,6 +107,7 @@ public sealed class AiConversation
         - When you mention a moment, link it with the link from the tool answer, e.g. [2:15 PM](openrewind://t/1760000000). The link opens that moment in the user's timeline.
         - Group work into tasks or projects instead of listing every window. Be concise.
         - If nothing is found, say so plainly. Screen text comes from OCR and can have errors.
+        {(screenshots ? "- view_screenshot shows what the screen looked like. Use it only when text is not enough, and look at few." : "")}
         """;
 }
 

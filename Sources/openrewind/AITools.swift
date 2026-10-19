@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import SQLite3
 
 /// What the AI can look up in the local database. A whole day of screen text is far too much to
@@ -7,6 +8,43 @@ import SQLite3
 /// The Windows app has the same tools in AiTools.cs.
 struct AITools {
     let db: Database
+    /// Reads a frame's screenshot as a small JPEG. Set only while the user has turned on
+    /// "Let AI look at screenshots"; nil means view_screenshot is not offered at all.
+    var screenshots: ((Frame) -> Data?)?
+
+    /// The tools to send with a request.
+    var offered: [AIToolSpec] { screenshots == nil ? Self.specs : Self.specs + [Self.screenshotSpec] }
+
+    static let screenshotSpec = AIToolSpec(name: "view_screenshot",
+        description: "The screenshot saved closest to a moment, as an image. Use only when the screen text is not enough (charts, pictures, layout, what something looked like). Each image costs far more than text, so look at few.",
+        parameters: schema(["time": timeArg("The moment to look at.")], required: ["time"]))
+
+    /// A saved screenshot as a JPEG for the AI: at most 1568 pixels on the long side, which is what
+    /// the providers shrink images to anyway.
+    static func jpegForAI(_ path: String) -> Data? {
+        guard let img = ImageTools.load(URL(fileURLWithPath: path)) else { return nil }
+        let scale = min(1, 1568 / CGFloat(max(img.width, img.height)))
+        return ImageTools.jpegData(scale < 1 ? ImageTools.scaled(img, by: scale) : img, quality: 0.75)
+    }
+
+    /// The arguments as the model sent them, for the chat window.
+    static func arguments(_ call: AIToolCall) -> String {
+        let data = try? JSONSerialization.data(withJSONObject: call.args, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        return call.name + " " + (data.flatMap { String(data: $0, encoding: .utf8) } ?? "{}")
+    }
+
+    /// Runs a lookup. Only view_screenshot returns an image.
+    func execute(_ call: AIToolCall) -> (text: String, image: Data?) {
+        guard call.name == "view_screenshot" else { return (run(call), nil) }
+        guard let screenshots else { return ("Error: the user has not allowed screenshots. Use the text tools.", nil) }
+        guard let t = AITime.parse(call.args["time"]) else { return ("Error: time is required, e.g. '2026-10-18 14:30'.", nil) }
+        guard let f = db.frame(near: t) else { return ("No screenshot was saved near that time.", nil) }
+        var what = "Screenshot from \(AITime.label(f.timestamp)) \(f.appName)"
+        if !f.windowName.isEmpty { what += " — “\(f.windowName)”" }
+        what += " (link: \(AITime.link(f.timestamp)))"
+        guard let image = screenshots(f) else { return ("\(what): the image file is missing (it may have been deleted).", nil) }
+        return (what + ". The image is attached.", image)
+    }
 
     /// Most characters one tool answer may send to the provider.
     static let resultLimit = 14_000
@@ -57,6 +95,7 @@ struct AITools {
             let q = (a["query"] as? String) ?? ""
             return (q.isEmpty ? "Read transcripts" : "Searched audio for “\(q)”") + when
         case "get_screen_text": return "Read screen text" + when
+        case "view_screenshot": return "Looked at the screenshot from \((a["time"] as? String) ?? "")"
         default: return call.name
         }
     }
