@@ -14,6 +14,9 @@ public sealed record Meeting(long Id, DateTime Start, DateTime End, string App, 
     public string Name => Title.Length > 0 ? Title : $"{App} call";
     public bool IsLive => Status == MeetingStatus.Live;
     public bool HasSummary => Status == MeetingStatus.Summarized;
+
+    /// "Summary by claude-sonnet-5-5: 12,345 tokens in, 678 out · $0.03", like Ask AI shows.
+    public string UsageText => $"Summary by {AiModel}: " + new AiUsage(TokensIn, TokensOut).Describe(null) + (Cost is double c ? $" · {AiPrice.Money(c)}" : "");
 }
 
 public static class MeetingStatus

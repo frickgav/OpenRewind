@@ -24,6 +24,7 @@ sealed class TrayApp : ApplicationContext
     /// The AI chat keeps its conversation while its window is closed.
     readonly AiConversation aiConversation = new();
     readonly AiTools aiTools;
+    readonly MeetingWatcher meetings;
 
     public TrayApp(Engine engine)
     {
@@ -50,6 +51,10 @@ sealed class TrayApp : ApplicationContext
         overlay.Chat = AiChat;
         updater.Start();
 
+        // Finds meetings once a minute; the window and the AI notes read what it stores.
+        meetings = new MeetingWatcher(engine.Db, settings, engine.Config.AudioChunkSeconds, a => overlay.BeginInvoke(a));
+        meetings.Start();
+
         // Ctrl+Alt+T (or the shortcut picked in Settings) opens the timeline from anywhere.
         hotKey = new HotKey(Shortcut, overlay.Toggle);
 
@@ -75,6 +80,36 @@ sealed class TrayApp : ApplicationContext
         setup.Show();
     }
     OnboardingForm? setup;
+
+    void ShowMeetings() => MeetingsForm.ShowFor(engine.Db, settings, meetings, OpenMoment, OpenAiSettings);
+
+    /// Turning it on says plainly what it sends and that it costs tokens.
+    void ToggleMeetingSummaries()
+    {
+        if (settings.SummarizeMeetings)
+        {
+            settings.SummarizeMeetings = false;
+            settings.SummarizeMeetingsSince = null;
+            settings.Save();
+            return;
+        }
+        var ai = settings.Ai();
+        if (!ai.IsReady)
+        {
+            if (MessageBox.Show("Meeting summaries use your own AI key. Set up a provider in AI Settings first, then turn this on.",
+                                "Summarize Meetings with AI", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) == DialogResult.OK) OpenAiSettings();
+            return;
+        }
+        var text = $"After each meeting ends, OpenRewind sends what was said (the transcript) to {ai.Kind.Title()} using your key, "
+                 + "to write a summary, decisions and action items.\n\n"
+                 + $"This costs tokens on your account, and {ai.Kind.Title()}'s privacy terms apply. Meetings in blocked apps and sites are never sent. "
+                 + "Only meetings from now on are summarized; you can still summarize any meeting yourself in the Meetings window.";
+        if (MessageBox.Show(text, "Summarize meetings with AI?", MessageBoxButtons.OKCancel, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.OK) return;
+        settings.SummarizeMeetings = true;
+        settings.SummarizeMeetingsSince = DateTime.UtcNow;
+        settings.Save();
+        Log.Write("meeting summaries with AI on");
+    }
 
     void ShowAiChat() => AiChatForm.ShowFor(settings, aiTools, aiConversation, OpenMoment, OpenAiSettings);
 
@@ -134,6 +169,7 @@ sealed class TrayApp : ApplicationContext
         // The browser page when the local server is on, else the timeline's own search box.
         menu.Items.Add(Item("Search…", () => { if (engine.ServerOn) Open($"http://127.0.0.1:{engine.Config.Port}/"); else overlay.ShowSearch(); }));
         menu.Items.Add(Item("Ask AI…", ShowAiChat));
+        menu.Items.Add(Item("Meetings…", ShowMeetings));
         menu.Items.Add(Item("Show Data Folder", () => Open(engine.Config.Home)));
         foreach (var line in StorageLines()) menu.Items.Add(new ToolStripMenuItem("   " + line) { Enabled = false });
         MeasureStorage();
@@ -142,6 +178,9 @@ sealed class TrayApp : ApplicationContext
         var s = new ToolStripMenuItem(Permissions.MicrophoneOn ? "Settings" : "Settings  ⚠");
         s.DropDownItems.Add(Item("Blocked Apps & Sites…", () => BlockedAppsForm.ShowFor(settings, engine.Db)));
         s.DropDownItems.Add(Item("AI Settings…", () => AiSettingsForm.ShowFor(settings)));
+        var summaries = Toggle("Summarize Meetings with AI", settings.SummarizeMeetings, ToggleMeetingSummaries);
+        summaries.ToolTipText = "Off by default. When on, each meeting's transcript is sent to your AI provider after it ends, for a summary and action items. This uses your key and costs tokens.";
+        s.DropDownItems.Add(summaries);
         s.DropDownItems.Add(new ToolStripSeparator());
         s.DropDownItems.Add(ShortcutMenu());
         s.DropDownItems.Add(ScreenshotSizeMenu());
@@ -550,6 +589,7 @@ sealed class TrayApp : ApplicationContext
         resumeTimer.Dispose();
         retention.Dispose();
         updater.Dispose();
+        meetings.Dispose();
         engine.Shutdown();
         ExitThread();
     }

@@ -56,6 +56,11 @@ sealed class Settings
     public Dictionary<string, double[]> AiListedPrices { get; set; } = new();
     /// Everything used per provider (by AiProviders.Id) since the user last reset it.
     public Dictionary<string, AiTotal> AiTotals { get; set; } = new();
+    /// Send each meeting's transcript to the AI provider when it ends, for a summary and action items.
+    /// Off unless the user turns it on: it spends their tokens and sends what was said.
+    public bool SummarizeMeetings { get; set; }
+    /// When it was turned on (UTC). Only meetings that end after this are summarized by themselves.
+    public DateTime? SummarizeMeetingsSince { get; set; }
 
     string path = "";
 
