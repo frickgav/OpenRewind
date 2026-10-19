@@ -159,12 +159,16 @@ public sealed class Api
         return HttpResponse.Error("not found", 404);
     }
 
+    /// The largest `offset` the search accepts.
+    public const int MaxOffset = 1_000_000;
+
     HttpResponse Search(Dictionary<string, string> q)
     {
         string? Get(string k) => q.TryGetValue(k, out var v) ? v : null;
         var type = (Get("content_type") ?? "all").ToLowerInvariant();
         var limit = Math.Clamp(int.TryParse(Get("limit"), out var l) ? l : 20, 1, 100);
-        var offset = Math.Max(int.TryParse(Get("offset"), out var o) ? o : 0, 0);
+        // Clamped so offset + limit can never overflow.
+        var offset = Math.Clamp(int.TryParse(Get("offset"), out var o) ? o : 0, 0, MaxOffset);
         if (type is "input" or "memory" or "parsed")  // not captured by OpenRewind
             return HttpResponse.Json(new { data = Array.Empty<object>(), pagination = new { limit, offset, total = 0 } });
 
@@ -179,7 +183,7 @@ public sealed class Api
             if (Time.Parse(re) is not string t) return HttpResponse.Error($"bad end_time: {re}", 400);
             s.EndTime = t;
         }
-        int? maxLen = int.TryParse(Get("max_content_length"), out var ml) ? ml : null;
+        int? maxLen = int.TryParse(Get("max_content_length"), out var ml) ? Math.Max(ml, 0) : null;
         string Clip(string t) => maxLen is int m && t.Length > m ? t[..m] + "…" : t;
 
         var wantScreen = type != "audio";

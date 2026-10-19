@@ -146,10 +146,14 @@ struct API {
         }
     }
 
+    /// The largest `offset` the search accepts.
+    static let maxOffset = 1_000_000
+
     private func search(_ q: [String: String]) -> HTTPResponse {
         let type = (q["content_type"] ?? "all").lowercased()
         let limit = min(max(Int(q["limit"] ?? "") ?? 20, 1), 100)
-        let offset = max(Int(q["offset"] ?? "") ?? 0, 0)
+        // Clamped so offset + limit can never overflow (an overflow traps and would end the app).
+        let offset = min(max(Int(q["offset"] ?? "") ?? 0, 0), Self.maxOffset)
         let empty: [String: Any] = ["data": [], "pagination": ["limit": limit, "offset": offset, "total": 0]]
         if type == "input" || type == "memory" || type == "parsed" { return .json(empty) }  // not captured by openrewind
 
@@ -165,7 +169,7 @@ struct API {
             guard let t = Time.parse(raw) else { return .error("bad end_time: \(raw)", status: 400) }
             s.endTime = t
         }
-        let maxLen = Int(q["max_content_length"] ?? "")
+        let maxLen = Int(q["max_content_length"] ?? "").map { max($0, 0) }  // prefix(-1) traps
         func clip(_ t: String) -> String {
             guard let maxLen, t.count > maxLen else { return t }
             return String(t.prefix(maxLen)) + "…"
