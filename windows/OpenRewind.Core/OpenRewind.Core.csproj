@@ -11,6 +11,8 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11" />
+    <!-- Search by Meaning: runs the all-MiniLM-L6-v2 sentence model on the CPU, on this computer. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.1" />
   </ItemGroup>
 
   <!-- The search page is shared with the Mac app: read it straight out of the Swift source. -->

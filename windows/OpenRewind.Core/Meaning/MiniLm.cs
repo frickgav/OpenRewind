@@ -47,44 +47,64 @@ public static class MiniLm
     }
 
     /// Download what is missing into `dir`. `progress` gets 0…1 over all files. A file whose hash
-    /// does not match is deleted and the download fails.
-    public static async Task Download(string dir, HttpClient http, Action<double>? progress, CancellationToken ct)
+    /// does not match is deleted and the download fails. A download that receives nothing for
+    /// `stall` (default 60 s) fails with a TimeoutException. A half-downloaded file is never left behind.
+    public static async Task Download(string dir, HttpClient http, Action<double>? progress, CancellationToken ct, TimeSpan? stall = null)
     {
         Directory.CreateDirectory(dir);
+        var quiet = stall ?? TimeSpan.FromSeconds(60);
         long before = 0, total = DownloadSize;
         foreach (var f in Files)
         {
             var path = Path.Combine(dir, f.Name);
             if (Verify(path, f)) { before += f.Size; progress?.Invoke((double)before / total); continue; }
             var part = path + ".part";
-            using (var resp = await http.GetAsync(f.Url, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false))
+            using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            try
             {
-                resp.EnsureSuccessStatusCode();
-                await using var src = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-                await using var dst = System.IO.File.Create(part);
-                using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-                var buf = new byte[1 << 16];
-                long got = 0;
-                int n;
-                while ((n = await src.ReadAsync(buf, ct).ConfigureAwait(false)) > 0)
+                idle.CancelAfter(quiet);
+                using (var resp = await http.GetAsync(f.Url, HttpCompletionOption.ResponseHeadersRead, idle.Token).ConfigureAwait(false))
                 {
-                    await dst.WriteAsync(buf.AsMemory(0, n), ct).ConfigureAwait(false);
-                    sha.AppendData(buf, 0, n);
-                    got += n;
-                    if (got > f.Size) break;
-                    progress?.Invoke((double)(before + got) / total);
+                    resp.EnsureSuccessStatusCode();
+                    await using var src = await resp.Content.ReadAsStreamAsync(idle.Token).ConfigureAwait(false);
+                    await using var dst = System.IO.File.Create(part);
+                    using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                    var buf = new byte[1 << 16];
+                    long got = 0;
+                    while (true)
+                    {
+                        idle.CancelAfter(quiet);   // restarts the clock: only a stalled read times out
+                        int n = await src.ReadAsync(buf, idle.Token).ConfigureAwait(false);
+                        if (n <= 0) break;
+                        await dst.WriteAsync(buf.AsMemory(0, n), ct).ConfigureAwait(false);
+                        sha.AppendData(buf, 0, n);
+                        got += n;
+                        if (got > f.Size) break;
+                        progress?.Invoke((double)(before + got) / total);
+                    }
+                    var hash = Convert.ToHexString(sha.GetHashAndReset());
+                    if (got != f.Size || !hash.Equals(f.Sha256, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidDataException($"{f.Name} did not match its checksum (got {got} bytes)");
                 }
-                var hash = Convert.ToHexString(sha.GetHashAndReset());
-                if (got != f.Size || !hash.Equals(f.Sha256, StringComparison.OrdinalIgnoreCase))
-                {
-                    dst.Close();
-                    System.IO.File.Delete(part);
-                    throw new InvalidDataException($"{f.Name} did not match its checksum (got {got} bytes)");
-                }
+                System.IO.File.Move(part, path, overwrite: true);
             }
-            System.IO.File.Move(part, path, overwrite: true);
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                TryDelete(part);
+                throw new TimeoutException($"the download of {f.Name} stopped receiving data");
+            }
+            catch
+            {
+                TryDelete(part);
+                throw;
+            }
             before += f.Size;
         }
         progress?.Invoke(1);
+    }
+
+    static void TryDelete(string path)
+    {
+        try { System.IO.File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
 }

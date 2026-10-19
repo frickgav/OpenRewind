@@ -183,7 +183,6 @@ sealed class TrayApp : ApplicationContext
         del.DropDownItems.Add(Item("Everything…", () => DeleteAll(screen: true, audio: true)));
         s.DropDownItems.Add(del);
         s.DropDownItems.Add(new ToolStripSeparator());
-        s.DropDownItems.Add(new ToolStripSeparator());
         foreach (var item in MeaningItems()) s.DropDownItems.Add(item);
         s.DropDownItems.Add(new ToolStripSeparator());
         var server = Toggle($"Local Search Server (127.0.0.1:{engine.Config.Port})", engine.ServerOn, ToggleServer);

@@ -10,8 +10,10 @@ public sealed record MomentSegment(long ChunkId, string Timestamp, string Text, 
 
 /// What Search by Meaning finds: a stretch of one window, or one audio clip. Screen moments run
 /// from FirstId to LastId (frame ids); audio moments are one clip (FirstId = LastId = chunk id).
+/// `Frames`: how many screenshots there were from FirstId to LastId when it was made (0 = not checked),
+/// so a moment whose middle was deleted meanwhile is not saved.
 public sealed record Moment(bool IsAudio, string Start, string End, long FirstId, long LastId,
-                            string AppName, string WindowName, string Url, string Text);
+                            string AppName, string WindowName, string Url, string Text, int Frames = 0);
 
 /// Cuts recordings into moments worth one vector each. The screen holds the same text for many
 /// frames, so a moment is a stretch of one app window (until the window, page or app changes,
@@ -29,6 +31,8 @@ public static class MomentChunker
     {
         public required MomentFrame First;
         public required MomentFrame Last;
+        public required int FirstIndex;
+        public int LastIndex;
         public readonly HashSet<string> Seen = new(StringComparer.Ordinal);
         public readonly StringBuilder Text = new();
     }
@@ -47,8 +51,9 @@ public static class MomentChunker
             if (cur != null && cur.Text.Length > 0) moments.Add(ToMoment(cur));
             cur = null;
         }
-        foreach (var f in frames)
+        for (int i = 0; i < frames.Count; i++)
         {
+            var f = frames[i];
             if (blocked(f)) { Close(); continue; }
             var lines = Lines(f.Text);
             if (lines.Count == 0) continue;
@@ -59,8 +64,9 @@ public static class MomentChunker
                 Close();
                 fresh = lines;
             }
-            cur ??= new Stretch { First = f, Last = f };
+            cur ??= new Stretch { First = f, Last = f, FirstIndex = i };
             cur.Last = f;
+            cur.LastIndex = i;
             foreach (var l in fresh)
             {
                 if (!cur.Seen.Add(l)) continue;
@@ -89,7 +95,7 @@ public static class MomentChunker
 
     static Moment ToMoment(Stretch s) =>
         new(false, s.First.Timestamp, s.Last.Timestamp, s.First.Id, s.Last.Id, s.First.AppName, s.First.WindowName, s.First.Url,
-            s.Text.ToString().TrimEnd('\n'));
+            s.Text.ToString().TrimEnd('\n'), s.LastIndex - s.FirstIndex + 1);
 
     /// Trimmed lines with single spaces, without empty ones and stray single characters.
     public static List<string> Lines(string text)

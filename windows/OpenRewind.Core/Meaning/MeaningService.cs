@@ -40,6 +40,9 @@ public sealed class MeaningService : IDisposable
     public Func<Blocklist> Blocked = () => Blocklist.Current;
     Thread? thread;
     CancellationTokenSource? cts;
+    /// Bumped by Stop. A step still running from before writes nothing (see `keep` in SaveMoment),
+    /// even if it outlives Stop's wait.
+    int generation;
 
     /// Screenshots newer than this are left for the next round: the window may still be changing.
     public static readonly TimeSpan Settle = TimeSpan.FromMinutes(2);
@@ -54,7 +57,8 @@ public sealed class MeaningService : IDisposable
         if (thread != null) return;
         cts = new CancellationTokenSource();
         var ct = cts.Token;
-        thread = new Thread(() => Loop(ct)) { IsBackground = true, Priority = ThreadPriority.Lowest, Name = "Search by Meaning" };
+        var gen = Volatile.Read(ref generation);
+        thread = new Thread(() => Loop(ct, gen)) { IsBackground = true, Priority = ThreadPriority.Lowest, Name = "Search by Meaning" };
         thread.Start();
         Log.Write("search by meaning: indexer on");
     }
@@ -62,9 +66,10 @@ public sealed class MeaningService : IDisposable
     /// Stops the indexer and waits for it, so nothing is written after this returns.
     public void Stop()
     {
+        Interlocked.Increment(ref generation);
         if (thread == null) return;
         cts!.Cancel();
-        thread.Join(TimeSpan.FromSeconds(10));
+        if (!thread.Join(TimeSpan.FromSeconds(10))) Log.Write("search by meaning: indexer still busy; it will write nothing more");
         thread = null;
         cts = null;
         Log.Write("search by meaning: indexer off");
@@ -72,12 +77,12 @@ public sealed class MeaningService : IDisposable
 
     public void Dispose() => Stop();
 
-    void Loop(CancellationToken ct)
+    void Loop(CancellationToken ct, int gen)
     {
         while (!ct.IsCancellationRequested)
         {
             TimeSpan wait;
-            try { wait = Embedder == null ? TimeSpan.FromSeconds(5) : Step(ct) ? TimeSpan.Zero : TimeSpan.FromSeconds(30); }
+            try { wait = Embedder == null ? TimeSpan.FromSeconds(5) : Step(ct, gen: gen) ? TimeSpan.Zero : TimeSpan.FromSeconds(30); }
             catch (OperationCanceledException) { return; }
             catch (Exception e) { Log.Write($"search by meaning: {e.Message}"); wait = TimeSpan.FromMinutes(1); }
             if (wait > TimeSpan.Zero) ct.WaitHandle.WaitOne(wait);
@@ -85,10 +90,12 @@ public sealed class MeaningService : IDisposable
     }
 
     /// Index one batch of screenshots and one of audio. False when there was nothing to do.
-    public bool Step(CancellationToken ct = default, DateTime? nowUtc = null)
+    public bool Step(CancellationToken ct = default, DateTime? nowUtc = null, int? gen = null)
     {
         if (Embedder is not IEmbedder e) return false;
-        db.MeaningUseModel(e.ModelId);
+        var g = gen ?? Volatile.Read(ref generation);
+        Func<bool> keep = () => Volatile.Read(ref generation) == g && !ct.IsCancellationRequested;
+        db.MeaningUseModel(e.ModelId, keep);
         var list = Blocked();
         bool worked = false;
 
@@ -98,24 +105,25 @@ public sealed class MeaningService : IDisposable
         {
             var (moments, done) = MomentChunker.Screen(frames, frames.Count < FrameBatch,
                                                        fr => Hides(list, fr.AppName, fr.WindowName, fr.Url));
-            foreach (var m in moments) { Save(e, m, Database.FrameCursor, m.LastId, ct); worked = true; }
-            if (done > fc) { db.SetMeaningState(Database.FrameCursor, done.ToString()); worked = true; }
+            foreach (var m in moments) { Save(e, m, Database.FrameCursor, m.LastId, keep, ct); worked = true; }
+            if (done > fc) { db.SetMeaningState(Database.FrameCursor, done.ToString(), keep); worked = true; }
         }
 
         long cc = long.TryParse(db.MeaningState(Database.ChunkCursor), out var c) ? c : 0;
         var (segments, doneChunks) = db.MeaningAudio(cc, ChunkBatch);
-        foreach (var m in MomentChunker.Audio(segments)) { Save(e, m, Database.ChunkCursor, m.LastId, ct); worked = true; }
-        if (doneChunks > cc) { db.SetMeaningState(Database.ChunkCursor, doneChunks.ToString()); worked = true; }
+        foreach (var m in MomentChunker.Audio(segments)) { Save(e, m, Database.ChunkCursor, m.LastId, keep, ct); worked = true; }
+        if (doneChunks > cc) { db.SetMeaningState(Database.ChunkCursor, doneChunks.ToString(), keep); worked = true; }
         return worked;
     }
 
     /// Make and store one vector, then rest a multiple of the time it took (more while the user is busy or on battery).
-    void Save(IEmbedder e, Moment m, string cursorKey, long cursor, CancellationToken ct)
+    void Save(IEmbedder e, Moment m, string cursorKey, long cursor, Func<bool> keep, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var sw = Stopwatch.StartNew();
         var v = e.Embed(MomentChunker.EmbedText(m));
-        db.SaveMoment(m, e.ModelId, Vectors.Quantize(v), cursorKey, cursor);
+        db.SaveMoment(m, e.ModelId, Vectors.Quantize(v), cursorKey, cursor, keep);
+        if (!keep()) throw new OperationCanceledException();
         var rest = sw.Elapsed * (Pace() switch { MeaningPace.Idle => 1, MeaningPace.Battery => 9, _ => 4 });
         if (rest > TimeSpan.Zero && ct.WaitHandle.WaitOne(rest + TimeSpan.FromMilliseconds(20))) ct.ThrowIfCancellationRequested();
     }
@@ -138,7 +146,7 @@ public sealed class MeaningService : IDisposable
     public static List<MeaningHit> Rank(Database db, string model, float[] query, MeaningQuery q, Blocklist blocked)
     {
         var top = new TopK<long>(q.Limit);
-        db.ScanMoments(model, q.Start, q.End, (id, audio, app, window, url, ts, vec) =>
+        db.ScanMoments(model, q.Start, q.End, (id, audio, app, window, url, vec) =>
         {
             if (audio ? !q.Audio : !q.Screen) return;
             if (!audio && q.App != null && app != q.App) return;

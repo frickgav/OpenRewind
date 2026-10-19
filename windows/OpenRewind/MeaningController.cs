@@ -12,14 +12,19 @@ sealed class MeaningController : IDisposable
 
     readonly Engine engine;
     static readonly HttpClient http = new() { Timeout = TimeSpan.FromMinutes(30) };
+    // Guards cts, embedder, task, generation and State. Start/Stop run on the UI thread, the
+    // download and load on a background task; the generation tells a late task it was turned off.
+    readonly object sync = new();
     CancellationTokenSource? cts;
     OnnxEmbedder? embedder;
+    Task task = Task.CompletedTask;
+    int generation;
 
     public Phase State { get; private set; } = Phase.Off;
     /// Download progress, 0…1.
     public double Download { get; private set; }
     public string? Error { get; private set; }
-    /// Raised on a background thread when State or Download changes.
+    /// Raised on a background thread when State, Download or the status line changes.
     public event Action? Changed;
 
     public MeaningController(Engine engine)
@@ -35,53 +40,83 @@ sealed class MeaningController : IDisposable
 
     public void Start()
     {
-        if (cts != null) return;
-        cts = new CancellationTokenSource();
-        var ct = cts.Token;
-        Error = null;
-        Service.Start();
-        Task.Run(async () =>
+        Task previous;
+        int gen;
+        CancellationToken ct;
+        lock (sync)
         {
-            try
+            if (cts != null) return;
+            cts = new CancellationTokenSource();
+            ct = cts.Token;
+            gen = ++generation;
+            previous = task;
+            Error = null;
+        }
+        Service.Start();
+        lock (sync)
+            task = Task.Run(async () =>
             {
-                if (!ModelPresent) Set(Phase.Downloading);
-                long last = -1;
-                await MiniLm.Download(ModelDir, http, p =>
+                // A download from before a quick off/on writes the same .part file; let it finish first.
+                try { await previous.ConfigureAwait(false); } catch (Exception) { }
+                try
                 {
-                    Download = p;
-                    var pct = (long)(p * 100);
-                    if (pct != last) { last = pct; Changed?.Invoke(); }
-                }, ct).ConfigureAwait(false);
-                Set(Phase.Loading);
-                var e = OnnxEmbedder.Load(ModelDir);
-                if (ct.IsCancellationRequested) { e.Dispose(); return; }
-                embedder = e;
-                Service.Embedder = e;
-                Log.Write("search by meaning: model ready");
-                Set(Phase.Ready);
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception e)
-            {
-                if (ct.IsCancellationRequested) return;
-                Error = e is HttpRequestException ? "could not download the model. Check the internet connection." : e.Message;
-                Log.Write($"search by meaning: {e.Message}");
-                Set(Phase.Failed);
-            }
-        }, ct);
+                    if (!ModelPresent) Set(Phase.Downloading, gen);
+                    long last = -1;
+                    await MiniLm.Download(ModelDir, http, p =>
+                    {
+                        Download = p;
+                        var pct = (long)(p * 100);
+                        if (pct != last) { last = pct; Changed?.Invoke(); }
+                    }, ct).ConfigureAwait(false);
+                    Set(Phase.Loading, gen);
+                    // Download has just checked both files against their pinned hashes; no need to hash 90 MB again.
+                    var e = OnnxEmbedder.Load(ModelDir, verified: true);
+                    lock (sync)
+                    {
+                        if (gen != generation || ct.IsCancellationRequested) { e.Dispose(); return; }
+                        embedder = e;
+                        Service.Embedder = e;
+                        State = Phase.Ready;
+                    }
+                    Log.Write("search by meaning: model ready");
+                    Changed?.Invoke();
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception e)
+                {
+                    if (ct.IsCancellationRequested) return;
+                    Log.Write($"search by meaning: {e.Message}");
+                    lock (sync)
+                    {
+                        if (gen != generation) return;
+                        Error = e is HttpRequestException or TimeoutException ? "could not download the model. Check the internet connection." : e.Message;
+                    }
+                    Set(Phase.Failed, gen);
+                }
+            });
     }
 
     /// Stop indexing. With `deleteIndex`, the stored moments are removed too.
     public void Stop(bool deleteIndex)
     {
-        cts?.Cancel();
-        cts = null;
+        OnnxEmbedder? old;
+        lock (sync)
+        {
+            generation++;
+            cts?.Cancel();
+            cts?.Dispose();
+            cts = null;
+            Service.Embedder = null;
+            old = embedder;
+            embedder = null;
+            State = Phase.Off;
+            status = null;
+        }
         Service.Stop();
-        Service.Embedder = null;
-        embedder?.Dispose();
-        embedder = null;
+        // A search that already took the embedder gets ObjectDisposedException, never a released session.
+        old?.Dispose();
         if (deleteIndex) engine.Db.ClearMeaning();
-        Set(Phase.Off);
+        Changed?.Invoke();
     }
 
     /// Try the download again after it failed.
@@ -91,7 +126,15 @@ sealed class MeaningController : IDisposable
         Start();
     }
 
-    void Set(Phase p) { State = p; Changed?.Invoke(); }
+    void Set(Phase p, int gen)
+    {
+        lock (sync)
+        {
+            if (gen != generation) return;
+            State = p;
+        }
+        Changed?.Invoke();
+    }
 
     /// Index briskly while nobody is at the PC, gently while they work, and slowest on battery.
     static MeaningPace Pace()
@@ -111,7 +154,13 @@ sealed class MeaningController : IDisposable
 
     [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LastInputInfo info);
 
-    /// The line under the switch in the menu.
+    // The index counts run several COUNT(*) queries, so they are worked out in the background and
+    // the menu shows the last answer.
+    string? status;
+    DateTime statusAt;
+    int refreshing;
+
+    /// The line under the switch in the menu. Never touches the database on the calling thread.
     public string StatusLine()
     {
         switch (State)
@@ -121,8 +170,36 @@ sealed class MeaningController : IDisposable
             case Phase.Failed: return $"⚠ Not working: {Error}";
             case Phase.Off: return "Off";
         }
-        var p = Service.Progress();
-        return p.UpToDate ? $"Up to date · {p.Moments:N0} moments" : $"Indexing in the background… {p.Percent}% · {p.Moments:N0} moments";
+        string? cached;
+        lock (sync) cached = status;
+        if (cached == null || DateTime.UtcNow - statusAt > TimeSpan.FromSeconds(5)) RefreshStatus();
+        return cached ?? "Checking the index…";
+    }
+
+    void RefreshStatus()
+    {
+        if (Interlocked.Exchange(ref refreshing, 1) == 1) return;
+        int gen;
+        lock (sync) gen = generation;
+        Task.Run(() =>
+        {
+            try
+            {
+                var p = Service.Progress();
+                var line = p.UpToDate ? $"Up to date · {p.Moments:N0} moments" : $"Indexing in the background… {p.Percent}% · {p.Moments:N0} moments";
+                bool changed;
+                lock (sync)
+                {
+                    if (gen != generation) return;
+                    changed = line != status;
+                    status = line;
+                    statusAt = DateTime.UtcNow;
+                }
+                if (changed) Changed?.Invoke();
+            }
+            catch (Exception e) { Log.Write($"search by meaning: status: {e.Message}"); }
+            finally { Volatile.Write(ref refreshing, 0); }
+        });
     }
 
     public void Dispose() => Stop(deleteIndex: false);

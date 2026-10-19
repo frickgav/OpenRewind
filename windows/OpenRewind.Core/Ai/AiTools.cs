@@ -226,7 +226,9 @@ public sealed class AiTools
         if (q.Length == 0) return "Error: query is required.";
         if (Meaning?.Embedder == null) return "Error: Search by Meaning is off. Use search_screen or search_audio.";
         var limit = Math.Clamp(I(a, "limit") ?? 10, 1, 20);
-        var hits = Meaning.Search(q, new MeaningQuery { Start = IsoArg(a, "start"), End = IsoArg(a, "end"), Limit = limit }, Blocked ?? Blocklist.Current);
+        List<MeaningHit> hits;
+        try { hits = Meaning.Search(q, new MeaningQuery { Start = IsoArg(a, "start"), End = IsoArg(a, "end"), Limit = limit }, Blocked ?? Blocklist.Current); }
+        catch (ObjectDisposedException) { return "Error: Search by Meaning was just turned off. Use search_screen or search_audio."; }
         if (hits.Count == 0) return "Nothing is indexed for Search by Meaning in that range yet.";
         var lines = hits.Select(h =>
         {

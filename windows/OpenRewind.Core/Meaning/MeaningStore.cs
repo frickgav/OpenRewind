@@ -11,14 +11,24 @@ public sealed record MeaningProgress(long Moments, long Done, long Total, long W
     public int Percent => Total == 0 ? 100 : (int)Math.Min(99, Done * 100 / Total);
 }
 
-/// The `meaning_moments` table: one row per moment with its vector, and `meaning_state` for how
-/// far the indexer got. Same schema as the Mac app (Meaning.swift).
+/// One stored vector as a search reads it. `vector` is only valid during the call.
+public delegate void MomentVisitor(long id, bool audio, string app, string window, string url, ReadOnlySpan<byte> vector);
+
+/// Search by Meaning storage. Same schema as the Mac app (Meaning.swift):
+/// - `meaning_moments`: one row per moment with its text, read only for the few results shown.
+/// - `meaning_vectors`: the same ids with the vector and the columns a search filters on, kept narrow
+///   so a search reads little, page by page.
+/// - `meaning_state`: how far the indexer got, and with which model.
 public sealed partial class Database
 {
-    const string MeaningCols = "id, kind, timestamp, end_time, first_id, app_name, window_name, browser_url, text";
+    /// Rows a search reads per page. The database lock is let go between pages, so recording never waits long.
+    public const int ScanPage = 4000;
 
     void MigrateMeaning()
     {
+        // A test build of this feature kept the vector in meaning_moments. Start that index over.
+        if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('meaning_moments') WHERE name = 'vector'") > 0)
+            Exec("DROP TABLE meaning_moments; DROP TABLE IF EXISTS meaning_state;");
         Exec("""
         CREATE TABLE IF NOT EXISTS meaning_moments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,39 +40,73 @@ public sealed partial class Database
             app_name TEXT NOT NULL DEFAULT '',
             window_name TEXT NOT NULL DEFAULT '',
             browser_url TEXT NOT NULL DEFAULT '',
-            text TEXT NOT NULL DEFAULT '',
-            model TEXT NOT NULL,
-            vector BLOB NOT NULL
+            text TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS idx_meaning_ts ON meaning_moments(timestamp);
         CREATE INDEX IF NOT EXISTS idx_meaning_first ON meaning_moments(kind, first_id);
+        CREATE TABLE IF NOT EXISTS meaning_vectors (
+            id INTEGER PRIMARY KEY,
+            kind TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            end_time TEXT NOT NULL,
+            app_name TEXT NOT NULL DEFAULT '',
+            window_name TEXT NOT NULL DEFAULT '',
+            browser_url TEXT NOT NULL DEFAULT '',
+            model TEXT NOT NULL,
+            vector BLOB NOT NULL
+        );
+        CREATE TRIGGER IF NOT EXISTS meaning_moments_ad AFTER DELETE ON meaning_moments BEGIN
+            DELETE FROM meaning_vectors WHERE id = old.id;
+        END;
         CREATE TABLE IF NOT EXISTS meaning_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         """);
     }
 
+    /// True when this database has the Search by Meaning tables (an older app may not have made them yet).
+    public bool HasMeaningIndex() => ScalarLong("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'meaning_vectors'") > 0;
+
     public string? MeaningState(string key) => Strings("SELECT value FROM meaning_state WHERE key = ?", key).FirstOrDefault();
 
-    public void SetMeaningState(string key, string value) =>
-        Run("INSERT INTO meaning_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", key, value);
+    const string StateUpsert = "INSERT INTO meaning_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value";
+
+    /// `keep`: checked under the database lock; false (the indexer was stopped meanwhile) writes nothing.
+    public void SetMeaningState(string key, string value, Func<bool>? keep = null)
+    {
+        lock (gate)
+        {
+            if (keep != null && !keep()) return;
+            using var cmd = Cmd(StateUpsert, key, value);
+            cmd.ExecuteNonQuery();
+        }
+    }
 
     long Cursor(string key) => long.TryParse(MeaningState(key), out var n) ? n : 0;
 
     public const string FrameCursor = "frame_cursor", ChunkCursor = "chunk_cursor";
 
     /// Vectors from another model can't be compared with this one's: start over when it changed.
-    public void MeaningUseModel(string model)
+    public void MeaningUseModel(string model, Func<bool>? keep = null)
     {
         if (MeaningState("model") == model) return;
-        ClearMeaning();
-        SetMeaningState("model", model);
+        lock (gate)
+        {
+            if (keep != null && !keep()) return;
+            ClearMeaning();
+            using var cmd = Cmd(StateUpsert, "model", model);
+            cmd.ExecuteNonQuery();
+        }
         Log.Write($"search by meaning: indexing with {model}");
     }
 
-    /// Forget every vector (Search by Meaning turned off, or a new model).
+    /// Forget every vector and moment (Search by Meaning turned off, or a new model).
     public void ClearMeaning()
     {
-        Run("DELETE FROM meaning_moments");
-        Run("DELETE FROM meaning_state");
+        lock (gate)
+        {
+            Run("DELETE FROM meaning_vectors");
+            Run("DELETE FROM meaning_moments");
+            Run("DELETE FROM meaning_state");
+        }
     }
 
     /// Screenshots after `after` (id) taken before `before` (ISO), oldest first, without the picture.
@@ -108,27 +152,42 @@ public sealed partial class Database
         }
     }
 
-    /// Store a moment and move the cursor past it, together. Nothing is stored when its
-    /// screenshots or clip were deleted while the vector was being made.
-    public void SaveMoment(Moment m, string model, byte[] vector, string cursorKey, long cursor)
+    /// Store a moment and move the cursor past it, together. The moment is left out (the cursor still
+    /// moves) when its screenshots or clip were deleted while the vector was being made: its first or
+    /// last frame is gone, or fewer frames are left between them than it was made from. With `keep`
+    /// false (the indexer was stopped meanwhile) nothing is written.
+    public void SaveMoment(Moment m, string model, byte[] vector, string cursorKey, long cursor, Func<bool>? keep = null)
     {
         lock (gate)
         {
+            if (keep != null && !keep()) return;
             using var tx = conn.BeginTransaction();
             var (exists, ids) = m.IsAudio
                 ? ("EXISTS (SELECT 1 FROM audio_chunks WHERE id = ?)", new object[] { m.FirstId })
+                : m.Frames > 0
+                ? ("EXISTS (SELECT 1 FROM frames WHERE id = ?) AND EXISTS (SELECT 1 FROM frames WHERE id = ?) AND (SELECT COUNT(*) FROM frames WHERE id BETWEEN ? AND ?) = ?",
+                   new object[] { m.FirstId, m.LastId, m.FirstId, m.LastId, m.Frames })
                 : ("EXISTS (SELECT 1 FROM frames WHERE id = ?) AND EXISTS (SELECT 1 FROM frames WHERE id = ?)", new object[] { m.FirstId, m.LastId });
-            var values = new object[] { m.IsAudio ? "audio" : "screen", m.Start, m.End, m.FirstId, m.LastId, m.AppName, m.WindowName, m.Url, m.Text, model, vector };
+            var kind = m.IsAudio ? "audio" : "screen";
+            int added;
             using (var cmd = Cmd($"""
-                INSERT INTO meaning_moments (kind, timestamp, end_time, first_id, last_id, app_name, window_name, browser_url, text, model, vector)
-                SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE {exists}
-                """, values.Concat(ids).ToArray()))
+                INSERT INTO meaning_moments (kind, timestamp, end_time, first_id, last_id, app_name, window_name, browser_url, text)
+                SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE {exists}
+                """, new object[] { kind, m.Start, m.End, m.FirstId, m.LastId, m.AppName, m.WindowName, m.Url, m.Text }.Concat(ids).ToArray()))
             {
                 cmd.Transaction = tx;
-                cmd.ExecuteNonQuery();
+                added = cmd.ExecuteNonQuery();
             }
-            using (var cmd = Cmd("INSERT INTO meaning_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                                 cursorKey, cursor.ToString()))
+            if (added > 0)
+                using (var cmd = Cmd("""
+                    INSERT INTO meaning_vectors (id, kind, timestamp, end_time, app_name, window_name, browser_url, model, vector)
+                    VALUES (last_insert_rowid(), ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, kind, m.Start, m.End, m.AppName, m.WindowName, m.Url, model, vector))
+                {
+                    cmd.Transaction = tx;
+                    cmd.ExecuteNonQuery();
+                }
+            using (var cmd = Cmd(StateUpsert, cursorKey, cursor.ToString()))
             {
                 cmd.Transaction = tx;
                 cmd.ExecuteNonQuery();
@@ -137,20 +196,51 @@ public sealed partial class Database
         }
     }
 
-    /// Every stored vector of `model` in the time range, without the text (that is read for the best few only).
-    public void ScanMoments(string model, string? start, string? end, Action<long, bool, string, string, string, string, byte[]> each)
+    /// Every stored vector of `model` in the time range, without the text (that is read for the best
+    /// few only). Read a page at a time; the lock is let go between pages and `each` runs outside it.
+    public void ScanMoments(string model, string? start, string? end, MomentVisitor each)
     {
-        var where = new List<string> { "model = ?" };
-        var args = new List<object> { model };
-        if (start != null) { where.Add("end_time >= ?"); args.Add(start); }
-        if (end != null) { where.Add("timestamp <= ?"); args.Add(end); }
-        lock (gate)
+        var where = "id > ? AND model = ?";
+        if (start != null) where += " AND end_time >= ?";
+        if (end != null) where += " AND timestamp <= ?";
+        var sql = $"SELECT id, kind, app_name, window_name, browser_url, vector FROM meaning_vectors WHERE {where} ORDER BY id LIMIT {ScanPage}";
+        var ids = new long[ScanPage];
+        var audio = new bool[ScanPage];
+        var meta = new (string App, string Window, string Url)[ScanPage];
+        var vecs = Array.Empty<byte>();
+        var lens = new int[ScanPage];
+        int dim = 0;
+        long after = 0;
+        while (true)
         {
-            using var cmd = Cmd($"SELECT id, kind, app_name, window_name, browser_url, timestamp, vector FROM meaning_moments WHERE {string.Join(" AND ", where)}",
-                                args.ToArray());
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-                each(r.GetInt64(0), r.GetString(1) == "audio", r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5), (byte[])r.GetValue(6));
+            int n = 0;
+            lock (gate)
+            {
+                var args = new List<object> { after, model };
+                if (start != null) args.Add(start);
+                if (end != null) args.Add(end);
+                using var cmd = Cmd(sql, args.ToArray());
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                {
+                    var len = (int)r.GetBytes(5, 0, null, 0, 0);
+                    if (dim == 0) { dim = Math.Max(1, len); vecs = new byte[ScanPage * dim]; }
+                    ids[n] = r.GetInt64(0);
+                    audio[n] = r.GetString(1) == "audio";
+                    meta[n] = (r.GetString(2), r.GetString(3), r.GetString(4));
+                    lens[n] = Math.Min(len, dim);
+                    if (len == dim) r.GetBytes(5, 0, vecs, n * dim, dim);
+                    else lens[n] = -1;   // not this model's size: never matches
+                    n++;
+                }
+            }
+            for (int i = 0; i < n; i++)
+            {
+                var v = lens[i] < 0 ? ReadOnlySpan<byte>.Empty : vecs.AsSpan(i * dim, lens[i]);
+                each(ids[i], audio[i], meta[i].App, meta[i].Window, meta[i].Url, v);
+            }
+            if (n < ScanPage) return;
+            after = ids[n - 1];
         }
     }
 
@@ -161,7 +251,7 @@ public sealed partial class Database
         if (list.Count == 0) return out_;
         lock (gate)
         {
-            using var cmd = Cmd($"SELECT {MeaningCols} FROM meaning_moments WHERE id IN ({string.Join(",", list)})");
+            using var cmd = Cmd($"SELECT id, kind, timestamp, end_time, first_id, app_name, window_name, browser_url, text FROM meaning_moments WHERE id IN ({string.Join(",", list)})");
             using var r = cmd.ExecuteReader();
             while (r.Read())
                 out_[r.GetInt64(0)] = new MeaningHit(r.GetInt64(0), r.GetString(1) == "audio", r.GetString(2), r.GetString(3), r.GetInt64(4),
@@ -174,18 +264,20 @@ public sealed partial class Database
     {
         long fc = Cursor(FrameCursor), cc = Cursor(ChunkCursor);
         var settled = Time.Iso(nowUtc - MeaningService.Settle - TimeSpan.FromMinutes(1));
+        // Done: everything up to the cursors.
         long total = ScalarLong("SELECT COUNT(*) FROM frames") + ScalarLong("SELECT COUNT(*) FROM audio_chunks");
-        long done = ScalarLong("SELECT COUNT(*) FROM frames WHERE id <= ?", fc) + ScalarLong("SELECT COUNT(*) FROM audio_chunks WHERE id <= ?", cc);
+        long left = ScalarLong("SELECT COUNT(*) FROM frames WHERE id > ?", fc) + ScalarLong("SELECT COUNT(*) FROM audio_chunks WHERE id > ?", cc);
         // Clips after one Whisper has not done yet wait for it, so they don't count as behind.
         long waiting = ScalarLong("SELECT COUNT(*) FROM frames WHERE id > ? AND timestamp < ?", fc, settled)
             + ScalarLong("""
                 SELECT COUNT(*) FROM audio_chunks WHERE id > ? AND status = 'transcribed'
                 AND id < COALESCE((SELECT MIN(id) FROM audio_chunks WHERE id > ? AND status = 'pending'), 9223372036854775807)
                 """, cc, cc);
-        return new MeaningProgress(ScalarLong("SELECT COUNT(*) FROM meaning_moments"), done, total, waiting);
+        return new MeaningProgress(ScalarLong("SELECT COUNT(*) FROM meaning_vectors"), total - left, total, waiting);
     }
 
-    /// Retention and Delete Recordings: vectors go with the screenshots they were made from.
+    /// Retention and Delete Recordings: vectors go with the screenshots they were made from
+    /// (the trigger meaning_moments_ad removes the vector rows).
     void ForgetScreenMoments(DateTime? from, DateTime? to)
     {
         var parts = new List<string> { "kind = 'screen'" }; var args = new List<object>();
