@@ -86,6 +86,9 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
 
 ## Ask AI
 
+Open it from the menu bar or tray (**Ask AI…**) or with the **Ask AI** button in the timeline,
+which opens the same chat beside the timeline.
+
 Set it up in **Settings → AI Settings…**: pick a provider, paste your key and pick a model.
 Type any model name, or **Refresh List** to ask the provider which models it has, so new
 models work without an app update. Keys are kept in the Mac Keychain or the Windows

@@ -43,12 +43,15 @@ struct TimelineView: View {
     private var theme: Theme { Theme(scheme) }
     @ObservedObject var model: TimelineModel
     var close: () -> Void
+    /// Ask AI, shown beside the timeline when model.showAI is on.
+    var chat: AIChatModel? = nil
     @FocusState private var searchFocused: Bool
 
     var body: some View {
         ZStack {
             Backdrop().ignoresSafeArea()
             theme.scrim.ignoresSafeArea()
+            HStack(spacing: 0) {
             VStack(spacing: 14) {
                 topBar
                 if let gap = staleGap { staleBanner(gap) }
@@ -64,6 +67,16 @@ struct TimelineView: View {
             .padding(.horizontal, 28)
             .padding(.top, 22)
             .padding(.bottom, 16)
+            if model.showAI, let chat {
+                AIChatView(model: chat) { model.showAI = false }
+                    .frame(width: 420)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(theme.stroke))
+                    .shadow(color: theme.shadow, radius: 16)
+                    .padding(.vertical, 16).padding(.trailing, 16)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+            }
             if let n = model.notice {
                 VStack {
                     Label(n, systemImage: "info.circle")
@@ -93,6 +106,7 @@ struct TimelineView: View {
                 searchBar.frame(maxWidth: 460)
                 AppFilterMenu(model: model)
                 Spacer(minLength: 220)
+                if chat != nil { askAIButton }
                 IconButton(symbol: "questionmark", help: "Keyboard shortcuts (?)") { model.showHelp.toggle() }
                 IconButton(symbol: "xmark", help: "Close (esc)", action: close)
             }
@@ -103,6 +117,21 @@ struct TimelineView: View {
             }
             .allowsHitTesting(false)
         }
+    }
+
+    private var askAIButton: some View {
+        Button {
+            if !model.showAI { chat?.reloadSettings() }
+            withAnimation(.easeOut(duration: 0.18)) { model.showAI.toggle() }
+        } label: {
+            Label("Ask AI", systemImage: "sparkles")
+                .font(.system(size: 12, weight: .semibold))
+                .padding(.horizontal, 12).frame(height: 30)
+                .background(Capsule().fill(model.showAI ? theme.selected : theme.surfaceHi))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("Ask about what you did, saw or heard")
     }
 
     // MARK: stale warning

@@ -15,6 +15,8 @@ final class OverlayController {
     private var monitor: Any?
     private var scrollAccum: CGFloat = 0
     private var previousApp: NSRunningApplication?
+    /// The Ask AI chat, shared with its own window. Set by the menu bar app.
+    var chat: (() -> AIChatModel)?
 
     init(db: Database) {
         model = TimelineModel(db: db)
@@ -63,7 +65,7 @@ final class OverlayController {
 
     /// Open the timeline at a moment (links in the AI chat).
     func show(at date: Date) {
-        show()
+        if !isVisible { show() }
         model.jump(to: date)
     }
 
@@ -95,7 +97,7 @@ final class OverlayController {
         p.hasShadow = false
         p.hidesOnDeactivate = false
         p.isReleasedWhenClosed = false
-        p.contentView = NSHostingView(rootView: TimelineView(model: model, close: { [weak self] in self?.hide() }))
+        p.contentView = NSHostingView(rootView: TimelineView(model: model, close: { [weak self] in self?.hide() }, chat: chat?()))
         return p
     }
 
@@ -110,6 +112,8 @@ final class OverlayController {
     /// Returns true when the event was used.
     private func handle(_ e: NSEvent) -> Bool {
         if e.type == .scrollWheel {
+            // Over the Ask AI chat, scrolling moves the chat, not the timeline.
+            if model.showAI, let w = e.window, e.locationInWindow.x > w.frame.width - 452 { return false }
             // Scroll up / left = back in time. Trackpads send many small deltas, wheels send whole lines.
             let d = e.scrollingDeltaY + e.scrollingDeltaX
             if e.hasPreciseScrollingDeltas {
@@ -145,6 +149,7 @@ final class OverlayController {
         case kVK_Escape:
             if model.showHelp { model.showHelp = false }
             else if model.showResults { model.showResults = false }
+            else if model.showAI { model.showAI = false }
             else { hide() }
         case kVK_LeftArrow: shift ? model.jump(to: model.playhead.addingTimeInterval(-60)) : model.step(-1)
         case kVK_RightArrow: shift ? model.jump(to: model.playhead.addingTimeInterval(60)) : model.step(1)

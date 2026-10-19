@@ -3,11 +3,62 @@ using System.Runtime.InteropServices;
 
 namespace OpenRewind;
 
-/// Ask AI: questions about what you did, saw or heard, answered by the provider you picked
-/// using lookups in the local database (AiTools). Same window as AIChatView on the Mac.
+/// The Ask AI window. The chat itself is AiChatPanel, which moves between this window and the
+/// timeline overlay, so both show the same conversation.
 sealed class AiChatForm : Form
 {
     static AiChatForm? open;
+    readonly AiChatPanel panel;
+
+    /// One window at a time; the conversation lives in `convo`, so closing the window keeps it.
+    public static void ShowFor(Settings settings, AiTools tools, AiConversation convo, Action<DateTime> openMoment, Action openSettings)
+    {
+        if (open is { IsDisposed: false }) { open.panel.ShowState(); open.Activate(); return; }
+        open = new AiChatForm(AiChatPanel.Get(settings, tools, convo, openMoment, openSettings));
+        open.Show();
+        open.Activate();
+    }
+
+    /// After AI Settings saved: show the new provider, or the chat instead of "add your key".
+    public static void SettingsChanged() => AiChatPanel.Current?.ShowState();
+
+    AiChatForm(AiChatPanel panel)
+    {
+        this.panel = panel;
+        var k = DeviceDpi / 96f;
+        Text = "Ask OpenRewind";
+        Icon = Program.AppIcon;
+        FormBorderStyle = FormBorderStyle.Sizable;
+        MinimumSize = new Size((int)(420 * k), (int)(420 * k));
+        ClientSize = new Size((int)(560 * k), (int)(720 * k));
+        StartPosition = FormStartPosition.CenterScreen;
+        BackColor = Ui.Bg;
+        HandleCreated += (_, _) => { int on = 1; DwmSetWindowAttribute(Handle, 20, ref on, 4); };
+        panel.MoveTo(this, onClose: null);
+    }
+
+    /// The overlay is taking the chat: close this window without the chat in it.
+    public static void Release() { if (open is { IsDisposed: false }) open.Close(); }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        // The chat outlives the window.
+        if (panel.Parent == this) Controls.Remove(panel);
+        base.OnFormClosing(e);
+    }
+
+    protected override void OnFormClosed(FormClosedEventArgs e) { open = null; base.OnFormClosed(e); }
+
+    [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+}
+
+/// Ask AI: questions about what you did, saw or heard, answered by the provider you picked
+/// using lookups in the local database (AiTools). Same chat as AIChatView on the Mac.
+/// There is one panel; it sits in the Ask AI window or beside the timeline.
+sealed class AiChatPanel : Panel
+{
+    public static AiChatPanel? Current { get; private set; }
+
     readonly Settings settings;
     readonly AiTools tools;
     readonly AiConversation convo;
@@ -18,23 +69,35 @@ sealed class AiChatForm : Form
     readonly FlowLayoutPanel list;
     readonly Panel notice, inputBar;
     readonly TextBox input;
-    readonly PillButton send;
+    readonly PillButton send, closeButton;
     readonly Label thinking;
     CancellationTokenSource? cts;
+    Action? onClose;
 
-    /// One window at a time; the conversation lives in `convo`, so closing the window keeps it.
-    public static void ShowFor(Settings settings, AiTools tools, AiConversation convo, Action<DateTime> openMoment, Action openSettings)
+    public static AiChatPanel Get(Settings settings, AiTools tools, AiConversation convo, Action<DateTime> openMoment, Action openSettings) =>
+        Current is { IsDisposed: false } p ? p : Current = new AiChatPanel(settings, tools, convo, openMoment, openSettings);
+
+    /// Puts the chat into `host`. `onClose` shows a close button (in the overlay) and runs when the
+    /// chat is closed there or moved back to its window.
+    public void MoveTo(Control host, Action? onClose)
     {
-        if (open is { IsDisposed: false }) { open.ShowState(); open.Activate(); return; }
-        open = new AiChatForm(settings, tools, convo, openMoment, openSettings);
-        open.Show();
-        open.Activate();
+        if (Parent == host) return;
+        var before = this.onClose;
+        if (Parent is AiChatForm) AiChatForm.Release();
+        Parent?.Controls.Remove(this);
+        this.onClose = onClose;
+        closeButton.Visible = onClose != null;
+        Dock = onClose != null ? DockStyle.Right : DockStyle.Fill;
+        host.Controls.Add(this);
+        before?.Invoke();
+        ShowState();
     }
 
-    /// After AI Settings saved: show the new provider, or the chat instead of "add your key".
-    public static void SettingsChanged() { if (open is { IsDisposed: false }) open.ShowState(); }
+    public void Close() => onClose?.Invoke();
 
-    AiChatForm(Settings settings, AiTools tools, AiConversation convo, Action<DateTime> openMoment, Action openSettings)
+    public void FocusInput() { if (input.Visible) input.Focus(); }
+
+    AiChatPanel(Settings settings, AiTools tools, AiConversation convo, Action<DateTime> openMoment, Action openSettings)
     {
         this.settings = settings;
         this.tools = tools;
@@ -42,31 +105,29 @@ sealed class AiChatForm : Form
         this.openMoment = openMoment;
         this.openSettings = openSettings;
         k = DeviceDpi / 96f;
-        Text = "Ask OpenRewind";
-        Icon = Program.AppIcon;
-        FormBorderStyle = FormBorderStyle.Sizable;
-        MinimumSize = new Size((int)(420 * k), (int)(420 * k));
-        ClientSize = new Size((int)(560 * k), (int)(720 * k));
-        StartPosition = FormStartPosition.CenterScreen;
+        Width = (int)(420 * k);
         BackColor = Ui.Bg;
         ForeColor = Ui.Text;
         Font = Ui.F(14 * k);
-        HandleCreated += (_, _) => { int on = 1; DwmSetWindowAttribute(Handle, 20, ref on, 4); };
 
-        // Header: title, provider · model, New Chat and Settings.
+        // Header: title, provider · model, New Chat, Settings, and Close in the overlay.
         var header = new Panel { Dock = DockStyle.Top, Height = (int)(64 * k), BackColor = Ui.Bg, Padding = new Padding((int)(16 * k), (int)(10 * k), (int)(16 * k), 0) };
         var title = new Label { Text = "Ask OpenRewind", Font = Ui.F(16 * k, true), AutoSize = true, Location = new Point((int)(16 * k), (int)(10 * k)) };
         subtitle = new Label { Font = Ui.F(12 * k), ForeColor = Ui.Faint, AutoSize = true, Location = new Point((int)(16 * k), (int)(36 * k)) };
         var newChat = new PillButton("New Chat") { Font = Ui.F(12.5f * k, true), Size = new Size((int)(96 * k), (int)(32 * k)) };
         var gear = new PillButton("Settings") { Font = Ui.F(12.5f * k, true), Size = new Size((int)(88 * k), (int)(32 * k)) };
+        closeButton = new PillButton("✕") { Font = Ui.F(12.5f * k, true), Size = new Size((int)(32 * k), (int)(32 * k)), Visible = false };
         gear.Click += (_, _) => openSettings();
-        header.Resize += (_, _) =>
+        closeButton.Click += (_, _) => Close();
+        closeButton.VisibleChanged += (_, _) => header.PerformLayout();
+        header.Layout += (_, _) =>
         {
-            gear.Location = new Point(header.Width - gear.Width - (int)(16 * k), (int)(14 * k));
+            var right = header.Width - (int)(16 * k);
+            if (closeButton.Visible) { closeButton.Location = new Point(right - closeButton.Width, (int)(14 * k)); right = closeButton.Left - (int)(8 * k); }
+            gear.Location = new Point(right - gear.Width, (int)(14 * k));
             newChat.Location = new Point(gear.Left - newChat.Width - (int)(8 * k), (int)(14 * k));
         };
-        header.Controls.AddRange(new Control[] { title, subtitle, newChat, gear });
-
+        header.Controls.AddRange(new Control[] { title, subtitle, newChat, gear, closeButton });
         list = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true,
@@ -96,8 +157,6 @@ sealed class AiChatForm : Form
         Controls.Add(header);
         ShowState();
     }
-
-    protected override void OnFormClosed(FormClosedEventArgs e) { open = null; base.OnFormClosed(e); }
 
     /// Shows the chat, or what is missing before it can be used.
     public void ShowState()
@@ -309,7 +368,6 @@ sealed class AiChatForm : Form
         list.ResumeLayout();
     }
 
-    [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 }
 
 /// Settings → AI Settings: provider, key and model, saved per provider.

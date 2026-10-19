@@ -30,6 +30,10 @@ sealed class OverlayForm : Form
     static readonly Color Mic = Color.FromArgb(255, 159, 10), Sys = Color.FromArgb(48, 209, 88), Accent = Color.FromArgb(10, 132, 255);
     /// Shows the "new version" banner; set by the tray app.
     public Updater? Updater { get; set; }
+    /// The Ask AI chat, shared with its own window; set by the tray app.
+    public Func<AiChatPanel>? Chat { get; set; }
+    AiChatPanel? chatPanel;
+    bool ChatOpen => chatPanel is { IsDisposed: false } && chatPanel.Parent == this;
 
     static readonly Color Yellow = Color.FromArgb(255, 214, 10);
 
@@ -212,7 +216,8 @@ sealed class OverlayForm : Form
         using (var dim = new SolidBrush(dark ? Color.FromArgb(205, 14, 14, 16) : Color.FromArgb(200, 246, 246, 248))) g.FillRectangle(dim, ClientRectangle);
 
         float padX = 28 * k, top = 22 * k, bottom = 16 * k, gap = 14 * k;
-        float w = ClientSize.Width - 2 * padX;
+        // The chat sits on the right; the timeline takes the rest.
+        float w = ClientSize.Width - 2 * padX - (ChatOpen ? chatPanel!.Width : 0);
         float y = top;
         DrawTopBar(g, new RectangleF(padX, y, w, 44 * k));
         y += 44 * k + gap;
@@ -322,6 +327,30 @@ sealed class OverlayForm : Form
         float bx = r.Right - 30 * k;
         RoundButton(g, new RectangleF(bx, r.Y + 7 * k, 30 * k, 30 * k), "✕", () => HideOverlay());
         RoundButton(g, new RectangleF(bx - 40 * k, r.Y + 7 * k, 30 * k, 30 * k), "?", () => { model.ShowHelp = !model.ShowHelp; Invalidate(); });
+        if (Chat != null) AskAiButton(g, bx - 50 * k, r.Y + 7 * k);
+    }
+
+    /// "✦ Ask AI" pill left of help; `right` is its right edge.
+    void AskAiButton(Graphics g, float right, float y)
+    {
+        const string label = "✦  Ask AI";
+        var f = Semibold(12.5f);
+        var sz = Draw.Measure(g, label, f);
+        var r = new RectangleF(right - sz.Width - 28 * k, y, sz.Width + 28 * k, 30 * k);
+        bool hover = r.Contains(PointToClient(Cursor.Position));
+        Draw.Fill(g, r, r.Height / 2, Ink(ChatOpen ? 0.22 : hover ? 0.2 : 0.1));
+        Draw.Text(g, label, f, TextColor, r.X + 14 * k, r.Y + (r.Height - sz.Height) / 2);
+        hot.Add((r, ToggleChat));
+    }
+
+    public void ToggleChat()
+    {
+        if (ChatOpen) { chatPanel!.Close(); return; }
+        if (Chat == null) return;
+        var p = chatPanel = Chat();
+        p.MoveTo(this, onClose: () => { Controls.Remove(p); LeaveSearch(); });
+        p.FocusInput();
+        Invalidate();
     }
 
     /// Pill next to search: "All apps", or the app the timeline is filtered to. Click to choose.
@@ -1008,6 +1037,12 @@ sealed class OverlayForm : Form
         bool ctrl = (keyData & Keys.Control) != 0, shift = (keyData & Keys.Shift) != 0;
         bool typing = search.Focused;
 
+        // Typing in the chat: Esc leaves it, everything else goes to the chat.
+        if (ChatOpen && chatPanel!.ContainsFocus)
+        {
+            if (key == Keys.Escape) { LeaveSearch(); return true; }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
         if (ctrl && key == Keys.F) { FocusSearch(); return true; }
         if (ctrl && key == Keys.G) { model.NextHit(older: !shift); LeaveSearch(); return true; }
         if (typing)
@@ -1036,6 +1071,7 @@ sealed class OverlayForm : Form
             case Keys.Escape:
                 if (model.ShowHelp) model.ShowHelp = false;
                 else if (model.ShowResults) model.ShowResults = false;
+                else if (ChatOpen) chatPanel!.Close();
                 else { HideOverlay(); return true; }
                 Invalidate();
                 break;
@@ -1056,6 +1092,8 @@ sealed class OverlayForm : Form
 
     protected override void OnMouseWheel(MouseEventArgs e)
     {
+        // Over the chat, the wheel scrolls the chat (it arrives here when the chat box has the keyboard).
+        if (ChatOpen && chatPanel!.Bounds.Contains(e.Location)) return;
         if (model.ShowResults && model.Hits.Count > 0) { model.MoveSelection(e.Delta > 0 ? -1 : 1); return; }
         // Wheel up = back in time. Mouse wheels send 120 per notch (one step); touchpads send many small deltas.
         if (Math.Abs(e.Delta) >= 120 && e.Delta % 120 == 0) { model.Step(-e.Delta / 120); return; }
@@ -1079,12 +1117,13 @@ sealed class OverlayForm : Form
             dragStartX = e.X;
             model.Jump(axis.Date(v));
             Capture = true;
+            if (ChatOpen && chatPanel!.ContainsFocus) LeaveSearch();
             return;
         }
         // Last added is on top.
         for (int i = hot.Count - 1; i >= 0; i--)
             if (hot[i].Rect.Contains(e.Location)) { hot[i].Act(); Invalidate(); return; }
-        if (search.Focused) LeaveSearch();
+        if (search.Focused || (ChatOpen && chatPanel!.ContainsFocus)) LeaveSearch();
     }
 
     float dragStartX;

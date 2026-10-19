@@ -180,6 +180,9 @@ final class AIChatModel: ObservableObject {
 
 struct AIChatView: View {
     @ObservedObject var model: AIChatModel
+    /// Set when the chat sits inside the timeline overlay instead of its own window.
+    var onClose: (() -> Void)? = nil
+    private var embedded: Bool { onClose != nil }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -201,7 +204,9 @@ struct AIChatView: View {
         }
         .background(SetupTheme.bg)
         .foregroundColor(.white)
-        .preferredColorScheme(.dark)
+        // In the overlay, keep the chat dark without changing the timeline's own look.
+        .environment(\.colorScheme, .dark)
+        .preferredColorScheme(embedded ? nil : .dark)
         .environment(\.openURL, OpenURLAction { url in
             if let d = AITime.date(fromLink: url) { model.openMoment(d); return .handled }
             return model.mayOpen(url) ? .systemAction : .discarded
@@ -221,8 +226,13 @@ struct AIChatView: View {
                 .buttonStyle(.plain).help("New chat").disabled(model.items.isEmpty)
             Button { model.openSettings() } label: { Image(systemName: "gearshape") }
                 .buttonStyle(.plain).help("AI settings")
+            if let onClose {
+                Button(action: onClose) { Image(systemName: "xmark") }
+                    .buttonStyle(.plain).help("Close the chat")
+            }
         }
-        .padding(.horizontal, 16).padding(.top, 34).padding(.bottom, 10)
+        // The window version sits under a transparent title bar.
+        .padding(.horizontal, 16).padding(.top, embedded ? 14 : 34).padding(.bottom, 10)
     }
 
     /// " · This chat: 12,345 tokens, $0.04"
