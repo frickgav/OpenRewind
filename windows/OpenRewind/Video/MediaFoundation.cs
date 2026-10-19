@@ -123,7 +123,7 @@ interface IMFAttributes
     [PreserveSig] int GetString([In] ref Guid key, IntPtr buffer, uint size, out uint length);
     [PreserveSig] int GetAllocatedString([In] ref Guid key, out IntPtr value, out uint length);
     [PreserveSig] int GetBlobSize([In] ref Guid key, out uint size);
-    [PreserveSig] int GetBlob([In] ref Guid key, [Out] byte[] buffer, uint size, out uint written);
+    [PreserveSig] int GetBlob([In] ref Guid key, [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 2)] byte[] buffer, uint size, out uint written);
     [PreserveSig] int GetAllocatedBlob([In] ref Guid key, out IntPtr buffer, out uint size);
     [PreserveSig] int GetUnknown([In] ref Guid key, [In] ref Guid iid, out IntPtr value);
     [PreserveSig] int SetItem([In] ref Guid key, IntPtr value);
@@ -134,7 +134,7 @@ interface IMFAttributes
     [PreserveSig] int SetDouble([In] ref Guid key, double value);
     [PreserveSig] int SetGUID([In] ref Guid key, [In] ref Guid value);
     [PreserveSig] int SetString([In] ref Guid key, [MarshalAs(UnmanagedType.LPWStr)] string value);
-    [PreserveSig] int SetBlob([In] ref Guid key, [In] byte[] buffer, uint size);
+    [PreserveSig] int SetBlob([In] ref Guid key, [In, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 2)] byte[] buffer, uint size);
     [PreserveSig] int SetUnknown([In] ref Guid key, IntPtr value);
     [PreserveSig] int LockStore();
     [PreserveSig] int UnlockStore();
@@ -159,7 +159,7 @@ interface IMFMediaType
     [PreserveSig] int GetString([In] ref Guid key, IntPtr buffer, uint size, out uint length);
     [PreserveSig] int GetAllocatedString([In] ref Guid key, out IntPtr value, out uint length);
     [PreserveSig] int GetBlobSize([In] ref Guid key, out uint size);
-    [PreserveSig] int GetBlob([In] ref Guid key, [Out] byte[] buffer, uint size, out uint written);
+    [PreserveSig] int GetBlob([In] ref Guid key, [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 2)] byte[] buffer, uint size, out uint written);
     [PreserveSig] int GetAllocatedBlob([In] ref Guid key, out IntPtr buffer, out uint size);
     [PreserveSig] int GetUnknown([In] ref Guid key, [In] ref Guid iid, out IntPtr value);
     [PreserveSig] int SetItem([In] ref Guid key, IntPtr value);
@@ -170,7 +170,7 @@ interface IMFMediaType
     [PreserveSig] int SetDouble([In] ref Guid key, double value);
     [PreserveSig] int SetGUID([In] ref Guid key, [In] ref Guid value);
     [PreserveSig] int SetString([In] ref Guid key, [MarshalAs(UnmanagedType.LPWStr)] string value);
-    [PreserveSig] int SetBlob([In] ref Guid key, [In] byte[] buffer, uint size);
+    [PreserveSig] int SetBlob([In] ref Guid key, [In, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 2)] byte[] buffer, uint size);
     [PreserveSig] int SetUnknown([In] ref Guid key, IntPtr value);
     [PreserveSig] int LockStore();
     [PreserveSig] int UnlockStore();
@@ -201,7 +201,7 @@ interface IMFSample
     [PreserveSig] int GetString([In] ref Guid key, IntPtr buffer, uint size, out uint length);
     [PreserveSig] int GetAllocatedString([In] ref Guid key, out IntPtr value, out uint length);
     [PreserveSig] int GetBlobSize([In] ref Guid key, out uint size);
-    [PreserveSig] int GetBlob([In] ref Guid key, [Out] byte[] buffer, uint size, out uint written);
+    [PreserveSig] int GetBlob([In] ref Guid key, [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 2)] byte[] buffer, uint size, out uint written);
     [PreserveSig] int GetAllocatedBlob([In] ref Guid key, out IntPtr buffer, out uint size);
     [PreserveSig] int GetUnknown([In] ref Guid key, [In] ref Guid iid, out IntPtr value);
     [PreserveSig] int SetItem([In] ref Guid key, IntPtr value);
@@ -212,7 +212,7 @@ interface IMFSample
     [PreserveSig] int SetDouble([In] ref Guid key, double value);
     [PreserveSig] int SetGUID([In] ref Guid key, [In] ref Guid value);
     [PreserveSig] int SetString([In] ref Guid key, [MarshalAs(UnmanagedType.LPWStr)] string value);
-    [PreserveSig] int SetBlob([In] ref Guid key, [In] byte[] buffer, uint size);
+    [PreserveSig] int SetBlob([In] ref Guid key, [In, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 2)] byte[] buffer, uint size);
     [PreserveSig] int SetUnknown([In] ref Guid key, IntPtr value);
     [PreserveSig] int LockStore();
     [PreserveSig] int UnlockStore();

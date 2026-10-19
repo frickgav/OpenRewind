@@ -85,6 +85,15 @@ final class FrameImages {
 
     private static func key(_ path: String, _ frame: Int) -> String { path + "#\(frame)" }
 
+    /// A small gray copy for checking a video frame against its screenshot. The screenshot is first cut to
+    /// the even size the video has, so both are shrunk the same way (thin lines of text would otherwise
+    /// land on different thumbnail pixels).
+    static func comparable(_ image: CGImage) -> [UInt8] {
+        let w = Compaction.even(image.width), h = Compaction.even(image.height)
+        let cut = (w == image.width && h == image.height) ? image : image.cropping(to: CGRect(x: 0, y: 0, width: w, height: h)) ?? image
+        return ImageTools.thumbnail(cut)
+    }
+
     /// A generator that returns exactly the frame asked for, at its stored size.
     static func generator(_ path: String) -> AVAssetImageGenerator {
         let asset = AVURLAsset(url: URL(fileURLWithPath: path), options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
@@ -174,7 +183,7 @@ final class AVCodec: VideoCodec {
                 log("\((path as NSString).lastPathComponent): frame \(i) is \(decoded.width)x\(decoded.height), expected \(source.width)x\(source.height)")
                 return false
             }
-            guard Compaction.similar(ImageTools.thumbnail(decoded), ImageTools.thumbnail(source)) else {
+            guard Compaction.similar(FrameImages.comparable(decoded), FrameImages.comparable(source)) else {
                 log("\((path as NSString).lastPathComponent): frame \(i) does not look like its picture")
                 return false
             }

@@ -32,7 +32,7 @@ enum VideoSelfTest {
                 let id = try db.insert(Frame(id: 0, timestamp: ts, appName: "Test", windowName: "Window \(i)", focused: true,
                                              snapshotPath: file.path, text: "frame \(i)", textSource: "ocr", hash: 0, display: "test"))
                 guard let still = FrameImages.shared.image(FrameSource(stillPath: file.path)) else { print("cannot read a test picture"); return false }
-                thumbs[id] = ImageTools.thumbnail(still)
+                thumbs[id] = FrameImages.comparable(still)
             }
             let compactor = VideoCompactor(db: db, codec: codec, dataDir: config.dataDir)
             var clock = Date()
@@ -74,7 +74,7 @@ enum VideoSelfTest {
         for id in ids {
             guard let f = db.frame(id: id), let pic = FrameImages.shared.image(f.source) else { print("frame \(id) did not load"); return false }
             guard pic.width == Compaction.even(w), pic.height == Compaction.even(h) else { print("frame \(id) is \(pic.width)x\(pic.height)"); return false }
-            guard let want = thumbs[id], Compaction.similar(ImageTools.thumbnail(pic), want) else {
+            guard let want = thumbs[id], Compaction.similar(FrameImages.comparable(pic), want) else {
                 print("frame \(id) looks different from its screenshot"); return false
             }
         }

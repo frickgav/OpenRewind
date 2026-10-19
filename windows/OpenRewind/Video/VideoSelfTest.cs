@@ -35,7 +35,7 @@ static class VideoSelfTest
                 ImageTools.WriteJpeg(pic, file);
                 var id = db.Insert(new Frame(0, Time.Iso(t), "Test", $"Window {i}", true, file, $"frame {i}", "ocr", 0, Display: "test"));
                 using var still = FrameImages.Load(new FrameSource(file))!;
-                thumbs[id] = ImageTools.Thumbnail(still);
+                thumbs[id] = FrameImages.Comparable(still);
             }
             var compactor = new VideoCompactor(db, codec, config.DataDir);
             var sw = Stopwatch.StartNew();
@@ -84,7 +84,7 @@ static class VideoSelfTest
             using var pic = FrameImages.Load(f.Source);
             if (pic == null) { log.WriteLine($"frame {id} did not load"); return false; }
             if (pic.Width != Compaction.Even(w) || pic.Height != Compaction.Even(h)) { log.WriteLine($"frame {id} is {pic.Width}x{pic.Height}"); return false; }
-            if (!Compaction.Similar(ImageTools.Thumbnail(pic), thumbs[id])) { log.WriteLine($"frame {id} looks different from its screenshot"); return false; }
+            if (!Compaction.Similar(FrameImages.Comparable(pic), thumbs[id])) { log.WriteLine($"frame {id} looks different from its screenshot"); return false; }
         }
         log.WriteLine($"read {ids.Count} frames back, {sw.ElapsedMilliseconds / (double)ids.Count:0.0} ms each");
         return true;

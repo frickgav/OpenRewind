@@ -97,6 +97,17 @@ static class FrameImages
     }
 
     static string Key(string path, int frame) => path + "#" + frame;
+
+    /// A small gray copy for checking a video frame against its screenshot. The screenshot is first cut to
+    /// the even size the video has, so both are shrunk the same way (thin lines of text would otherwise
+    /// land on different thumbnail pixels).
+    public static byte[] Comparable(Bitmap image)
+    {
+        int w = Compaction.Even(image.Width), h = Compaction.Even(image.Height);
+        if (w == image.Width && h == image.Height) return ImageTools.Thumbnail(image);
+        using var cut = image.Clone(new Rectangle(0, 0, w, h), image.PixelFormat);
+        return ImageTools.Thumbnail(cut);
+    }
 }
 
 /// IVideoCodec for the compactor: Media Foundation, HEVC when the PC can encode and decode it, else H.264.
@@ -139,7 +150,7 @@ sealed class MfCodec : IVideoCodec
                 using var source = FrameImages.Load(frames[i]);
                 if (decoded == null || source == null) return false;
                 if (decoded.Width != Compaction.Even(source.Width) || decoded.Height != Compaction.Even(source.Height)) return false;
-                if (!Compaction.Similar(ImageTools.Thumbnail(decoded), ImageTools.Thumbnail(source))) return false;
+                if (!Compaction.Similar(FrameImages.Comparable(decoded), FrameImages.Comparable(source))) return false;
             }
             return true;
         }
