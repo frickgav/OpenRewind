@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
@@ -12,35 +13,46 @@ using Windows.Storage.Streams;
 namespace OpenRewind;
 
 /// Writes a clip of saved screenshots to an MP4 (H.264, with the encoder built into Windows) or an animated GIF
-/// (GifWriter). Only the files already on disk are used, so blocked apps stay blurred; nothing is captured again.
+/// (GifWriter). Only the files already on disk are used; nothing is captured again.
 static class ClipExporter
 {
     /// MF_MT_DEFAULT_STRIDE: rows come top to bottom.
     static readonly Guid DefaultStride = new("644b4e48-1e02-4516-b0eb-c01ca9d49ac6");
 
-    /// Write `plan` to `path`. Reports progress from 0 to 1. The file is only there when this finishes without
-    /// an exception; a cancelled or failed export leaves nothing behind.
-    public static async Task Export(ClipPlan.Result plan, ClipFormat format, string path, IProgress<double> progress, CancellationToken ct)
+    /// Write `plan` as a `w`×`h` clip to `path`. Reports how many of the plan's frames are done, about ten times a
+    /// second. The file is only there when this finishes without an exception; a cancelled or failed export
+    /// leaves nothing behind.
+    public static async Task Export(ClipPlan.Result plan, ClipFormat format, int w, int h, string path, IProgress<int> progress, CancellationToken ct)
     {
         if (plan.Frames.Count == 0) throw new InvalidOperationException("No screenshots in that range.");
-        var first = plan.Frames.Select(f => ImageSize(f.Frame.Path)).FirstOrDefault(s => s != null)
-                    ?? throw new InvalidOperationException("The screenshots in that range were deleted.");
-        var (w, h) = ClipPlan.OutputSize(first.Width, first.Height, format);
         var tmp = Path.Combine(Path.GetDirectoryName(path) ?? ".", "." + Path.GetFileName(path) + ".part");
         try
         {
-            if (format == ClipFormat.Gif) await Task.Run(() => WriteGif(plan.Frames, w, h, tmp, progress, ct), ct);
-            else await Task.Run(() => WriteMp4(plan, w, h, tmp, progress, ct), ct);
+            var report = new Reporter(progress, plan.Frames.Count);
+            if (format == ClipFormat.Gif) await Task.Run(() => WriteGif(plan.Frames, w, h, tmp, report, ct), ct);
+            // The video stops itself when cancelled (it ends the stream), so the encoder lets go of the file.
+            else await Task.Run(() => WriteMp4(plan, w, h, tmp, report, ct));
             ct.ThrowIfCancellationRequested();
             File.Move(tmp, path, overwrite: true);
         }
         finally
         {
-            try { File.Delete(tmp); } catch { }
+            await Delete(tmp);
         }
     }
 
-    static Size? ImageSize(string path)
+    /// Delete a file, waiting a little if the video encoder still holds it.
+    static async Task Delete(string path)
+    {
+        for (int i = 0; i < 15 && File.Exists(path); i++)
+        {
+            try { File.Delete(path); return; }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { await Task.Delay(200); }
+        }
+    }
+
+    /// Size of a screenshot file, or null if it can't be read.
+    public static Size? ImageSize(string path)
     {
         try
         {
@@ -48,6 +60,29 @@ static class ClipExporter
             return img.Size;
         }
         catch { return null; }
+    }
+
+    /// Passes progress on at most ten times a second (and always the last one), so a long clip does not flood the window.
+    sealed class Reporter
+    {
+        readonly IProgress<int> progress;
+        readonly int total;
+        readonly Stopwatch clock = Stopwatch.StartNew();
+        long last = long.MinValue / 2;
+        int lastDone = -1;
+
+        public Reporter(IProgress<int> progress, int total) { this.progress = progress; this.total = total; }
+
+        public void Done(int done)
+        {
+            lock (this)
+            {
+                if (done == lastDone || (done < total && clock.ElapsedMilliseconds - last < 100)) return;
+                last = clock.ElapsedMilliseconds;
+                lastDone = done;
+            }
+            progress.Report(done);
+        }
     }
 
     /// A screenshot scaled to fit `w`×`h` on black, as BGRA rows top to bottom. Null if the file is gone.
@@ -81,7 +116,7 @@ static class ClipExporter
         }
     }
 
-    static void WriteGif(List<ClipFrame> frames, int w, int h, string path, IProgress<double> progress, CancellationToken ct)
+    static void WriteGif(List<ClipFrame> frames, int w, int h, string path, Reporter report, CancellationToken ct)
     {
         using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16);
         var gif = new GifWriter(file, w, h);
@@ -92,14 +127,17 @@ static class ClipExporter
             // A missing file keeps the picture before it.
             last = Pixels(frames[i].Frame.Path, w, h) ?? last ?? new byte[w * h * 4];
             gif.AddFrame(last, w * 4, frames[i].Duration);
-            progress.Report((i + 1.0) / frames.Count);
+            report.Done(i + 1);
         }
         gif.Finish();
     }
 
-    static void WriteMp4(ClipPlan.Result plan, int w, int h, string path, IProgress<double> progress, CancellationToken ct)
+    static void WriteMp4(ClipPlan.Result plan, int w, int h, string path, Reporter report, CancellationToken ct)
     {
-        var samples = ClipPlan.Samples(plan.Frames);
+        // Each video sample, with the frame of the plan it shows.
+        var samples = new List<(ClipFrame Sample, int Frame)>();
+        for (int p = 0; p < plan.Frames.Count; p++)
+            foreach (var s in ClipPlan.Samples(new[] { plan.Frames[p] })) samples.Add((s, p));
         var input = VideoEncodingProperties.CreateUncompressed(MediaEncodingSubtypes.Bgra8, (uint)w, (uint)h);
         input.Properties[DefaultStride] = (uint)(w * 4);
         var source = new MediaStreamSource(new VideoStreamDescriptor(input))
@@ -114,9 +152,9 @@ static class ClipExporter
         source.Starting += (_, e) => e.Request.SetActualStartPosition(TimeSpan.Zero);
         source.SampleRequested += (_, e) =>
         {
-            // No sample ends the stream.
+            // No sample ends the stream: at the end, or as soon as the export is cancelled.
             if (ct.IsCancellationRequested || next >= samples.Count) { e.Request.Sample = null; return; }
-            var s = samples[next++];
+            var (s, frame) = samples[next++];
             if (s.Frame.Path != lastPath)
             {
                 // A new array each time: the encoder may still hold the last one.
@@ -126,7 +164,7 @@ static class ClipExporter
             var sample = MediaStreamSample.CreateFromBuffer(pixels!.AsBuffer(), TimeSpan.FromSeconds(s.At));
             sample.Duration = TimeSpan.FromSeconds(s.Duration);
             e.Request.Sample = sample;
-            progress.Report((double)next / samples.Count);
+            report.Done(next >= samples.Count ? plan.Frames.Count : frame);
         };
 
         var profile = MediaEncodingProfile.CreateMp4(VideoEncodingQuality.HD1080p);
@@ -137,19 +175,23 @@ static class ClipExporter
         profile.Video.FrameRate.Denominator = 1;
         profile.Video.PixelAspectRatio.Numerator = 1;
         profile.Video.PixelAspectRatio.Denominator = 1;
-        // Screens are mostly still: a modest bitrate keeps text sharp without big files.
-        profile.Video.Bitrate = (uint)Math.Clamp((long)w * h * 2, 1_000_000, 6_000_000);
+        profile.Video.Bitrate = (uint)ClipPlan.VideoBitrate(w, h);
+        // Windows.Media has no keyframe-interval setting; the encoder picks its own (the Mac asks for one every 2 s).
 
         var transcoder = new MediaTranscoder { HardwareAccelerationEnabled = true };
         using var stream = FileRandomAccessStream.OpenAsync(path, FileAccessMode.ReadWrite, StorageOpenOptions.None, FileOpenDisposition.CreateAlways)
             .AsTask(ct).GetAwaiter().GetResult();
         var prepared = transcoder.PrepareMediaStreamSourceTranscodeAsync(source, stream, profile).AsTask(ct).GetAwaiter().GetResult();
         if (!prepared.CanTranscode) throw new InvalidOperationException($"Windows can't make this video ({prepared.FailureReason}).");
-        prepared.TranscodeAsync().AsTask(ct).GetAwaiter().GetResult();
+        // Not cancelled from outside: a cancel ends the stream (above), and the encoder finishes and lets go of the file.
+        prepared.TranscodeAsync().AsTask().GetAwaiter().GetResult();
+        ct.ThrowIfCancellationRequested();
     }
 }
 
-/// Export Clip…: pick the range, MP4 or GIF and a speed; writes the file with progress and Cancel.
+/// Export Clip…: pick the range, MP4 or GIF and a speed. Before exporting it says how long the clip is, how many
+/// frames, and roughly how big and how long it takes; while exporting it shows the frame it is on, the time so far
+/// and the time left, with Cancel.
 sealed class ExportClipForm : Form
 {
     readonly TimelineModel model;
@@ -158,11 +200,24 @@ sealed class ExportClipForm : Form
     readonly Label info, status;
     readonly ProgressBar progress;
     readonly Button export, close;
-    readonly LinkLabel show;
+    readonly FlowLayoutPanel doneLinks;
+    readonly System.Windows.Forms.Timer debounce = new() { Interval = 250 };
+    readonly System.Windows.Forms.Timer ticker = new() { Interval = 500 };
+    readonly Stopwatch clock = new();
     CancellationTokenSource? running;
+    bool closeWhenStopped;
     string? saved;
+    /// Bumped on every change, so an older count that finishes late is ignored.
+    int version;
+    int doneFrames, totalFrames;
 
-    const string TimeFormat = "MMM d   h:mm:ss tt";
+    const string TimeFormat = "MMM d, yyyy   h:mm:ss tt";
+
+    /// What the clip is made from: the range, format, speed and the timeline's app filter.
+    sealed record Inputs(DateTime Start, DateTime End, double Speed, ClipFormat Format, string? App);
+
+    /// The clip for some inputs and its output size, or why there is none.
+    sealed record Info(Inputs Inputs, ClipPlan.Result? Plan, int W, int H, string? Problem);
 
     public ExportClipForm(TimelineModel model, DateTime startUtc, DateTime endUtc)
     {
@@ -187,14 +242,14 @@ sealed class ExportClipForm : Form
         DateTimePicker Picker(DateTime utc) => new()
         {
             Format = DateTimePickerFormat.Custom, CustomFormat = TimeFormat, ShowUpDown = true,
-            Value = utc.ToLocalTime(), Width = 220, Margin = new Padding(0, 3, 0, 3),
+            Value = utc.ToLocalTime(), Width = 250, Margin = new Padding(0, 3, 0, 3),
         };
         from = Picker(startUtc);
         to = Picker(endUtc);
-        format = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220, Margin = new Padding(0, 3, 0, 3) };
+        format = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 250, Margin = new Padding(0, 3, 0, 3) };
         format.Items.AddRange(new object[] { "MP4 video", "Animated GIF" });
         format.SelectedIndex = 0;
-        speed = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220, Margin = new Padding(0, 3, 0, 3) };
+        speed = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 250, Margin = new Padding(0, 3, 0, 3) };
         foreach (var s in ClipPlan.Speeds) speed.Items.Add(ClipPlan.SpeedLabel(s));
         speed.SelectedIndex = 0;
 
@@ -203,29 +258,40 @@ sealed class ExportClipForm : Form
         grid.Controls.Add(Caption("Format"), 0, 2); grid.Controls.Add(format, 1, 2);
         grid.Controls.Add(Caption("Speed"), 0, 3); grid.Controls.Add(speed, 1, 3);
 
-        info = new Label { AutoSize = true, MaximumSize = new Size(360, 0), Margin = new Padding(0, 10, 0, 4) };
-        progress = new ProgressBar { Width = 360, Height = 14, Visible = false, Margin = new Padding(0, 6, 0, 2), Maximum = 1000 };
-        status = new Label { AutoSize = true, MaximumSize = new Size(360, 0), Margin = new Padding(0, 2, 0, 2) };
-        show = new LinkLabel { Text = "Show in folder", AutoSize = true, Visible = false, Margin = new Padding(0, 2, 0, 2) };
-        show.LinkClicked += (_, _) =>
+        info = new Label { AutoSize = true, MaximumSize = new Size(400, 0), Margin = new Padding(0, 10, 0, 4), Text = "Counting the frames…" };
+        progress = new ProgressBar { Width = 400, Height = 14, Visible = false, Margin = new Padding(0, 6, 0, 2), Maximum = 1000, MarqueeAnimationSpeed = 30 };
+        status = new Label { AutoSize = true, MaximumSize = new Size(400, 0), Margin = new Padding(0, 2, 0, 2) };
+        LinkLabel Link(string text, Action act)
         {
-            if (saved == null) return;
-            try { System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{saved}\""); } catch { }
-        };
-        export = new Button { Text = "Export…", AutoSize = true, Margin = new Padding(0, 0, 8, 0) };
-        close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
+            var l = new LinkLabel { Text = text, AutoSize = true, Margin = new Padding(0, 2, 16, 2) };
+            l.LinkClicked += (_, _) => { if (saved != null) try { act(); } catch (Exception e) { Log.Write($"clip open failed: {e.Message}"); } };
+            return l;
+        }
+        doneLinks = new FlowLayoutPanel { AutoSize = true, Visible = false, Margin = new Padding(0), WrapContents = false };
+        doneLinks.Controls.Add(Link("Show in Explorer", () => Process.Start("explorer.exe", $"/select,\"{saved}\"")));
+        doneLinks.Controls.Add(Link("Open", () => Process.Start(new ProcessStartInfo(saved!) { UseShellExecute = true })));
+        export = new Button { Text = "Export…", AutoSize = true, Margin = new Padding(0, 0, 8, 0), Enabled = false };
+        close = new Button { Text = "Close", AutoSize = true };
         export.Click += async (_, _) => await Run();
-        close.Click += (_, _) => { if (running != null) running.Cancel(); else Close(); };
+        close.Click += (_, _) =>
+        {
+            if (running == null) { Close(); return; }
+            running.Cancel();
+            close.Enabled = false;
+            status.Text = "Cancelling…";
+        };
         var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 12, 0, 0) };
         buttons.Controls.Add(close);
         buttons.Controls.Add(export);
 
         var stack = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
-        stack.Controls.AddRange(new Control[] { grid, info, progress, status, show, buttons });
+        stack.Controls.AddRange(new Control[] { grid, info, progress, status, doneLinks, buttons });
         Controls.Add(stack);
         AcceptButton = export;
         CancelButton = close;
 
+        debounce.Tick += async (_, _) => { debounce.Stop(); await Count(); };
+        ticker.Tick += (_, _) => ShowProgress();
         from.ValueChanged += (_, _) => UpdateInfo();
         to.ValueChanged += (_, _) => UpdateInfo();
         format.SelectedIndexChanged += (_, _) => UpdateInfo();
@@ -233,67 +299,112 @@ sealed class ExportClipForm : Form
         UpdateInfo();
     }
 
-    ClipFormat Format => format.SelectedIndex == 1 ? ClipFormat.Gif : ClipFormat.Mp4;
-    double Speed => ClipPlan.Speeds[Math.Max(0, speed.SelectedIndex)];
-    DateTime Start => from.Value.ToUniversalTime();
-    DateTime End => to.Value.ToUniversalTime();
+    Inputs Snapshot() => new(from.Value.ToUniversalTime(), to.Value.ToUniversalTime(),
+        ClipPlan.Speeds[Math.Max(0, speed.SelectedIndex)], format.SelectedIndex == 1 ? ClipFormat.Gif : ClipFormat.Mp4, model.AppFilterName);
 
     /// The screenshots in the range, as the timeline shows them (with its app filter), and what the clip will be.
-    (ClipPlan.Result? Plan, string? Problem) Plan()
+    /// Reads only that range of the database; runs off the window's thread.
+    static Info Compute(Database db, Inputs i, Blocklist list)
     {
-        if (End <= Start) return (null, "The end is before the start.");
-        if (End - Start > ClipPlan.MaxLength) return (null, $"A clip can cover at most {ClipPlan.MaxLength.TotalHours:0} hours.");
-        var frames = AppFilter.Apply(model.Db.TimelineFrames(Start), model.AppFilterName);
-        var list = Blocklist.Current;
-        var plan = ClipPlan.Make(frames, Start, End, Speed, Format, f => ClipPlan.Hides(list, f));
+        if (i.End <= i.Start) return new(i, null, 0, 0, "The end is before the start.");
+        if (i.End - i.Start > ClipPlan.MaxLength) return new(i, null, 0, 0, $"A clip can cover at most {ClipPlan.MaxLength.TotalHours:0} hours.");
+        var frames = AppFilter.Apply(db.TimelineFrames(i.Start, i.End), i.App);
+        var plan = ClipPlan.Make(frames, i.Start, i.End, i.Speed, i.Format, f => ClipPlan.Hides(list, f));
         if (plan.Frames.Count == 0)
-            return (null, plan.Blocked > 0 ? "Every screenshot in that range is from a blocked app or site." : "No screenshots in that range.");
-        return (plan, null);
+            return new(i, null, 0, 0, plan.Blocked > 0 ? "Every screenshot in that range is from a blocked app or site." : "No screenshots in that range.");
+        if (plan.Frames.Select(f => ClipExporter.ImageSize(f.Frame.Path)).FirstOrDefault(s => s != null) is not Size size)
+            return new(i, null, 0, 0, "The screenshots in that range were deleted.");
+        var (w, h) = ClipPlan.OutputSize(size.Width, size.Height, i.Format);
+        return new(i, plan, w, h, null);
     }
 
+    Task<Info> ComputeInBackground(Inputs i)
+    {
+        var db = model.Db;
+        var list = Blocklist.Current;
+        return Task.Run(() => Compute(db, i, list));
+    }
+
+    /// Count again a moment after the last change, so stepping through times stays quick.
     void UpdateInfo()
     {
         if (running != null) return;
-        var (plan, problem) = Plan();
-        export.Enabled = plan != null;
-        if (plan == null) { info.Text = problem; return; }
-        var text = $"{plan.Frames.Count} picture{(plan.Frames.Count == 1 ? "" : "s")} · {ClipPlan.Length(plan.RealSeconds)} of screen time → a {ClipPlan.Length(plan.Duration)} clip";
-        if (model.AppFilterName is string app) text += $"\nOnly {app}, as the timeline shows it.";
-        if (plan.Blocked > 0) text += $"\n{plan.Blocked} screenshot{(plan.Blocked == 1 ? " is" : "s are")} from blocked apps or sites and left out.";
-        info.Text = text;
+        version++;
+        export.Enabled = false;
+        debounce.Stop();
+        debounce.Start();
+    }
+
+    async Task Count()
+    {
+        int v = version;
+        var x = await ComputeInBackground(Snapshot());
+        if (v != version || running != null || IsDisposed) return;
+        export.Enabled = x.Plan != null;
+        info.Text = Describe(x);
+    }
+
+    string Describe(Info x)
+    {
+        if (x.Plan == null) return x.Problem ?? "";
+        var text = ClipPlan.Summary(x.Plan, x.Inputs.Format, x.W, x.H);
+        if (x.Inputs.App is string app) text += $"\nOnly {app}, as the timeline shows it.";
+        if (x.Plan.Blocked > 0) text += $"\n{x.Plan.Blocked} screenshot{(x.Plan.Blocked == 1 ? " is" : "s are")} from blocked apps or sites and left out.";
+        return text;
+    }
+
+    /// "Preparing…" until the first frame, then the frame it is on, the time so far and the time left.
+    void ShowProgress()
+    {
+        if (running == null || running.IsCancellationRequested) return;
+        var elapsed = clock.Elapsed.TotalSeconds;
+        if (totalFrames == 0) { status.Text = $"Preparing… {ClipPlan.Length(elapsed)} elapsed"; return; }
+        if (progress.Style != ProgressBarStyle.Continuous && doneFrames > 0) progress.Style = ProgressBarStyle.Continuous;
+        progress.Value = Math.Clamp(doneFrames * 1000 / totalFrames, 0, 1000);
+        status.Text = ClipPlan.ProgressText(doneFrames, totalFrames, elapsed);
     }
 
     async Task Run()
     {
-        var (plan, problem) = Plan();
-        if (plan == null) { info.Text = problem; return; }
-        var ext = Format == ClipFormat.Gif ? "gif" : "mp4";
+        var inputs = Snapshot();
+        var ext = inputs.Format == ClipFormat.Gif ? "gif" : "mp4";
         using (var dialog = new SaveFileDialog
         {
             Title = "Export Clip",
-            Filter = Format == ClipFormat.Gif ? "Animated GIF|*.gif" : "MP4 video|*.mp4",
+            Filter = inputs.Format == ClipFormat.Gif ? "Animated GIF|*.gif" : "MP4 video|*.mp4",
             FileName = ClipPlan.FileName(from.Value, ext),
-            InitialDirectory = Environment.GetFolderPath(Format == ClipFormat.Gif ? Environment.SpecialFolder.MyPictures : Environment.SpecialFolder.MyVideos),
+            InitialDirectory = Environment.GetFolderPath(inputs.Format == ClipFormat.Gif ? Environment.SpecialFolder.MyPictures : Environment.SpecialFolder.MyVideos),
             OverwritePrompt = true,
         })
         {
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
             saved = dialog.FileName;
         }
+        var path = saved;
+        // Something on screen right away, before anything is read.
         running = new CancellationTokenSource();
         foreach (var c in new Control[] { from, to, format, speed, export }) c.Enabled = false;
         close.Text = "Cancel";
-        progress.Value = 0;
+        doneLinks.Visible = false;
+        progress.Style = ProgressBarStyle.Marquee;
         progress.Visible = true;
-        show.Visible = false;
-        status.Text = "Exporting…";
-        var path = saved;
-        var report = new Progress<double>(p => progress.Value = Math.Clamp((int)(p * 1000), 0, 1000));
+        doneFrames = totalFrames = 0;
+        clock.Restart();
+        ticker.Start();
+        ShowProgress();
+        var token = running.Token;
         try
         {
-            await ClipExporter.Export(plan, Format, path, report, running.Token);
-            status.Text = $"Saved {Path.GetFileName(path)} ({new FileInfo(path).Length / 1024.0 / 1024:0.0} MB).";
-            show.Visible = true;
+            // Counted again, so a block list changed since is applied.
+            var x = await ComputeInBackground(inputs);
+            if (x.Plan == null) { status.Text = x.Problem; saved = null; return; }
+            token.ThrowIfCancellationRequested();
+            totalFrames = x.Plan.Frames.Count;
+            ShowProgress();
+            var report = new Progress<int>(n => { doneFrames = n; ShowProgress(); });
+            await ClipExporter.Export(x.Plan, inputs.Format, x.W, x.H, path, report, token);
+            status.Text = $"Saved {Path.GetFileName(path)} ({ClipPlan.FileSize(new FileInfo(path).Length)}) in {ClipPlan.Length(clock.Elapsed.TotalSeconds)}.";
+            doneLinks.Visible = true;
         }
         catch (OperationCanceledException)
         {
@@ -308,19 +419,37 @@ sealed class ExportClipForm : Form
         }
         finally
         {
+            ticker.Stop();
             running.Dispose();
             running = null;
             progress.Visible = false;
-            foreach (var c in new Control[] { from, to, format, speed, export }) c.Enabled = true;
+            foreach (var c in new Control[] { from, to, format, speed }) c.Enabled = true;
             close.Text = "Close";
-            UpdateInfo();
+            close.Enabled = true;
+            if (closeWhenStopped) Close();
+            else UpdateInfo();
         }
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        // Closing while it runs cancels; the form closes once the export has stopped.
-        if (running != null) { running.Cancel(); e.Cancel = true; return; }
+        // Closing while it runs cancels, and the window closes once the export has stopped.
+        if (running != null)
+        {
+            closeWhenStopped = true;
+            running.Cancel();
+            close.Enabled = false;
+            status.Text = "Cancelling…";
+            e.Cancel = true;
+            return;
+        }
         base.OnFormClosing(e);
+    }
+
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        debounce.Dispose();
+        ticker.Dispose();
+        base.OnFormClosed(e);
     }
 }

@@ -28,6 +28,29 @@ public sealed partial class Database
         }
     }
 
+    /// Screenshots taken from `from` to `to` (inclusive), plus the first one after `to`, which says how long the
+    /// last one lasted. Export Clip reads only this, however much history there is.
+    public List<TimelineFrame> TimelineFrames(DateTime from, DateTime to)
+    {
+        lock (gate)
+        {
+            var out_ = new List<TimelineFrame>();
+            foreach (var (sql, args) in new[]
+            {
+                ("SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url FROM frames WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC", new object[] { Time.Iso(from), Time.Iso(to) }),
+                ("SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url FROM frames WHERE timestamp > ? ORDER BY timestamp ASC LIMIT 1", new object[] { Time.Iso(to) }),
+            })
+            {
+                using var cmd = Cmd(sql, args);
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                    if (Time.ParseIso(r.GetString(1)) is DateTime t)
+                        out_.Add(new TimelineFrame(r.GetInt64(0), t, r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5)));
+            }
+            return out_;
+        }
+    }
+
     public List<TimelineAudio> TimelineAudio(DateTime since)
     {
         lock (gate)

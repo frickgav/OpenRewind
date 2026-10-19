@@ -94,7 +94,9 @@ public sealed class GifWriter
         if (pending == null) return;
         double cs = carry + pendingSeconds * 100;
         int delay = Math.Clamp((int)Math.Round(cs), 2, 65535);
-        carry = cs - delay;
+        // Only rounding carries over: when a picture lasts longer than a GIF can say (655 s), the rest is dropped
+        // instead of stretching the pictures after it.
+        carry = delay == 65535 ? 0 : cs - delay;
         // Graphic control: keep the picture under the next one (so its transparent pixels show this one), delay, transparency.
         output.Write(new byte[] { 0x21, 0xF9, 0x04, (1 << 2) | 1, (byte)delay, (byte)(delay >> 8), pending[0], 0x00 });
         output.Write(pending, 1, pending.Length - 1);

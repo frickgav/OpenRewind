@@ -88,6 +88,7 @@ sealed partial class TimelineModel
             {
                 if (text == null) return;
                 textCache[f.Id] = text;
+                textOrder.Remove(f.Id);
                 textOrder.Add(f.Id);
                 if (textOrder.Count > 16) { textCache.Remove(textOrder[0]); textOrder.RemoveAt(0); }
                 if (textFor != f.Id) return;
@@ -104,13 +105,24 @@ sealed partial class TimelineModel
     {
         if (HasSelection)
         {
+            // The block list may have changed since the words were read.
+            if (CurrentHidden) { ClearSelection(); ShowNotice("This moment is from a blocked app or site"); return; }
             var s = SelectedText;
-            if (s.Length > 0) { Clipboard.SetText(s); ShowNotice("Copied the selected text"); }
+            if (s.Length > 0) { PrivateClipboard.SetText(s); ShowNotice("Copied the selected text"); }
             return;
         }
         if (FrameForExport() is not Image img) return;
-        Clipboard.SetImage(img);
+        PrivateClipboard.SetImage(img);
         ShowNotice("Copied the screenshot");
+    }
+
+    /// Copy every word read on the shown screenshot.
+    public void CopyAllText()
+    {
+        if (CurrentHidden) { ShowNotice("This moment is from a blocked app or site"); return; }
+        if (Text is not FrameText text || text.IsEmpty) { ShowNotice("No text found on this screenshot yet"); return; }
+        PrivateClipboard.SetText(text.AllText);
+        ShowNotice("Copied the text on this screenshot");
     }
 
     /// Save the shown screenshot as a PNG. `owner` hosts the save dialog.

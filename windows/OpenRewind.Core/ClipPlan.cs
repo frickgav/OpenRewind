@@ -68,8 +68,8 @@ public static class ClipPlan
             double secs = Math.Min((next - f.Time).TotalSeconds, MaxHold);
             bool last = i + 1 >= frames.Count || frames[i + 1].Time > end;
             if (last) secs = Math.Min(secs, Math.Max(LastHold, (end - f.Time).TotalSeconds));
-            if (secs <= 0) continue;
             if (hides != null && hides(f)) { blocked++; continue; }
+            if (secs <= 0) continue;
             raw.Add((f, secs));
         }
         double real = raw.Sum(r => r.Secs);
@@ -109,6 +109,54 @@ public static class ClipPlan
             for (int k = 0; k < n; k++) out_.Add(f with { At = f.At + k * d, Duration = d });
         }
         return out_;
+    }
+
+    /// How many video samples `Samples` makes, without making them.
+    public static int SampleCount(IReadOnlyList<ClipFrame> frames, double maxGap = MaxVideoGap) =>
+        frames.Sum(f => Math.Max(1, (int)Math.Ceiling(f.Duration / maxGap - 1e-9)));
+
+    /// H.264 bitrate (bits per second) for a `w`×`h` video: screens are mostly still, so a modest one keeps text
+    /// sharp without big files.
+    public static long VideoBitrate(int w, int h) => Math.Clamp((long)w * h * 2, 1_000_000, 6_000_000);
+
+    /// A rough guess, shown before exporting, of the file's size (bytes) and how long making it takes (seconds)
+    /// for a `w`×`h` output. Screens compress very differently, so this only gives the order of magnitude.
+    public static (long Bytes, double Seconds) Estimate(Result plan, ClipFormat format, int w, int h)
+    {
+        int pictures = plan.Frames.Count;
+        double px = (double)w * h;
+        if (format == ClipFormat.Gif)
+        {
+            // The first picture in full, then only what changed, which is usually a small part of the screen.
+            double bytes = px * 0.5 + Math.Max(0, pictures - 1) * px * 0.03 + 1024;
+            return ((long)bytes, pictures * (0.05 + px * 5e-8));
+        }
+        // A mostly still screen uses about a third of the bitrate allowed.
+        double size = VideoBitrate(w, h) / 8.0 * plan.Duration / 3 + 4096;
+        return ((long)size, pictures * 0.05 + SampleCount(plan.Frames) * 0.01);
+    }
+
+    /// "820 KB" or "12.4 MB".
+    public static string FileSize(long bytes) =>
+        bytes < 1024 * 1024 ? $"{Math.Max(1, bytes / 1024)} KB" : $"{bytes / 1048576.0:0.0} MB";
+
+    /// What is going into the clip, shown before exporting: "0:42 clip · 312 frames · 1280×800 · about 4.1 MB · takes about 0:20".
+    public static string Summary(Result plan, ClipFormat format, int w, int h)
+    {
+        var (bytes, secs) = Estimate(plan, format, w, h);
+        int n = plan.Frames.Count;
+        return $"{Length(plan.Duration)} clip · {n} frame{(n == 1 ? "" : "s")} · {w}×{h} · about {FileSize(bytes)} · takes about {Length(Math.Max(1, secs))}";
+    }
+
+    /// While exporting: "Frame 120 of 600 · 20% · 0:12 elapsed · about 0:48 left".
+    public static string ProgressText(int done, int total, double elapsed)
+    {
+        total = Math.Max(1, total);
+        done = Math.Clamp(done, 0, total);
+        var s = $"Frame {done} of {total} · {done * 100 / total}% · {Length(elapsed)} elapsed";
+        if (done >= total) return s + " · finishing the file…";
+        if (done == 0 || elapsed < 1) return s + " · working out the time left…";
+        return s + $" · about {Length(elapsed * (total - done) / done)} left";
     }
 
     /// Output size for a `w`×`h` screenshot: scaled down to fit, even sizes for video (H.264 needs them).

@@ -1,8 +1,29 @@
 using System.Drawing;
 using OpenRewind;
 
-public class ClipTests
+public class ClipTests : IDisposable
 {
+    readonly string home = Path.Combine(Path.GetTempPath(), "openrewind-clip-test-" + Guid.NewGuid());
+    Database? db;
+
+    public void Dispose()
+    {
+        db?.Dispose();
+        try { Directory.Delete(home, true); } catch { }
+    }
+
+    [Fact]
+    public void ExportReadsOnlyTheRangeAndTheNextScreenshot()
+    {
+        db = new Database(Config.Load(new[] { "--home", home }).DbPath);
+        for (int i = 0; i < 20; i++)
+            db.Insert(new Frame(0, Time.Iso(T0.AddSeconds(i * 10)), "Code", "w", true, "", "", "ocr", 0, ""));
+        var got = db.TimelineFrames(T0.AddSeconds(50), T0.AddSeconds(100));
+        Assert.Equal(Enumerable.Range(5, 7).Select(i => T0.AddSeconds(i * 10)), got.Select(f => f.Time));
+        // The last screenshot of all has nothing after it.
+        Assert.Equal(2, db.TimelineFrames(T0.AddSeconds(180), T0.AddSeconds(500)).Count);
+    }
+
     static readonly DateTime T0 = new(2026, 10, 19, 14, 0, 0, DateTimeKind.Utc);
 
     static TimelineFrame F(int id, double secs, string app = "Code", string window = "main.cs", string url = "") =>
@@ -252,6 +273,56 @@ public class ClipTests
         var d = GifDecoder.Decode(ms.ToArray());
         Assert.Equal(30, d.Frames.Count);
         Assert.Equal(200, d.Frames.Sum(f => f.DelayCs));
+    }
+
+    [Fact]
+    public void GifPictureLongerThanAGifCanSayDoesNotStretchTheNextOnes()
+    {
+        int w = 2, h = 2;
+        using var ms = new MemoryStream();
+        var gif = new GifWriter(ms, w, h);
+        gif.AddFrame(Picture(w, h, (_, _) => 0), w * 4, 1000);  // more than 655.35 s
+        gif.AddFrame(Picture(w, h, (_, _) => 0xFFFFFF), w * 4, 0.5);
+        gif.AddFrame(Picture(w, h, (_, _) => 0), w * 4, 0.5);
+        gif.Finish();
+        var d = GifDecoder.Decode(ms.ToArray());
+        Assert.Equal(new[] { 65535, 50, 50 }, d.Frames.Select(f => f.DelayCs).ToArray());
+    }
+
+    // MARK: estimates and progress
+
+    [Fact]
+    public void BlockedScreenshotsAreCountedEvenWhenTheyHaveNoTime()
+    {
+        // Two screenshots at the same moment: the first lasts no time but is still a blocked one left out.
+        var frames = new List<TimelineFrame> { F(1, 0, "Signal"), F(2, 0, "Signal"), F(3, 10) };
+        var plan = ClipPlan.Make(frames, T0, T0.AddSeconds(20), 1, ClipFormat.Mp4, f => f.AppName == "Signal");
+        Assert.Equal(2, plan.Blocked);
+    }
+
+    [Fact]
+    public void EstimatesGrowWithTheClip()
+    {
+        var shortPlan = ClipPlan.Make(Enumerable.Range(0, 10).Select(i => F(i, i * 2)).ToList(), T0, T0.AddSeconds(20), 1, ClipFormat.Gif);
+        var longPlan = ClipPlan.Make(Enumerable.Range(0, 100).Select(i => F(i, i * 2)).ToList(), T0, T0.AddSeconds(200), 1, ClipFormat.Gif);
+        var a = ClipPlan.Estimate(shortPlan, ClipFormat.Gif, 1280, 800);
+        var b = ClipPlan.Estimate(longPlan, ClipFormat.Gif, 1280, 800);
+        Assert.True(b.Bytes > a.Bytes && b.Seconds > a.Seconds);
+        Assert.True(a.Bytes > 100_000 && a.Bytes < 10_000_000);
+        var v = ClipPlan.Estimate(longPlan, ClipFormat.Mp4, 1920, 1200);
+        Assert.True(v.Bytes > 0 && v.Seconds > 0);
+        Assert.Equal(ClipPlan.Samples(longPlan.Frames).Count, ClipPlan.SampleCount(longPlan.Frames));
+        Assert.StartsWith("0:20 clip · 10 frames · 1280×800 · about ", ClipPlan.Summary(shortPlan, ClipFormat.Gif, 1280, 800));
+        Assert.Equal("820 KB", ClipPlan.FileSize(820 * 1024));
+        Assert.Equal("12.5 MB", ClipPlan.FileSize(12 * 1048576 + 524288));
+    }
+
+    [Fact]
+    public void ProgressTextSaysHowFarAndHowLong()
+    {
+        Assert.Equal("Frame 0 of 600 · 0% · 0:00 elapsed · working out the time left…", ClipPlan.ProgressText(0, 600, 0.2));
+        Assert.Equal("Frame 120 of 600 · 20% · 0:12 elapsed · about 0:48 left", ClipPlan.ProgressText(120, 600, 12));
+        Assert.Equal("Frame 600 of 600 · 100% · 1:00 elapsed · finishing the file…", ClipPlan.ProgressText(600, 600, 60));
     }
 
     // MARK: text on a screenshot

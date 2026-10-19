@@ -149,6 +149,11 @@ sealed class OverlayForm : Form
     {
         model.StopAudio();
         clock.Stop();
+        // Marks and a text selection belong to this visit: next time the bar opens on now, where they can't be seen,
+        // and Esc would clear them instead of closing.
+        model.ClearMarks();
+        model.ClearSelection();
+        selecting = false;
         Hide();
         if (restoreFocus && previousWindow != IntPtr.Zero) Native.SetForegroundWindow(previousWindow);
         previousWindow = IntPtr.Zero;
@@ -476,11 +481,7 @@ sealed class OverlayForm : Form
         }
         bool frame = model.Current != null && model.Image != null && !model.CurrentHidden;
         if (model.HasSelection) Add("Copy Text", "Ctrl+C", model.Copy);
-        if (model.Text is FrameText text && !text.IsEmpty) Add("Copy All Text", "", () =>
-        {
-            Clipboard.SetText(text.AllText);
-            model.ShowNotice("Copied the text on this screenshot");
-        });
+        if (model.Text is FrameText text && !text.IsEmpty) Add("Copy All Text", "", model.CopyAllText);
         Add("Copy Screenshot", model.HasSelection ? "" : "Ctrl+C", () => { model.ClearSelection(); model.Copy(); }, frame);
         Add("Save Screenshot…", "Ctrl+S", () => model.SaveFrame(this), frame);
         menu.Items.Add(new ToolStripSeparator());
