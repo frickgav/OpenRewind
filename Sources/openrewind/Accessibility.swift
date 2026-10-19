@@ -12,16 +12,32 @@ enum Accessibility {
         _ = AXIsProcessTrustedWithOptions(opts)
     }
 
-    /// Only the address of the browser tab on screen, quickly: checked before every screenshot when
-    /// sites are blocked, so a blocked tab is hidden in the same screenshot.
-    static func focusedURL(pid: pid_t) -> String? {
-        focusedWindow(pid: pid, maxNodes: 1500, urlOnly: true).url
+    /// Only the address of the tab a browser window shows, quickly: checked before every screenshot when
+    /// sites are blocked, so a blocked tab is hidden in the same screenshot. `title` picks a window that is
+    /// not in front; nil means the focused one. Pages that are not on the web ("chrome://newtab/") are
+    /// returned as they are; nil means the address could not be read.
+    static func browserURL(pid: pid_t, title: String? = nil) -> String? {
+        guard let app = appElement(pid) else { return nil }
+        let window: AXUIElement?
+        if let title {
+            let windows: [AXUIElement] = attr(app, kAXWindowsAttribute) ?? []
+            window = windows.first { (attr($0, kAXTitleAttribute) as String?) == title }
+        } else {
+            window = attr(app, kAXFocusedWindowAttribute)
+        }
+        guard let window else { return nil }
+        return walk(window, maxNodes: 1500, maxChars: 0, urlOnly: true).url
     }
 
     /// Text of the focused window, and an address to come back to it: the page address when the
     /// window is a browser, or the open file (file://) when the app shows a document (Pages, Preview, Xcode).
-    static func focusedWindow(pid: pid_t, maxNodes: Int = 4000, maxChars: Int = 60_000, urlOnly: Bool = false) -> (text: String?, url: String?) {
-        guard isTrusted else { return (nil, nil) }
+    static func focusedWindow(pid: pid_t, maxNodes: Int = 4000, maxChars: Int = 60_000) -> (text: String?, url: String?) {
+        guard let app = appElement(pid), let window: AXUIElement = attr(app, kAXFocusedWindowAttribute) else { return (nil, nil) }
+        return walk(window, maxNodes: maxNodes, maxChars: maxChars, urlOnly: false)
+    }
+
+    private static func appElement(_ pid: pid_t) -> AXUIElement? {
+        guard isTrusted else { return nil }
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.5)
         // Chromium browsers (Chrome, Arc, Dia, Edge, Brave) build the page tree only when asked. Ask once per app.
@@ -29,7 +45,11 @@ enum Accessibility {
             askedForTree.insert(pid)
             AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         }
-        guard let window: AXUIElement = attr(app, kAXFocusedWindowAttribute) else { return (nil, nil) }
+        return app
+    }
+
+    /// Walks the window's tree for its text and address. `urlOnly` stops at the address and reads no text.
+    private static func walk(_ window: AXUIElement, maxNodes: Int, maxChars: Int, urlOnly: Bool) -> (text: String?, url: String?) {
 
         var lines: [String] = []
         var seen = Set<String>()
@@ -37,13 +57,13 @@ enum Accessibility {
         var visited = 0
         var url: String?
         var stack: [(AXUIElement, Int)] = [(window, 0)]
-        while let (el, depth) = stack.popLast(), visited < maxNodes, chars < maxChars, !(urlOnly && url != nil) {
+        while let (el, depth) = stack.popLast(), visited < maxNodes, urlOnly || chars < maxChars, !(urlOnly && url != nil) {
             visited += 1
             let role: String = attr(el, kAXRoleAttribute) ?? ""
             if role == "AXSecureTextField" { continue }  // never read password fields
             // Safari, Chrome, Arc, Dia, Edge, Brave and Firefox put the tab's address on the page's web area.
             // The first one found is the top page (iframes sit deeper in the tree).
-            if url == nil, role == "AXWebArea", let u = webURL(el) { url = u }
+            if url == nil, role == "AXWebArea", let u = urlOnly ? pageURL(el) : webURL(el) { url = u }
             for key in urlOnly ? [] : [kAXValueAttribute, kAXTitleAttribute, kAXDescriptionAttribute] {
                 if let s: String = attr(el, key) {
                     let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -59,6 +79,13 @@ enum Accessibility {
         if url == nil { url = documentURL(window) }
         let text = lines.joined(separator: "\n")
         return (text.count >= 20 ? text : nil, url)
+    }
+
+    /// Any page address, web or not ("chrome://newtab/"), for telling which site a tab shows.
+    private static func pageURL(_ el: AXUIElement) -> String? {
+        var v: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, "AXURL" as CFString, &v) == .success else { return nil }
+        return (v as? URL)?.absoluteString ?? (v as? String)
     }
 
     /// Only web pages. Apps built on web views (Claude, Slack) report internal file:// pages, which cannot be reopened.

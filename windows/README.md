@@ -63,7 +63,9 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   they are on screen, and their text is never saved. First launch asks what to block (password
   managers, money apps, private browsing windows and bank sites are ticked). Words in the list
   hide any window whose title has them. Websites and links hide a browser window while its tab in
-  front shows them (Add sites… lists the sites and pages you visited lately).
+  front shows them, in front or behind other windows; a window's address is read again whenever its
+  title changes, and a window whose new address can't be read is hidden too (Add sites… lists the
+  sites and pages you visited lately).
   `OPENREWIND_EXCLUDE` adds more app names.
 - **Settings → Show Tutorial** walks through the timeline again; **Run Setup Again…** reopens setup.
 - Log: `%USERPROFILE%\.openrewind\openrewind.log`.

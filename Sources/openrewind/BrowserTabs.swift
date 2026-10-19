@@ -11,7 +11,7 @@ enum BrowserTabs {
     ]
     private static let safari: Set<String> = ["com.apple.Safari", "com.apple.SafariTechnologyPreview"]
 
-    /// Browsers whose tab address is read from the page (see Accessibility.focusedURL), for blocked sites.
+    /// Browsers whose tab address is read from the page (see Accessibility.browserURL), for blocked sites.
     private static let others: Set<String> = [
         "company.thebrowser.Browser", "company.thebrowser.dia", "org.mozilla.firefox", "org.mozilla.firefoxdeveloperedition",
         "org.mozilla.nightly", "app.zen-browser.zen", "com.kagi.kagimacOS", "ai.perplexity.comet", "com.operasoftware.OperaGX",

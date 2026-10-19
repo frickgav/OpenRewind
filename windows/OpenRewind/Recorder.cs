@@ -58,8 +58,12 @@ sealed class Recorder
         // Our own timeline is open: nothing new to record.
         if (Capture.IsOwnWindow(win)) return;
         var list = Blocklist.Current;
-        // Blocked sites: which tab the browser in front shows, read just before the screenshot.
-        if (list.Sites.Count > 0 && UiaText.IsBrowser(win.ExePath)) siteWindows.Saw(win.Hwnd, UiaText.Url(win.Hwnd));
+        // Blocked sites: which tab each browser window shows, read just before the screenshot.
+        if (list.Sites.Count > 0)
+        {
+            Redactor.ReadSites(siteWindows, win.Hwnd);
+            if (UiaText.IsBrowser(win.ExePath)) siteWindows.Saw(win.Hwnd, win.WindowName, UiaText.Url(win.Hwnd));
+        }
         var screen = Screen.FromPoint(Cursor.Position);
         var wins = Redactor.Windows(list, siteWindows);
         using var image = Capture.Screenshot(screen);
@@ -93,7 +97,7 @@ sealed class Recorder
             // The tab changed to a blocked site after the check above, so the screenshot is not blurred: drop it.
             if (Blocklist.Current.BlocksUrl(url))
             {
-                siteWindows.Saw(window.Hwnd, url);
+                siteWindows.Saw(window.Hwnd, window.WindowName, url);
                 return null;
             }
         }
