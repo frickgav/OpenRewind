@@ -643,6 +643,26 @@ enum AIFormat {
                        usage: AIUsage(input: num(u["promptTokenCount"]), output: num(u["candidatesTokenCount"]) + num(u["thoughtsTokenCount"])))
     }
 
+    // MARK: custom servers
+
+    /// An http:// address that leaves this computer and its network, where the key and history would
+    /// travel unencrypted. Loopback, .local names and private or link-local addresses are fine.
+    static func isPlainHTTPRemote(_ address: String) -> Bool {
+        guard let u = URL(string: address.trimmingCharacters(in: .whitespaces)), u.scheme?.lowercased() == "http",
+              let raw = u.host?.lowercased(), !raw.isEmpty else { return false }
+        let host = raw.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if host.contains(":") { return !(host == "::1" || host.hasPrefix("fe80:") || host.hasPrefix("fc") || host.hasPrefix("fd")) }
+        if host == "localhost" || host.hasSuffix(".localhost") || host.hasSuffix(".local") || !host.contains(".") { return false }
+        let p = host.split(separator: ".").compactMap { Int($0) }
+        guard p.count == 4 else { return true }
+        switch (p[0], p[1]) {
+        case (127, _), (10, _), (192, 168), (169, 254): return false
+        case (172, 16...31): return false
+        case (100, 64...127): return false  // carrier-grade NAT range, used by Tailscale
+        default: return true
+        }
+    }
+
     // MARK: errors
 
     static func errorMessage(status: Int, json: [String: Any]?, raw: Data) -> String {
