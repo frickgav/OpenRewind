@@ -21,7 +21,12 @@ final class OnboardingModel: ObservableObject {
     @Published var privateWindows: Bool { didSet { saveChoices() } }
     @Published var bankSites: Bool { didSet { saveChoices() } }
     @Published var picked: Set<String> { didSet { saveChoices() } }
+    @Published var pickingSites = false
+    /// Sites picked here or earlier, not counting the bank sites.
+    @Published var ownSites: [String] = []
     var found: [FoundApp] = []
+    /// For the recent sites list.
+    var db: Database?
 
     /// Called once at the end; true when the user wants the guided tour in the real timeline.
     var finished: (Bool) -> Void = { _ in }
@@ -40,6 +45,7 @@ final class OnboardingModel: ObservableObject {
         bankSites = first || BlockCatalog.bankingSites.allSatisfy { w in list.keywords.contains { $0.caseInsensitiveCompare(w) == .orderedSame } }
         let catalog = Set(BlockCatalog.mac.map { $0.id.isEmpty ? $0.name.lowercased() : $0.id })
         picked = ids.subtracting(catalog)
+        ownSites = Self.ownSites(list)
         launchAtLogin = SMAppService.mainApp.status == .enabled || first
         // Permissions are granted in System Settings; watch for them.
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -84,6 +90,21 @@ final class OnboardingModel: ObservableObject {
         finished(tour)
     }
 
+    static func ownSites(_ list: Blocklist) -> [String] {
+        list.sites.filter { s in !BlockCatalog.bankingDomains.contains { $0.caseInsensitiveCompare(s) == .orderedSame } }
+    }
+
+    /// Block what was picked in the site picker.
+    func addSites(_ rules: [String]) {
+        BlocklistStore.shared.addSites(rules)
+        ownSites = Self.ownSites(BlocklistStore.shared.current)
+    }
+
+    var sitesDetail: String {
+        ownSites.isEmpty ? "Pick from the sites you visit, or type one"
+            : ownSites.prefix(3).joined(separator: ", ") + (ownSites.count > 3 ? " and \(ownSites.count - 3) more" : "")
+    }
+
     /// Write the block choices on this page to the block list recording uses.
     private func saveChoices() {
         let store = BlocklistStore.shared, old = store.current
@@ -103,7 +124,9 @@ final class OnboardingModel: ObservableObject {
 
         var words = old.keywords.filter { w in !BlockCatalog.bankingSites.contains { $0.caseInsensitiveCompare(w) == .orderedSame } }
         if bankSites { words += BlockCatalog.bankingSites }
-        store.save(Blocklist(apps: apps, keywords: words, privateWindows: privateWindows, extraNames: old.extraNames))
+        var sites = Self.ownSites(old)
+        if bankSites { sites += BlockCatalog.bankingDomains }
+        store.save(Blocklist(apps: apps, keywords: words, privateWindows: privateWindows, sites: sites, extraNames: old.extraNames))
     }
 }
 
@@ -118,8 +141,9 @@ enum Onboarding {
         return key.isEmpty ? mods : mods + [key]
     }
 
-    static func show(onDone: @escaping (Bool) -> Void) {
+    static func show(db: Database?, onDone: @escaping (Bool) -> Void) {
         let model = OnboardingModel()
+        model.db = db
         model.finished = { tour in
             SetupWindows.shared.close("onboarding")
             onDone(tour)
@@ -262,6 +286,15 @@ struct OnboardingView: View {
                     CheckRowView(emoji: "💰", title: "Money and crypto apps", detail: "Quicken, Banktivity, Ledger Live, Exodus", on: $model.moneyApps)
                     CheckRowView(emoji: "🕶", title: "Private browsing windows", detail: "Incognito, InPrivate and private windows", on: $model.privateWindows)
                     CheckRowView(emoji: "🏦", title: "Bank and payment websites", detail: "Chase, PayPal, Bank of America, Coinbase and more", on: $model.bankSites)
+                    // Opens the site picker; the tick shows whether any sites are blocked.
+                    CheckRowView(emoji: "🌐", title: "Other websites and links", detail: model.sitesDetail,
+                                 on: Binding(get: { !model.ownSites.isEmpty }, set: { _ in model.pickingSites = true }))
+                }
+                .sheet(isPresented: $model.pickingSites) {
+                    SitePickerView(db: model.db, already: Set(BlocklistStore.shared.current.sites)) { picked in
+                        model.addSites(picked)
+                        model.pickingSites = false
+                    }
                 }
                 .frame(maxWidth: .infinity)
                 VStack(alignment: .leading, spacing: 6) {

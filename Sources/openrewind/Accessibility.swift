@@ -12,9 +12,15 @@ enum Accessibility {
         _ = AXIsProcessTrustedWithOptions(opts)
     }
 
+    /// Only the address of the browser tab on screen, quickly: checked before every screenshot when
+    /// sites are blocked, so a blocked tab is hidden in the same screenshot.
+    static func focusedURL(pid: pid_t) -> String? {
+        focusedWindow(pid: pid, maxNodes: 1500, urlOnly: true).url
+    }
+
     /// Text of the focused window, and an address to come back to it: the page address when the
     /// window is a browser, or the open file (file://) when the app shows a document (Pages, Preview, Xcode).
-    static func focusedWindow(pid: pid_t, maxNodes: Int = 4000, maxChars: Int = 60_000) -> (text: String?, url: String?) {
+    static func focusedWindow(pid: pid_t, maxNodes: Int = 4000, maxChars: Int = 60_000, urlOnly: Bool = false) -> (text: String?, url: String?) {
         guard isTrusted else { return (nil, nil) }
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.5)
@@ -31,14 +37,14 @@ enum Accessibility {
         var visited = 0
         var url: String?
         var stack: [(AXUIElement, Int)] = [(window, 0)]
-        while let (el, depth) = stack.popLast(), visited < maxNodes, chars < maxChars {
+        while let (el, depth) = stack.popLast(), visited < maxNodes, chars < maxChars, !(urlOnly && url != nil) {
             visited += 1
             let role: String = attr(el, kAXRoleAttribute) ?? ""
             if role == "AXSecureTextField" { continue }  // never read password fields
             // Safari, Chrome, Arc, Dia, Edge, Brave and Firefox put the tab's address on the page's web area.
             // The first one found is the top page (iframes sit deeper in the tree).
             if url == nil, role == "AXWebArea", let u = webURL(el) { url = u }
-            for key in [kAXValueAttribute, kAXTitleAttribute, kAXDescriptionAttribute] {
+            for key in urlOnly ? [] : [kAXValueAttribute, kAXTitleAttribute, kAXDescriptionAttribute] {
                 if let s: String = attr(el, key) {
                     let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
                     if t.count > 1, !seen.contains(t) {
