@@ -4,10 +4,12 @@ import SQLite3
 
 /// What the AI can look up in the local database. A whole day of screen text is far too much to
 /// send, so the model asks for summaries and searches instead, and every answer is capped in size.
-/// Blocked apps and sites are never stored, so they never show up here either.
-/// The Windows app has the same tools in AiTools.cs.
+/// Frames of apps, sites and windows on the block list are left out of every answer, including
+/// ones saved before the user blocked them. The Windows app has the same tools in AiTools.cs.
 struct AITools {
     let db: Database
+    /// What to leave out. The chat sets it from the current block list before each question.
+    var blocklist = Blocklist(apps: [], keywords: [], privateWindows: false)
     /// Reads a frame's screenshot as a small JPEG. Set only while the user has turned on
     /// "Let AI look at screenshots"; nil means view_screenshot is not offered at all.
     var screenshots: ((Frame) -> Data?)?
@@ -39,6 +41,9 @@ struct AITools {
         guard let screenshots else { return ("Error: the user has not allowed screenshots. Use the text tools.", nil) }
         guard let t = AITime.parse(call.args["time"]) else { return ("Error: time is required, e.g. '2026-10-18 14:30'.", nil) }
         guard let f = db.frame(near: t) else { return ("No screenshot was saved near that time.", nil) }
+        if hides(app: f.appName, window: f.windowName, url: f.browserUrl) {
+            return ("That moment is from a blocked app or site, so its screenshot can't be shown.", nil)
+        }
         var what = "Screenshot from \(AITime.label(f.timestamp)) \(f.appName)"
         if !f.windowName.isEmpty { what += " — “\(f.windowName)”" }
         what += " (link: \(AITime.link(f.timestamp)))"
@@ -107,7 +112,11 @@ struct AITools {
         case "activity_summary":
             let start = AITime.parse(a["start"]) ?? Calendar.current.startOfDay(for: Date())
             let end = AITime.parse(a["end"]) ?? Date()
-            out = AIActivity.summary(rows: db.activityRows(from: start, to: end), start: start, end: end)
+            // Time in a blocked app still counts, as on the timeline, but not its window titles or addresses.
+            let rows = db.activityRows(from: start, to: end).map { r in
+                hides(app: r.app, window: r.window, url: r.url) ? ActivityRow(time: r.time, app: r.app, window: "", url: "") : r
+            }
+            out = AIActivity.summary(rows: rows, start: start, end: end)
         case "search_screen":
             out = searchScreen(a)
         case "search_audio":
@@ -121,6 +130,12 @@ struct AITools {
             out = "Error: unknown tool \(call.name)."
         }
         return AITools.cap(out)
+    }
+
+    /// True for a frame the block list covers now, by app name, private-window title, or a blocked
+    /// word in the title or web address.
+    func hides(app: String, window: String, url: String) -> Bool {
+        blocklist.blocksWindow(bundleID: nil, appName: app, title: window) || Blocklist.hasKeyword(url, blocklist.keywords)
     }
 
     static func cap(_ s: String, _ limit: Int = resultLimit) -> String {
@@ -137,7 +152,7 @@ struct AITools {
         s.limit = limit * 4
         let (rows, total) = db.search(s)
         var seen = Set<String>(), lines: [String] = []
-        for f in rows {
+        for f in rows where !hides(app: f.appName, window: f.windowName, url: f.browserUrl) {
             let snip = AITools.snippet(f.text, query: q)
             // While typing, many frames in a row show the same thing.
             guard seen.insert("\(f.appName)|\(f.windowName)|\(snip.prefix(80))").inserted else { continue }
@@ -171,7 +186,7 @@ struct AITools {
         s.startTime = Time.iso.string(from: start)
         s.endTime = Time.iso.string(from: end)
         s.limit = 400
-        let rows = db.search(s).rows.reversed().filter { !$0.text.isEmpty }
+        let rows = db.search(s).rows.reversed().filter { !$0.text.isEmpty && !hides(app: $0.appName, window: $0.windowName, url: $0.browserUrl) }
         // Skip frames whose text did not change.
         var unique: [Frame] = []
         for f in rows where unique.last?.text != f.text { unique.append(f) }
