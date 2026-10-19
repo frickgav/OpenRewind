@@ -23,8 +23,8 @@ sealed class JournalForm : Form
     JournalRecap? recap;
     /// Bumped on every load, so a slow load for a day the user already left is dropped.
     int loadId;
-    CancellationTokenSource? writing;
-    DateTime writingDay;
+    /// Why the stats could not be worked out (a busy database), if they could not.
+    string? statsError;
     string? error;
     List<AiChatItem> lookups = new();
 
@@ -72,7 +72,7 @@ sealed class JournalForm : Form
         next.Click += (_, _) => ShowDay(day.AddDays(1));
         today.Click += (_, _) => ShowDay(DateTime.Today);
         picker.ValueChanged += (_, _) => { if (picker.Value.Date != day) ShowDay(picker.Value.Date); };
-        copy.Click += (_, _) => { if (Markdown() is string md) { Clipboard.SetText(md); Flash(copy, "Copied"); } };
+        copy.Click += (_, _) => { if (Markdown() is string md) Flash(copy, CopyText(md) ? "Copied" : "Could not copy"); };
         save.Click += (_, _) => SaveMarkdown();
         bar.Layout += (_, _) =>
         {
@@ -96,15 +96,35 @@ sealed class JournalForm : Form
         page.Resize += (_, _) => Fit();
         Controls.Add(page);
         Controls.Add(bar);
+        JournalJobs.Changed += OnJob;
         ShowDay(DateTime.Today);
     }
 
+    /// A recap closing the window does not stop (it is being paid for) keeps writing in JournalJobs.
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
-        writing?.Cancel();
+        JournalJobs.Changed -= OnJob;
         open = null;
         base.OnFormClosed(e);
     }
+
+    void OnJob(string key, JournalWriter.Result? r)
+    {
+        if (IsDisposed) return;
+        if (r != null && key == Journal.Key(day)) { error = r.Error; lookups = r.Lookups; }
+        recap = db.Recap(Journal.Key(day));
+        Render();
+    }
+
+    /// The clipboard can be held by another app for a moment.
+    static bool CopyText(string s)
+    {
+        try { Clipboard.SetText(s); return true; }
+        catch (ExternalException e) { Log.Write($"copy failed: {e.Message}"); return false; }
+    }
+
+    /// The recap as it may be shown and exported: not one written before the block list grew.
+    JournalRecap? ShownRecap => recap != null && recap.CurrentFor(tools.Blocked ?? Blocklist.Current) ? recap : null;
 
     /// Shows a day: its saved recap right away, its stats once they are worked out.
     void ShowDay(DateTime d)
@@ -117,16 +137,31 @@ sealed class JournalForm : Form
         today.Enabled = d != DateTime.Today;
         recap = db.Recap(Journal.Key(d));
         stats = null;
+        statsError = null;
         Render();
         var id = ++loadId;
         Task.Run(() => db.JournalStats(d, tools)).ContinueWith(t =>
         {
-            if (IsDisposed || t.Result == null) return;
-            BeginInvoke(() => { if (id == loadId) { stats = t.Result; Render(); } });
-        }, TaskContinuationOptions.OnlyOnRanToCompletion);
+            if (IsDisposed) return;
+            try
+            {
+                BeginInvoke(() =>
+                {
+                    if (id != loadId || IsDisposed) return;
+                    if (t.IsCompletedSuccessfully) stats = t.Result;
+                    else
+                    {
+                        statsError = t.Exception?.GetBaseException().Message ?? "it was stopped";
+                        Log.Write($"journal stats for {Journal.Key(d)} failed: {statsError}");
+                    }
+                    Render();
+                });
+            }
+            catch (InvalidOperationException) { }  // the window closed meanwhile
+        });
     }
 
-    string? Markdown() => stats == null ? null : Journal.Markdown(stats, recap);
+    string? Markdown() => stats == null ? null : Journal.Markdown(stats, ShownRecap);
 
     void SaveMarkdown()
     {
@@ -152,28 +187,14 @@ sealed class JournalForm : Form
 
     // MARK: AI recap
 
+    /// Write Recap and Rewrite. The page updates through OnJob.
     async void WriteRecap()
     {
-        var ai = settings.Ai();
-        if (writing != null || !ai.IsReady) return;
-        var d = writingDay = day;
-        writing = new CancellationTokenSource();
+        if (JournalJobs.IsWriting(Journal.Key(day)) || !settings.Ai().IsReady) return;
         error = null;
         lookups = new();
-        Render();
-        var price = settings.AiPriceFor(ai.Model);
-        var r = await JournalWriter.Write(d, new AiClient(ai), tools, price, writing.Token);
-        writing.Dispose();
-        writing = null;
-        settings.AddAiUsage(ai.Kind, r.Usage, r.Cost);
-        if (r.Error == null)
-            db.SaveRecap(new JournalRecap(Journal.Key(d), r.Text, DateTime.UtcNow, ai.Kind.Id(), ai.Model, r.Usage, r.Cost));
-        else Log.Write($"journal recap for {Journal.Key(d)} failed: {r.Error}");
-        if (IsDisposed || d != day) return;
-        error = r.Error;
-        lookups = r.Lookups;
-        recap = db.Recap(Journal.Key(d));
-        Render();
+        try { await JournalJobs.Write(day, settings, db, tools, auto: false); }
+        catch (Exception e) { Log.Write($"journal recap failed: {e.Message}"); }
     }
 
     // MARK: drawing
@@ -186,7 +207,8 @@ sealed class JournalForm : Form
         Add(Words(Journal.DayTitle(day), 20, Ui.Text, bold: true, top: 8));
         if (day == DateTime.Today) Add(Words("Today so far.", 12, Ui.Faint));
         RecapRows();
-        if (stats == null) Add(Words("Adding up the day…", 13, Ui.Faint, top: 18));
+        if (statsError != null) Add(Words($"⚠ Could not add up the day: {statsError}. Try again with ‹ and ›.", 13, Ui.Warn, top: 18));
+        else if (stats == null) Add(Words("Adding up the day…", 13, Ui.Faint, top: 18));
         else
             foreach (var sec in Journal.Sections(stats))
             {
@@ -203,27 +225,32 @@ sealed class JournalForm : Form
     void RecapRows()
     {
         var ai = settings.Ai();
+        var key = Journal.Key(day);
         Add(Words("Recap", 15, Ui.Text, bold: true, top: 16));
-        if (writing != null && writingDay != day)
-            Add(Words($"Writing the recap for {Journal.DayTitle(writingDay)}…", 13.5f, Ui.Dim));
-        else if (writing != null)
+        if (JournalJobs.WritingOtherThan(key) is string other && Journal.FromKey(other) is DateTime od)
+            Add(Words($"Writing the recap for {Journal.DayTitle(od)}…", 12.5f, Ui.Faint));
+        if (JournalJobs.IsWriting(key))
         {
             Add(Words($"Asking {ai.Kind.Title()} to write the recap…", 13.5f, Ui.Dim));
-            Add(Buttons(("Stop", false, () => writing?.Cancel())));
+            Add(Buttons(("Stop", false, () => JournalJobs.Stop(key))));
+        }
+        else if (recap != null && ShownRecap == null)
+        {
+            Add(Words("Your block list changed since this recap was written, so it is hidden: it may mention something you blocked. "
+                     + "Rewrite it to leave that out.", 12.5f, Ui.Dim));
+            if (ai.IsReady) Add(Buttons(("Rewrite", false, WriteRecap)));
         }
         else if (recap != null)
         {
             Add(RecapText(recap.Text));
             var cost = recap.Cost is double c ? $" · {AiPrice.Money(c)}" : "";
-            Add(Words($"Written {recap.Created.ToLocalTime():g} by {AiProviders.FromId(recap.Provider).Title()} · {recap.Model} · "
+            Add(Words($"Written {recap.Created.ToLocalTime():g}{(recap.Partial ? " (before the day was over)" : "")} by {AiProviders.FromId(recap.Provider).Title()} · {recap.Model} · "
                      + $"{recap.Usage.Input:N0} tokens in, {recap.Usage.Output:N0} out{cost}", 11.5f, Ui.Faint));
             if (ai.IsReady) Add(Buttons(("Rewrite", false, WriteRecap)));
         }
         else if (ai.IsReady)
         {
-            Add(Words($"{ai.Kind.Title()} can write what you worked on, who you talked to and what is still open. "
-                     + "This sends parts of this day's history to it with your key: app and window names, web addresses, transcripts and some screen text. "
-                     + "Blocked apps and sites are left out. The cost is shown when it is done.", 12.5f, Ui.Dim));
+            Add(Words(Journal.RecapConsent(ai.Kind.Title()), 12.5f, Ui.Dim));
             Add(Buttons(("Write Recap", true, WriteRecap)));
         }
         else
@@ -235,12 +262,14 @@ sealed class JournalForm : Form
         if (lookups.Count > 0) Add(SentRow());
         var auto = new CheckBox
         {
-            Text = "Write each day's recap automatically", Checked = settings.JournalAutoRecap, Font = Ui.F(12.5f * k, true), ForeColor = Ui.Text,
+            Text = $"Write each day's recap automatically with {ai.Kind.Title()}", Checked = settings.JournalAutoRecapOn(ai), Font = Ui.F(12.5f * k, true), ForeColor = Ui.Text,
             AutoSize = true, Margin = new Padding(0, (int)(12 * k), 0, 0),
         };
-        auto.CheckedChanged += (_, _) => { settings.SetJournalAutoRecap(auto.Checked); };
+        auto.CheckedChanged += (_, _) => { settings.SetJournalAutoRecap(auto.Checked); BeginInvoke(Render); };
         Add(auto);
-        Add(Words("Off by default, since it spends tokens. When on, each day's recap is written once, the first time OpenRewind is running after the day ends, using your AI provider.", 11.5f, Ui.Faint));
+        Add(Words(Journal.AutoRecapInfo(ai.Kind.Title()), 11.5f, Ui.Faint));
+        if (settings.JournalAutoRecap && !settings.JournalAutoRecapOn(ai))
+            Add(Words($"Paused: it was turned on for another AI provider. Turn it on again to use {ai.Kind.Title()}.", 11.5f, Ui.Warn));
     }
 
     /// The recap as the model wrote it; only timeline links open.
@@ -258,7 +287,10 @@ sealed class JournalForm : Form
         foreach (var link in links) l.Links.Add(link.Start, link.Length, link.Url);
         l.LinkClicked += (_, e) => { if (e.Link?.LinkData is string u && AiTime.FromLink(u) is DateTime at) openMoment(at); };
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Copy", null, (_, _) => Clipboard.SetText(text));
+        menu.Items.Add("Copy", null, (_, _) =>
+        {
+            if (!CopyText(text)) MessageBox.Show(this, "Another app is using the clipboard. Try again.", "Could not copy", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        });
         l.ContextMenuStrip = menu;
         return l;
     }

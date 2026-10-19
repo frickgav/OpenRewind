@@ -125,35 +125,42 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Write Each Day's Recap Automatically: yesterday's recap, once, the first time the app runs
-    /// after the day ended. Days with nothing recorded, or with a recap already, are skipped.
+    /// Write Each Day's Recap Automatically: yesterday's recap, the first time the app runs after
+    /// the day ended, for the AI provider it was turned on for. A failed try is retried on the next
+    /// check, up to `Journal.autoAttempts` times. Days with nothing recorded, or with a recap of the
+    /// whole day already, are skipped; a recap written by hand partway through the day is replaced.
     private func writeDueRecap() {
-        guard JournalSettings.autoRecap, !writingRecap else { return }
         let s = AISettings.load()
-        guard s.isReady, let key = Journal.autoRecapDay(now: Date(), lastDone: JournalSettings.lastAutoDay),
+        guard !writingRecap, s.isReady, JournalSettings.isOn(for: s),
+              let key = Journal.autoRecapDue(now: Date(), lastDone: JournalSettings.lastAutoDay,
+                                             attemptDay: JournalSettings.attemptDay, attempts: JournalSettings.attempts),
               let day = Journal.date(fromKey: key) else { return }
-        JournalSettings.lastAutoDay = key
-        let db = engine.db
-        guard db.recap(day: key) == nil else { return }
+        let db = engine.db, j = journal
+        guard !j.writing.contains(key) else { return }
+        if let r = db.recap(day: key), !r.partial { JournalSettings.lastAutoDay = key; return }
         writingRecap = true
         let tools = JournalModel.tools(db), price = AISettings.price(for: s.model)
         Task { @MainActor [weak self] in
             defer { self?.writingRecap = false }
             let stats = await Task.detached { db.journalStats(day: day, tools: tools) }.value
-            guard !stats.isEmpty else { return }
-            let r = await JournalWriter.write(day: day, client: AIClient(settings: s), tools: tools, price: price)
-            AISettings.add(r.usage, cost: r.cost, to: s.kind)
-            if let e = r.error { log("automatic journal recap for \(key) failed: \(e)"); return }
-            db.saveRecap(JournalRecap(day: key, text: r.text, created: Date(), provider: s.kind.rawValue,
-                                      model: s.model, usage: r.usage, cost: r.cost))
+            guard !stats.isEmpty else { JournalSettings.lastAutoDay = key; return }
+            // Counted before the request, so one that never comes back still counts.
+            JournalSettings.attempts = JournalSettings.attemptDay == key ? JournalSettings.attempts + 1 : 1
+            JournalSettings.attemptDay = key
+            guard let r = await j.writeRecap(for: day, auto: true) else { return }
+            if let e = r.error {
+                log("automatic journal recap for \(key) failed (try \(JournalSettings.attempts) of \(Journal.autoAttempts)): \(e)")
+                return
+            }
+            JournalSettings.lastAutoDay = key
             log("wrote the journal recap for \(key) (\(r.usage.describe(price)))")
-            if let j = self?.journal, Journal.key(j.day) == key { j.reload() }
         }
     }
 
     @objc private func toggleAutoRecap() {
-        JournalSettings.autoRecap.toggle()
-        journal.autoRecap = JournalSettings.autoRecap
+        let s = AISettings.load()
+        JournalSettings.set(!JournalSettings.isOn(for: s), for: s)
+        journal.autoRecap = JournalSettings.isOn(for: s)
     }
 
     /// The first-run setup; ends in the guided tour if the user asks for it.
@@ -329,8 +336,9 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         m.addItem(action("Blocked Apps & Sites…", #selector(showBlockedApps)))
         m.addItem(action("AI Settings…", #selector(showAISettings)))
         let autoRecap = action("Write Each Day's Recap Automatically", #selector(toggleAutoRecap))
-        autoRecap.state = JournalSettings.autoRecap ? .on : .off
-        autoRecap.toolTip = "Off by default, since it spends tokens. Once a day, the AI provider in AI Settings writes the previous day's journal recap."
+        let ai = AISettings.load()
+        autoRecap.state = JournalSettings.isOn(for: ai) ? .on : .off
+        autoRecap.toolTip = Journal.autoRecapInfo(ai.kind.title)
         m.addItem(autoRecap)
         m.addItem(.separator())
         let sc = Shortcut.load(defaults)
@@ -601,12 +609,13 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func deleteAll(_ sender: NSMenuItem) {
         let screen = sender.tag != 2, audio = sender.tag != 1
         let what = screen && audio ? "all screenshots and audio" : (screen ? "all screenshots" : "all audio recordings")
-        guard confirm("Delete \(what)?", "This removes \(what) from this Mac. This cannot be undone.",
+        guard confirm("Delete \(what)?", "This removes \(what) from this Mac, and every journal recap. This cannot be undone.",
                       button: "Delete Everything") else { return }
         let db = engine.db, now = Date()
         DispatchQueue.global(qos: .userInitiated).async {
             let f = screen ? db.deleteFrames(from: nil, to: now) : 0
             let a = audio ? db.deleteAudio(from: nil, to: now) : 0
+            db.deleteRecaps(from: nil, to: nil)  // each one was written from both
             db.compact()
             log("deleted \(f) screenshots, \(a) audio clips (all)")
         }

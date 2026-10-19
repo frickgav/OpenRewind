@@ -196,7 +196,7 @@ public static class Journal
     public static string Escape(string s)
     {
         var sb = new StringBuilder(s.Length);
-        foreach (var c in s)
+        foreach (var c in s.Replace("\r\n", "\n"))
         {
             if (c is '\r' or '\n') { sb.Append(' '); continue; }  // one bullet per line
             if (c is '\\' or '*' or '_' or '[' or ']' or '`' or '<' or '>' or '#' or '|') sb.Append('\\');
@@ -458,6 +458,6 @@ public sealed partial class Database
         var end = dayEnd < now ? dayEnd : now;
         // ActivityRows includes `end`; the next day's first frame belongs to the next day.
         var rows = ActivityRows(start, dayEnd).Where(r => r.Time < dayEnd).ToList();
-        return Journal.Compute(day, rows, AudioClipTimes(start, dayEnd), tools.HidesApp, r => tools.Hides(r.App, r.Window, r.Url), end > start ? end : dayEnd);
+        return Journal.Compute(day, rows, AudioClipTimes(start, dayEnd), tools.BlocksAppName, r => tools.Hides(r.App, r.Window, r.Url), end > start ? end : dayEnd);
     }
 }

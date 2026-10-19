@@ -39,7 +39,8 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
 - **Ask AI…** answers questions about your history with your own key, and **Journal…** shows one
   page per day: top apps, sites and windows worked out on this PC, plus an AI recap when you ask for
   one (see [Ask AI](../README.md#ask-ai) and [Journal](../README.md#journal)).
-  **Settings → Write Each Day's Recap Automatically** is off by default, since it spends tokens.
+  **Settings → Write Each Day's Recap Automatically** is off by default, since it spends tokens;
+  when on, it sends yesterday's history to the AI provider it was turned on for, once a day.
 - **Settings → Timeline Shortcut**: **Change Shortcut…** waits for the new key combination
   (Ctrl, Alt or Win with a key, or an F-key alone); **Reset** goes back to Ctrl+Alt+T.
 - **Settings → Screenshot Resolution**: Full (100%), High (75%), Medium (50%, default) or
