@@ -76,8 +76,15 @@ final class TimelineModel: ObservableObject {
         if let img = thumbCache[f.id] { return (f, img) }
         let opts = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 480,
                      kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary
-        guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: f.path) as CFURL, nil),
-              let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts) else { return (f, nil) }
+        let thumb: CGImage?
+        if FrameStore.split(f.path).index != nil {
+            // A frame inside a video chunk: decode it and shrink it.
+            thumb = FrameStore.image(f.path).map { ImageTools.scaled($0, by: 480 / CGFloat(max($0.width, $0.height))) }
+        } else {
+            thumb = CGImageSourceCreateWithURL(URL(fileURLWithPath: f.path) as CFURL, nil)
+                .flatMap { CGImageSourceCreateThumbnailAtIndex($0, 0, opts) }
+        }
+        guard let cg = thumb else { return (f, nil) }
         let img = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
         thumbCache[f.id] = img
         thumbOrder.append(f.id)
@@ -270,7 +277,8 @@ final class TimelineModel: ObservableObject {
 
     private func loadImage(_ f: TimelineFrame) -> NSImage? {
         if let img = imageCache[f.id] { return img }
-        guard let img = NSImage(contentsOfFile: f.path) else { return nil }
+        guard let cg = FrameStore.image(f.path) else { return nil }
+        let img = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
         imageCache[f.id] = img
         cacheOrder.append(f.id)
         if cacheOrder.count > 24 { imageCache.removeValue(forKey: cacheOrder.removeFirst()) }

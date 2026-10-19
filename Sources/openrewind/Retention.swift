@@ -31,11 +31,17 @@ extension Database {
     /// Delete frames with `from <= timestamp < to`. nil = open end. Returns frames deleted.
     @discardableResult
     func deleteFrames(from: Date?, to: Date?) -> Int {
+        FrameStore.packLock.lock(); defer { FrameStore.packLock.unlock() }
         let (whereSQL, args) = Self.range("timestamp", from, to)
         let paths = strings("SELECT snapshot_path FROM frames \(whereSQL)", args)
         guard !paths.isEmpty else { return 0 }
         run("DELETE FROM frames \(whereSQL)", args)  // FTS rows go with it (trigger frames_ad)
-        Self.removeFiles(paths)
+        let refs = paths.map(FrameStore.split)
+        Self.removeFiles(refs.filter { $0.index == nil }.map { $0.file })
+        // Frames inside video chunks: the rest of each chunk is rewritten without them.
+        let chunks = Set(refs.filter { $0.index != nil }.map { $0.file })
+        for c in chunks { FramePacker.dropDeleted(from: c, db: self) }
+        Self.removeFiles(Array(chunks))
         return paths.count
     }
 

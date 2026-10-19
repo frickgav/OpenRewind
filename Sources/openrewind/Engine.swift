@@ -7,6 +7,8 @@ final class Engine {
     let config: Config
     let db: Database
     let recorder: Recorder
+    /// Turns screenshots older than a few minutes into video chunks.
+    let packer: FramePacker
     private(set) var transcriber: Transcriber?
     private var server: Server?
     private var screenTask: Task<Void, Never>?
@@ -25,6 +27,7 @@ final class Engine {
         self.config = config
         self.db = db
         self.recorder = Recorder(config: config, db: db)
+        self.packer = FramePacker(db: db)
     }
 
     var serverOn: Bool { server != nil }
@@ -55,6 +58,7 @@ final class Engine {
             if !Capture.hasScreenPermission { Capture.requestScreenPermission() }
             let r = recorder
             screenTask = Task.detached { await r.run() }
+            packer.start()
             log("screen recording on")
         } else if !on, let t = screenTask {
             t.cancel()

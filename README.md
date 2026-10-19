@@ -68,8 +68,11 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
   default is every 2 s, and the screen you stop on is always saved.
 - Reads text from the focused window's **accessibility tree**. Falls back to
   **Apple Vision OCR**. Never reads password fields.
-- Saves a HEIC (about half the size of a JPEG; JPEG on Macs that cannot encode
-  HEIC) and a row in SQLite with an **FTS5** index.
+- Saves a HEIC (JPEG on Macs that cannot encode HEIC) and a row in SQLite with
+  an **FTS5** index. Screenshots older than 10 minutes are packed into **HEVC
+  video chunks** (up to 300 frames each, a keyframe every 15), which is many
+  times smaller because most of the screen stays the same between frames.
+  Deleting frames rewrites their chunk without them.
 - Can serve a local API + search page at `http://127.0.0.1:3031` (off in the app until you turn it on).
 - **Blocked apps** are blurred in every screenshot, wherever they are on screen, and their text
   is never saved. First launch asks what to block (password managers, money apps, private
@@ -304,7 +307,7 @@ Response: `{"data":[{"type":"OCR","content":{"frame_id","text","timestamp","app_
 
 ## Data
 
-`~/.openrewind/db.sqlite`, `~/.openrewind/data/<date>/*.heic` (`*.jpg` on Windows and older recordings), and
+`~/.openrewind/db.sqlite`, `~/.openrewind/data/<date>/*.mp4` and `*.heic` (`*.jpg` on Windows and older recordings), and
 `~/.openrewind/data/audio/<date>/*.wav`.
 Delete the folder to wipe everything, or from the terminal:
 
@@ -320,7 +323,7 @@ Delete the folder to wipe everything, or from the terminal:
 - Meeting summaries (Ask AI can summarize transcripts when asked, but nothing runs on its own)
 - UI input events (clicks, keys)
 - Browser URL per frame
-- Video chunk encoding (ffmpeg) instead of JPEGs
+- Video chunks on Windows (it still keeps JPEGs)
 - Plugins
 
 ## License

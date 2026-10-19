@@ -15,6 +15,8 @@ Usage:
                              Transcribe an audio file and store it (for testing)
   openrewind delete <15m|1h|today|all|older:week>
                              Delete recordings in that range
+  openrewind pack [--now]
+                             Pack screenshots into video now (--now: also the last 10 min)
   openrewind doctor          Check and request permissions
 
 Options:
@@ -154,6 +156,11 @@ case "delete":
     let f = args.contains("--audio-only") ? 0 : db.deleteFrames(from: from, to: to)
     let a = args.contains("--screen-only") ? 0 : db.deleteAudio(from: from, to: to)
     print("deleted \(f) screenshots, \(a) audio clips")
+
+case "pack":
+    let before = db.stats().count
+    FramePacker(db: db).packOld(minAge: args.contains("--now") ? 0 : FramePacker.minAge)
+    print("done (\(before) frames in the database)")
 
 case "doctor":
     print("data dir:        \(config.home.path)")
