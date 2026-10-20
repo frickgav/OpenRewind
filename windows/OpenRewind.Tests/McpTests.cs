@@ -235,17 +235,23 @@ public class McpTests : IDisposable
     [Fact]
     public void SummaryNamesBlockedAppsOnlyAsBlockedApp()
     {
-        var t = DateTime.UtcNow.AddMinutes(-20);
+        // A fixed range around the frames, not "today", so it also works just after midnight.
+        var t = DateTime.UtcNow.AddHours(-2);
         for (int i = 0; i < 10; i++) AddFrame(t.AddSeconds(i * 60), "Robinhood", "Portfolio $12,000", "stocks");
         for (int i = 10; i < 20; i++) AddFrame(t.AddSeconds(i * 60), "Notepad", "plan.txt", "plan");
         blocked = new Blocklist(new List<BlockedApp> { new("robinhood", "Robinhood") }, new List<string>(), false);
-        var text = Text(Ask(Server(), Call("activity_summary", new JsonObject { ["start"] = "today" })));
+        JsonObject Range() => new()
+        {
+            ["start"] = McpServer.LocalIso(new DateTimeOffset(t.AddMinutes(-1))),
+            ["end"] = McpServer.LocalIso(new DateTimeOffset(t.AddMinutes(25))),
+        };
+        var text = Text(Ask(Server(), Call("activity_summary", Range())));
         Assert.Contains(AiTools.BlockedAppLabel, text);
         Assert.Contains("Notepad", text);
         Assert.DoesNotContain("Robinhood", text);
         Assert.DoesNotContain("Portfolio", text);
         // The shared lookup does it, so Ask AI inside the app gets the same.
-        var inApp = new AiTools(db) { Blocked = blocked }.Run(new AiToolCall("1", "activity_summary", new JsonObject { ["start"] = "today" }));
+        var inApp = new AiTools(db) { Blocked = blocked }.Run(new AiToolCall("1", "activity_summary", Range()));
         Assert.Contains(AiTools.BlockedAppLabel, inApp);
         Assert.DoesNotContain("Robinhood", inApp);
         Assert.DoesNotContain("Portfolio", inApp);
