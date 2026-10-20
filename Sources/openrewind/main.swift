@@ -47,6 +47,11 @@ if args.contains("-h") || args.contains("--help") || command == "help" {
 }
 
 let config = Config.load(arguments: args)
+// Hidden: writes a test GIF with the clip exporter's GIF encoder, for scripts/gif-check.py in CI.
+if command == "gif-check" {
+    guard let path = args.filter({ !$0.hasPrefix("-") }).dropFirst().first else { print("usage: openrewind gif-check <file.gif>"); exit(2) }
+    do { try GifWriter.writeCheck(to: URL(fileURLWithPath: path)); exit(0) } catch { print("gif-check: \(error)"); exit(1) }
+}
 // Started by an AI app with stdin/stdout as pipes: no menu bar icon, no recording, read-only.
 if command == "mcp" { MCPServer.serveStdio(config: config) }
 if command == "app" { openLogFile(in: config.home) }

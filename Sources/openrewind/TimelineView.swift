@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Shared look for the overlay, in a dark and a light version.
 /// The window appearance picks one (menu bar → Settings → Timeline Look).
-private struct Theme {
+struct Theme {
     let dark: Bool
     init(_ scheme: ColorScheme) { dark = scheme == .dark }
 
@@ -91,6 +91,7 @@ struct TimelineView: View {
                 .allowsHitTesting(false)
             }
             if model.showHelp { helpCard }
+            if let clip = model.exportClip { ExportClipCard(model: model, range: clip).id(clip.id) }
             if model.tutorialStep != nil { TutorialCoach(model: model) { model.tutorialStep = nil } }
         }
         .foregroundColor(theme.text)
@@ -107,6 +108,7 @@ struct TimelineView: View {
                 AppFilterMenu(model: model)
                 Spacer(minLength: 220)
                 if chat != nil { askAIButton }
+                FrameMenu(model: model)
                 IconButton(symbol: "questionmark", help: "Keyboard shortcuts (?)") { model.showHelp.toggle() }
                 IconButton(symbol: "xmark", help: "Close (esc)", action: close)
             }
@@ -289,6 +291,7 @@ struct TimelineView: View {
                         .resizable()
                         .interpolation(.high)
                         .aspectRatio(contentMode: .fit)
+                        .overlay { liveText(img) }
                         .overlay(highlightBoxes)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(theme.stroke))
@@ -314,6 +317,13 @@ struct TimelineView: View {
                         .padding(.bottom, 22)
                 }
             }
+        }
+    }
+
+    /// Select and copy text right on the screenshot (not on ones from apps or sites blocked now).
+    @ViewBuilder private func liveText(_ img: NSImage) -> some View {
+        if let f = model.current, LiveTextOverlay.isSupported, !model.currentHidden {
+            LiveTextOverlay(model: model, frameId: f.id, image: img)
         }
     }
 
@@ -503,6 +513,7 @@ struct TimelineView: View {
             hint(["/"], "search")
             hint(["+", "−"], "zoom")
             hint(["O"], "open")
+            hint(["[", "]"], "mark clip")
             hint(["?"], "all keys")
             hint(["esc"], "close")
         }
@@ -524,6 +535,11 @@ struct TimelineView: View {
         ("", [["N"]], "Go to now"),
         ("Open", [["O"]], "Open the tab, document or window from this moment"),
         ("Filter", [["A"]], "Only this app / all apps again"),
+        ("Copy", [["⌘", "C"]], "Copy the selected text, or the screenshot"),
+        ("", [["drag"]], "Select text on the screenshot"),
+        ("", [["⌘", "S"]], "Save the screenshot as a PNG"),
+        ("Clip", [["["], ["]"]], "Mark where a clip starts / ends"),
+        ("", [["⌘", "E"]], "Export a clip as MP4 or GIF"),
         ("Audio", [["space"]], "Play or pause audio from here"),
         ("Search", [["/"], ["⌘", "F"]], "Search screen text and speech"),
         ("", [["⌘", "G"], ["⇧", "⌘", "G"]], "Older / newer match"),
@@ -555,7 +571,7 @@ struct TimelineView: View {
                         }
                     }
                 }
-                Text("Drag or click the bar to move. Hover it to preview.")
+                Text("Drag or click the bar to move. Hover it to preview.\nThe share button at the top has copy, save and export too.")
                     .font(.system(size: 12)).foregroundColor(theme.dim)
             }
             .padding(24)
@@ -596,7 +612,35 @@ struct Keycap: View {
     }
 }
 
-/// Round icon button for the top bar.
+/// Copy, save and export, as a round button in the top bar.
+struct FrameMenu: View {
+    @Environment(\.colorScheme) private var scheme
+    private var theme: Theme { Theme(scheme) }
+    @ObservedObject var model: TimelineModel
+
+    var body: some View {
+        Menu {
+            Button("Copy Screenshot (or selected text)") { model.copy() }
+            Button("Copy All Text") { model.copyAllText() }
+            Button("Save Screenshot…") { model.saveFrame() }
+            Divider()
+            Button("Mark Clip Start Here") { model.markStart() }
+            Button("Mark Clip End Here") { model.markEnd() }
+            if model.hasMarks { Button("Clear Clip Marks") { model.clearMarks() } }
+            Button("Export Clip…") { model.openExport() }
+        } label: {
+            Image(systemName: "square.and.arrow.up")
+                .font(.system(size: 12, weight: .semibold))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .frame(width: 30, height: 30)
+        .background(Circle().fill(theme.surfaceHi))
+        .help("Copy, save or export (⌘C, ⌘S, ⌘E)")
+    }
+}
+
 /// Pill next to search: "All apps", or the app the timeline is filtered to. Click to choose.
 struct AppFilterMenu: View {
     @Environment(\.colorScheme) private var scheme
@@ -746,6 +790,7 @@ struct TimelineBar: View {
                     for h in model.hits where h.time >= startDate && h.time <= endDate {
                         ctx.fill(Path(CGRect(x: x(h.time) - 1.5, y: 24, width: 3, height: 10)), with: .color(theme.match))
                     }
+                    drawMarks(ctx, size: size, x: x)
                     // "Now" edge.
                     let nx = x(now)
                     if nx < size.width - 1 {
@@ -805,6 +850,24 @@ struct TimelineBar: View {
     private func previewPosition(_ hx: CGFloat, width: CGFloat) -> CGPoint {
         let half = HoverPreview.width / 2 + 4
         return CGPoint(x: min(max(half, hx), width - half), y: -HoverPreview.height / 2 - 10)
+    }
+
+    /// The clip marked with [ and ]: a tinted band between two flags.
+    private func drawMarks(_ ctx: GraphicsContext, size: CGSize, x: (Date) -> CGFloat) {
+        let a = model.clipStart.map(x), b = model.clipEnd.map(x)
+        if let a, let b {
+            ctx.fill(Path(CGRect(x: a, y: 22, width: b - a, height: size.height - 24)), with: .color(Color.accentColor.opacity(0.22)))
+        }
+        for (mx, isStart) in [(a, true), (b, false)] {
+            guard let mx else { continue }
+            ctx.fill(Path(CGRect(x: mx - 1, y: 20, width: 2, height: size.height - 22)), with: .color(.accentColor))
+            var flag = Path()
+            flag.move(to: CGPoint(x: mx, y: 20))
+            flag.addLine(to: CGPoint(x: mx + (isStart ? 7 : -7), y: 24))
+            flag.addLine(to: CGPoint(x: mx, y: 28))
+            flag.closeSubpath()
+            ctx.fill(flag, with: .color(.accentColor))
+        }
     }
 
     /// Tiny "mic" / "sys" keys at the left end of the audio lanes.
