@@ -118,6 +118,10 @@ final class OverlayController {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .scrollWheel]) { [weak self] e in
             guard let self, self.isVisible else { return e }
+            // A Save dialog or alert over the timeline (or any other window) gets its own keys and scrolling:
+            // Return, Esc, arrows and typing a file name must not move the timeline under it.
+            if NSApp.modalWindow != nil { return e }
+            if let w = e.window, w !== self.panel { return e }
             return self.handle(e) ? nil : e
         }
     }
