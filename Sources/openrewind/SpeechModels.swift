@@ -316,9 +316,10 @@ private final class FileFetch: NSObject, URLSessionDataDelegate {
         try? out?.close()
         out = nil
         session.finishTasksAndInvalidate()
+        let code = (error as? URLError)?.code
         if let failure { finish?.resume(throwing: failure) }
-        else if let error as? URLError, error.code == .cancelled { finish?.resume(throwing: CancellationError()) }
-        else if let error as? URLError, error.code == .timedOut {
+        else if code == .cancelled { finish?.resume(throwing: CancellationError()) }
+        else if code == .timedOut {
             finish?.resume(throwing: SpeechModels.DownloadError(
                 "no data from the server for \(Int(SpeechModels.stallSeconds)) seconds; Try Again carries on where it stopped"))
         }

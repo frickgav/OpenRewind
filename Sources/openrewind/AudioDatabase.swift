@@ -117,7 +117,12 @@ extension Database {
             return true
         }
         guard sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK else { return 0 }
+        // Search by Meaning indexes each clip once, in id order: forget the vectors made from the old text
+        // and move its audio cursor back, so the requeued clips are indexed again once they are redone.
+        let first = "(SELECT MIN(id) FROM audio_chunks WHERE timestamp >= ?1 AND status IN (\(Database.redoStatuses)))"
         guard run("UPDATE meetings SET redone = 1 WHERE end_time >= ?"),
+              run("DELETE FROM meaning_moments WHERE kind = 'audio' AND first_id >= \(first)"),
+              run("UPDATE meaning_state SET value = CAST(\(first) - 1 AS TEXT) WHERE key = '\(Database.chunkCursor)' AND CAST(value AS INTEGER) >= \(first)"),
               run("UPDATE audio_chunks SET status = 'pending', attempts = 0, failure_reason = NULL WHERE timestamp >= ? AND status IN (\(Database.redoStatuses))") else {
             sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
             return 0

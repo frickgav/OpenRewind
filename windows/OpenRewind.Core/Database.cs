@@ -399,11 +399,20 @@ public sealed partial class Database : IDisposable
         lock (gate)
         {
             using var tx = conn.BeginTransaction();
-            using (var meetings = Cmd("UPDATE meetings SET redone = 1 WHERE end_time >= ?", Time.Iso(from)))
+            void InTx(string sql, params object[] args)
             {
-                meetings.Transaction = tx;
-                meetings.ExecuteNonQuery();
+                using var c = Cmd(sql, args);
+                c.Transaction = tx;
+                c.ExecuteNonQuery();
             }
+            var since = Time.Iso(from);
+            InTx("UPDATE meetings SET redone = 1 WHERE end_time >= ?", since);
+            // Search by Meaning indexes each clip once, in id order: forget the vectors made from the old text
+            // and move its audio cursor back, so the requeued clips are indexed again once they are redone.
+            var first = $"(SELECT MIN(id) FROM audio_chunks WHERE timestamp >= ? AND status IN ({RedoStatuses}))";
+            InTx($"DELETE FROM meaning_moments WHERE kind = 'audio' AND first_id >= {first}", since);
+            InTx($"UPDATE meaning_state SET value = CAST({first} - 1 AS TEXT) WHERE key = '{ChunkCursor}' AND CAST(value AS INTEGER) >= {first}",
+                 since, since);
             using var cmd = Cmd("UPDATE audio_chunks SET status = 'pending', attempts = 0, failure_reason = NULL " +
                                 $"WHERE timestamp >= ? AND status IN ({RedoStatuses})", Time.Iso(from));
             cmd.Transaction = tx;

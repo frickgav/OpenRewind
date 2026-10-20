@@ -436,6 +436,41 @@ public class TranscriptionModelTests : IDisposable
     }
 
     [Fact]
+    public void ReTranscribeLetsSearchByMeaningIndexTheNewTextAgain()
+    {
+        var config = Config.Load(new[] { "--home", home });
+        using (var db = new Database(config.DbPath))
+        {
+            var old = db.InsertChunk("old.wav", Time.Iso(DateTime.UtcNow.AddDays(-3)), "microphone", true);
+            var recent = db.InsertChunk("recent.wav", Time.Iso(DateTime.UtcNow.AddHours(-2)), "microphone", true);
+            db.SaveTranscripts(db.ChunkById(old)!, new[] { new Segment(0, 1, "old words") });
+            db.SaveTranscripts(db.ChunkById(recent)!, new[] { new Segment(0, 1, "whisper words") });
+            db.SetMeaningState(Database.ChunkCursor, recent.ToString());
+            using (var conn = new SqliteConnection($"Data Source={config.DbPath}"))
+            {
+                conn.Open();
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = $"""
+                    INSERT INTO meaning_moments (kind, timestamp, end_time, first_id, last_id, text) VALUES
+                        ('audio', '', '', {old}, {old}, 'old words'), ('audio', '', '', {recent}, {recent}, 'whisper words');
+                    """;
+                cmd.ExecuteNonQuery();
+            }
+            Assert.Equal(1, db.RequeueAudio(DateTime.UtcNow.AddDays(-1)));
+            // The clip's old vector is gone and the indexer goes back to just before it; the older clip keeps its own.
+            Assert.Equal((recent - 1).ToString(), db.MeaningState(Database.ChunkCursor));
+        }
+        using var check = new SqliteConnection($"Data Source={config.DbPath}");
+        check.Open();
+        using var q = check.CreateCommand();
+        q.CommandText = "SELECT text FROM meaning_moments ORDER BY id";
+        using var r = q.ExecuteReader();
+        var left = new List<string>();
+        while (r.Read()) left.Add(r.GetString(0));
+        Assert.Equal(new[] { "old words" }, left);
+    }
+
+    [Fact]
     public void WordsOfAClipDeletedWhileItWasTranscribedAreDropped()
     {
         var config = Config.Load(new[] { "--home", home });
