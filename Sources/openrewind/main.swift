@@ -56,6 +56,10 @@ if command == "selftest-encryption" {
     print(problems.isEmpty ? "encryption self-test passed" : "encryption self-test failed (\(problems.count))")
     exit(problems.isEmpty ? 0 : 1)
 }
+// Hidden: Search by Meaning end to end with a made-up model (MeaningSelfTest.swift), run by the Mac CI.
+if command == "meaning-check" {
+    exit(MeaningSelfTest.run(encrypted: false) && MeaningSelfTest.run(encrypted: true) ? 0 : 1)
+}
 
 // Hidden: checks Parakeet's 30 s audio windows on edge-case clip lengths, without the model (run by the Mac CI).
 if command == "parakeet-check" {

@@ -1310,7 +1310,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let p = service.progress()
             let n = NumberFormatter.localizedString(from: NSNumber(value: p.moments), number: .decimal)
-            let text = p.upToDate ? "Up to date · \(n) moments" : "Indexing in the background… \(p.percent)% · \(n) moments"
+            let text = service.paused ? "Paused: could not save, will retry (see openrewind.log) · \(n) moments"
+                : p.upToDate ? "Up to date · \(n) moments" : "Indexing in the background… \(p.percent)% · \(n) moments"
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.meaningRefreshing = false
