@@ -114,11 +114,11 @@ public sealed partial class Database
     {
         lock (gate)
         {
-            using var cmd = Cmd("SELECT id, timestamp, app_name, window_name, browser_url, text FROM frames WHERE id > ? AND timestamp < ? ORDER BY id LIMIT ?",
+            using var cmd = Cmd("SELECT id, timestamp, app_name, window_name, browser_url, text, blocked FROM frames WHERE id > ? AND timestamp < ? ORDER BY id LIMIT ?",
                                 after, before, limit);
             using var r = cmd.ExecuteReader();
             var out_ = new List<MomentFrame>();
-            while (r.Read()) out_.Add(new MomentFrame(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5)));
+            while (r.Read()) out_.Add(new MomentFrame(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5), r.GetInt64(6) != 0));
             return out_;
         }
     }

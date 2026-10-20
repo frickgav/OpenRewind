@@ -34,6 +34,10 @@ public class MeaningTests : IDisposable
          "super ##cal ##if ##rag ##ilis ##tic ##ex ##pia ##lid ##oc ##ious anti ##dis ##est ##ab ##lish ##ment ##arian ##ism"),
         ("Price: $1,299.99 — 50% off!!!", "price : $ 1 , 299 . 99 — 50 % off ! ! !"),
         ("emoji 😀 test", "em ##oj ##i [UNK] test"),
+        // Control characters (\v, \f, U+0085, zero-width space) are dropped; other Unicode spaces split words.
+        ("a\vb a\fb a\u0085b", "ab ab ab"),
+        ("a\u2028b a\u2029b a\u00a0b a\u3000b", "a b a b a b a b"),
+        ("zero\u200bwidth line\u2028break", "zero ##wi ##dt ##h line break"),
         (new string('x', 120), "[UNK]"),
         ("", ""),
     };
@@ -445,5 +449,202 @@ public class MeaningTests : IDisposable
         Assert.Contains("<select id=\"mode\" hidden", WebUI.Html);
         Assert.Contains("h.search_by_meaning", WebUI.Html);
         Assert.Contains("p.set('mode', 'meaning')", WebUI.Html);
+        Assert.Contains("if (meaning) health();", WebUI.Html);   // a refused meaning search switches back, not a script error
+    }
+
+    // MARK: review fixes
+
+    [Fact]
+    public void BlockedFramesAreNeverIndexed()
+    {
+        var t = DateTime.UtcNow.AddHours(-1);
+        AddFrame(t, "Chrome", "Acme portal", "Invoice 1042 due Friday");
+        db.Insert(new Frame(0, Time.Iso(t.AddSeconds(5)), "Chrome", "Acme portal", true, "", "secret vault password", "ocr", 0, "", Blocked: true));
+        AddFrame(t.AddSeconds(10), "Chrome", "Acme portal", "payment received");
+        var s = Indexed(Nothing, out _);
+        Assert.Equal(2, s.Progress().Moments);   // the blocked frame ends the stretch
+        var hits = s.Search("password vault", new MeaningQuery(), Nothing);
+        Assert.DoesNotContain(hits, h => h.Text.Contains("secret"));
+    }
+
+    [Fact]
+    public void AStoppedIndexerWritesNothing()
+    {
+        AddFrame(DateTime.UtcNow.AddHours(-1), "Chrome", "Acme portal", "Invoice 1042 due Friday");
+        var s = new MeaningService(db) { Embedder = new FakeEmbedder(), Blocked = () => Nothing, Pace = () => MeaningPace.Idle };
+        s.Stop();   // a newer generation: the old one's writes are refused under the database lock
+        Assert.Throws<OperationCanceledException>(() => s.Step(gen: -1));
+        Assert.Equal(0, s.Progress().Moments);
+        Assert.Null(db.MeaningState(Database.FrameCursor));
+        Assert.Null(db.MeaningState("model"));
+
+        var id = AddFrame(DateTime.UtcNow.AddHours(-1), "Notes", "x", "walk the dog");
+        db.SaveMoment(new Moment(false, Time.Now(), Time.Now(), id, id, "Notes", "x", "", "walk the dog", 1), "fake-1",
+                      new byte[16], Database.FrameCursor, id, keep: () => false);
+        Assert.Equal(0, s.Progress().Moments);
+        Assert.Null(db.MeaningState(Database.FrameCursor));
+    }
+
+    [Fact]
+    public void AMomentWhoseFramesWereDeletedMeanwhileIsDropped()
+    {
+        var t = DateTime.UtcNow.AddHours(-2);
+        var a = AddFrame(t, "Chrome", "Acme portal", "Invoice 1042");
+        AddFrame(t.AddSeconds(30), "Chrome", "Acme portal", "account number 12345");
+        var c = AddFrame(t.AddSeconds(60), "Chrome", "Acme portal", "due Friday");
+        var m = new Moment(false, Time.Iso(t), Time.Iso(t.AddSeconds(60)), a, c, "Chrome", "Acme portal", "",
+                           "Invoice 1042\naccount number 12345\ndue Friday", 3);
+        db.DeleteFrames(t.AddSeconds(20), t.AddSeconds(40));   // the middle one, while the vector was being made
+        db.SaveMoment(m, "fake-1", new byte[16], Database.FrameCursor, c);
+        Assert.Equal(0, db.MeaningProgress(DateTime.UtcNow).Moments);
+        Assert.Equal(c.ToString(), db.MeaningState(Database.FrameCursor));   // the indexer still moves on
+
+        var whole = m with { Frames = 2 };
+        db.SaveMoment(whole, "fake-1", new byte[16], Database.FrameCursor, c);
+        Assert.Equal(1, db.MeaningProgress(DateTime.UtcNow).Moments);
+    }
+
+    [Fact]
+    public void ScanReadsPageByPageWithoutHoldingTheLock()
+    {
+        var id = AddFrame(DateTime.UtcNow.AddHours(-1), "Chrome", "Acme portal", "Invoice 1042 due Friday");
+        int n = Database.ScanPage + 7;
+        for (int i = 0; i < n; i++)
+            db.SaveMoment(new Moment(false, Time.Now(), Time.Now(), id, id, "Chrome", "Acme portal", "", "x", 1), "fake-1",
+                          new byte[] { (byte)(i % 100), 1, 2, 3 }, Database.FrameCursor, id);
+        db.SaveMoment(new Moment(false, Time.Now(), Time.Now(), id, id, "Chrome", "Acme portal", "", "x", 1), "other-model",
+                      new byte[4], Database.FrameCursor, id);
+        var seen = new List<long>();
+        bool otherThreadGotIn = true;
+        db.ScanMoments("fake-1", null, null, (mid, audio, app, window, url, vec) =>
+        {
+            if (seen.Count == 0 || seen.Count == Database.ScanPage)
+                otherThreadGotIn &= Task.Run(() => db.MeaningState("model")).Wait(TimeSpan.FromSeconds(5));
+            Assert.Equal(4, vec.Length);
+            Assert.Equal((byte)(seen.Count % 100), vec[0]);
+            seen.Add(mid);
+        });
+        Assert.Equal(n, seen.Count);
+        Assert.Equal(seen.OrderBy(x => x), seen);
+        Assert.True(otherThreadGotIn);
+    }
+
+    [Fact]
+    public void AnIndexFromATestBuildIsStartedOver()
+    {
+        db.Dispose();
+        var path = Path.Combine(home, "old.sqlite");
+        using (var c = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path};Pooling=False"))
+        {
+            c.Open();
+            using var cmd = c.CreateCommand();
+            cmd.CommandText = """
+                CREATE TABLE meaning_moments (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, timestamp TEXT NOT NULL,
+                    end_time TEXT NOT NULL, first_id INTEGER NOT NULL, last_id INTEGER NOT NULL, app_name TEXT NOT NULL DEFAULT '',
+                    window_name TEXT NOT NULL DEFAULT '', browser_url TEXT NOT NULL DEFAULT '', text TEXT NOT NULL DEFAULT '',
+                    model TEXT NOT NULL, vector BLOB NOT NULL);
+                CREATE TABLE meaning_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                INSERT INTO meaning_moments (kind, timestamp, end_time, first_id, last_id, text, model, vector) VALUES ('screen', 'a', 'b', 1, 1, 't', 'm', x'00');
+                INSERT INTO meaning_state VALUES ('frame_cursor', '1');
+                """;
+            cmd.ExecuteNonQuery();
+        }
+        using var upgraded = new Database(path);
+        Assert.True(upgraded.HasMeaningIndex());
+        Assert.Null(upgraded.MeaningState(Database.FrameCursor));
+        Assert.Equal(0, upgraded.MeaningProgress(DateTime.UtcNow).Moments);
+        Assert.Empty(upgraded.MomentsById(new long[] { 1 }));
+        using var again = new Database(path);   // the second open keeps what is there
+        Assert.True(again.HasMeaningIndex());
+    }
+
+    /// A response body that sends a little, then nothing.
+    sealed class StallingHandler : HttpMessageHandler
+    {
+        public int Requests;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Requests++;
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StreamContent(new StallStream()) });
+        }
+    }
+
+    sealed class StallStream : Stream
+    {
+        bool sent;
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            if (!sent) { sent = true; buffer.Span[0] = (byte)'a'; return 1; }
+            await Task.Delay(Timeout.Infinite, ct);
+            return 0;
+        }
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) => ReadAsync(buffer.AsMemory(offset, count), ct).AsTask();
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    sealed class WrongFileHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+            Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new ByteArrayContent(new byte[MiniLm.Vocab.Size]) });
+    }
+
+    [Fact]
+    public async Task ADownloadThatStallsFailsAndLeavesNoPartFile()
+    {
+        var dir = Path.Combine(home, "model");
+        using var http = new HttpClient(new StallingHandler());
+        await Assert.ThrowsAsync<TimeoutException>(() => MiniLm.Download(dir, http, null, CancellationToken.None, TimeSpan.FromMilliseconds(300)));
+        Assert.Empty(Directory.GetFiles(dir));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => MiniLm.Download(dir, http, null, cts.Token, TimeSpan.FromSeconds(30)));
+        Assert.Empty(Directory.GetFiles(dir));
+    }
+
+    [Fact]
+    public async Task ADownloadOfTheWrongFileLeavesNothing()
+    {
+        var dir = Path.Combine(home, "model");
+        using var http = new HttpClient(new WrongFileHandler());
+        await Assert.ThrowsAsync<InvalidDataException>(() => MiniLm.Download(dir, http, null, CancellationToken.None));
+        Assert.Empty(Directory.GetFiles(dir));
+    }
+
+    // MARK: the real model (opt-in)
+
+    /// Runs only when OPENREWIND_MODEL_DIR names a folder with the pinned model.onnx and vocab.txt
+    /// (as downloaded by the app, e.g. %USERPROFILE%\.openrewind\models\all-MiniLM-L6-v2). Checks the
+    /// tokenizer against the full vocabulary and the ONNX path against numbers from sentence-transformers.
+    [Fact]
+    public void RealModelMatchesSentenceTransformers()
+    {
+        var dir = Environment.GetEnvironmentVariable("OPENREWIND_MODEL_DIR");
+        if (string.IsNullOrEmpty(dir) || !MiniLm.Present(dir)) return;
+
+        var tok = WordPiece.Load(Path.Combine(dir, MiniLm.Vocab.Name), MiniLm.MaxTokens);
+        foreach (var (text, pieces) in Reference)
+            Assert.Equal(pieces, string.Join(' ', tok.Tokenize(text)));
+        Assert.Equal(new long[] { 101, 7592, 1010, 2088, 999, 102 }, tok.Encode("Hello, world!"));
+
+        var e = OnnxEmbedder.Load(dir);   // also checks both files against their pinned SHA-256
+        var happy = e.Embed("That is a happy person");
+        var expected = new[] { -0.03388f, 0.09194f, 0.04870f, -0.03488f, -0.06483f };
+        for (int i = 0; i < expected.Length; i++) Assert.Equal(expected[i], happy[i], 0.001f);
+        float Cos(string other) { var v = e.Embed(other); float d = 0; for (int i = 0; i < v.Length; i++) d += v[i] * happy[i]; return d; }
+        Assert.Equal(0.6946f, Cos("That is a happy dog"), 0.002f);
+        Assert.Equal(0.9429f, Cos("That is a very happy person"), 0.002f);
+        Assert.Equal(0.2569f, Cos("Today is a sunny day"), 0.002f);
+
+        e.Dispose();
+        Assert.Throws<ObjectDisposedException>(() => e.Embed("after turning off"));
     }
 }

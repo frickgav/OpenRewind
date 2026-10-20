@@ -3,7 +3,8 @@ using System.Text;
 namespace OpenRewind;
 
 /// A stored screenshot as the indexer sees it.
-public sealed record MomentFrame(long Id, string Timestamp, string AppName, string WindowName, string Url, string Text);
+/// `Blocked`: saved while a blocked window or site was in front (frames.blocked); never indexed.
+public sealed record MomentFrame(long Id, string Timestamp, string AppName, string WindowName, string Url, string Text, bool Blocked = false);
 
 /// One transcript line as the indexer sees it.
 public sealed record MomentSegment(long ChunkId, string Timestamp, string Text, bool IsInput);
@@ -54,7 +55,7 @@ public static class MomentChunker
         for (int i = 0; i < frames.Count; i++)
         {
             var f = frames[i];
-            if (blocked(f)) { Close(); continue; }
+            if (f.Blocked || blocked(f)) { Close(); continue; }
             var lines = Lines(f.Text);
             if (lines.Count == 0) continue;
             if (cur != null && Breaks(cur, f)) Close();

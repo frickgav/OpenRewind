@@ -95,15 +95,19 @@ public sealed class WordPiece
     }
 
     /// Control characters out, every kind of space to " ", lower case, accents off (NFD, then
-    /// drop the combining marks), as BERT's normalizer does.
+    /// drop the combining marks), as the BERT normalizer in Hugging Face's tokenizers does (the one
+    /// sentence-transformers runs): first every character of category C except \t \n \r is dropped
+    /// (so \v, \f and U+0085 go), then what is left of Unicode's White_Space (including U+2028 and
+    /// U+2029) becomes a space.
     static string Normalize(string text)
     {
         var sb = new StringBuilder(text.Length);
         foreach (var r in text.EnumerateRunes())
         {
             if (r.Value == 0 || r.Value == 0xFFFD) continue;
-            if (r.Value is '\t' or '\n' or '\r' || Rune.IsWhiteSpace(r)) { sb.Append(' '); continue; }
+            if (r.Value is '\t' or '\n' or '\r') { sb.Append(' '); continue; }
             if (IsControl(r)) continue;
+            if (Rune.IsWhiteSpace(r)) { sb.Append(' '); continue; }
             sb.Append(r.ToString());
         }
         var lower = sb.ToString().ToLowerInvariant().Normalize(NormalizationForm.FormD);
