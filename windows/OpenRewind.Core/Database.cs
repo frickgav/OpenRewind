@@ -305,11 +305,22 @@ public sealed partial class Database : IDisposable
 
     /// Insert all segments of one chunk and mark it transcribed, in one transaction. Lines an earlier
     /// run left for the same chunk (Re-transcribe) are replaced. `engine` names the model that wrote them.
-    public void SaveTranscripts(AudioChunk chunk, IReadOnlyList<Segment> segments, string engine = "whisper.cpp")
+    /// Returns false (and saves nothing) when the clip was deleted while it was being transcribed.
+    public bool SaveTranscripts(AudioChunk chunk, IReadOnlyList<Segment> segments, string engine = "whisper.cpp")
     {
         lock (gate)
         {
             using var tx = conn.BeginTransaction();
+            using (var exists = Cmd("SELECT COUNT(*) FROM audio_chunks WHERE id = ?", chunk.Id))
+            {
+                exists.Transaction = tx;
+                if (Convert.ToInt64(exists.ExecuteScalar()) == 0)
+                {
+                    // Deleted (Delete Recordings, or kept-for-days cleanup) after it was picked up: do not bring its words back.
+                    tx.Rollback();
+                    return false;
+                }
+            }
             using (var old = Cmd("DELETE FROM audio_transcriptions WHERE audio_chunk_id = ?", chunk.Id))
             {
                 old.Transaction = tx;
@@ -330,6 +341,7 @@ public sealed partial class Database : IDisposable
                 mark.ExecuteNonQuery();
             }
             tx.Commit();
+            return true;
         }
     }
 
@@ -366,19 +378,35 @@ public sealed partial class Database : IDisposable
     /// (clips are 30 s or shorter, so this counts 30 s each).
     public (int Clips, double Seconds) RetranscribeCount(DateTime from, double clipSeconds)
     {
-        var n = (int)ScalarLong("SELECT COUNT(*) FROM audio_chunks WHERE timestamp >= ? AND status IN ('transcribed', 'silent', 'failed')", Time.Iso(from));
+        var n = (int)ScalarLong($"SELECT COUNT(*) FROM audio_chunks WHERE timestamp >= ? AND status IN ({RedoStatuses})", Time.Iso(from));
         return (n, n * clipSeconds);
     }
 
+    /// Clips Re-transcribe runs again: ones with words, and ones that failed. Clips found silent stay
+    /// silent (a new model rarely finds speech where the old one found none, and a "pending" silent clip
+    /// would look like speech to Meetings and Insights until it is done).
+    const string RedoStatuses = "'transcribed', 'failed'";
+
     /// Re-transcribe: queue the clips recorded since `from` again. Their old lines stay searchable
-    /// until the new ones replace them (SaveTranscripts). Returns how many clips were queued.
+    /// until the new ones replace them for good (SaveTranscripts). Meetings in that time keep the notes
+    /// they have: the new lines do not make new notes (nor send the transcript to an AI provider again).
+    /// Returns how many clips were queued.
     public int RequeueAudio(DateTime from)
     {
         lock (gate)
         {
+            using var tx = conn.BeginTransaction();
+            using (var meetings = Cmd("UPDATE meetings SET redone = 1 WHERE end_time >= ?", Time.Iso(from)))
+            {
+                meetings.Transaction = tx;
+                meetings.ExecuteNonQuery();
+            }
             using var cmd = Cmd("UPDATE audio_chunks SET status = 'pending', attempts = 0, failure_reason = NULL " +
-                                "WHERE timestamp >= ? AND status IN ('transcribed', 'silent', 'failed')", Time.Iso(from));
-            return cmd.ExecuteNonQuery();
+                                $"WHERE timestamp >= ? AND status IN ({RedoStatuses})", Time.Iso(from));
+            cmd.Transaction = tx;
+            var n = cmd.ExecuteNonQuery();
+            tx.Commit();
+            return n;
         }
     }
 

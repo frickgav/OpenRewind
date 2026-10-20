@@ -12,36 +12,68 @@ public sealed class ParakeetEngine : IDisposable
     readonly InferenceSession encoder, decoder, joiner;
     readonly string[] tokens;
     readonly int blank;
+    /// The two decoder state inputs; their names come from the export ("states.1", "onnx::Slice_3").
+    readonly string[] stateNames;
+    /// Size of the prediction network's output and state vectors (640 for this model).
+    const int PredDim = 640;
 
     public ParakeetEngine(string dir, int threads)
     {
-        using var opts = new SessionOptions
+        SessionOptions Options(bool arena) => new()
         {
             IntraOpNumThreads = threads, InterOpNumThreads = 1,
             GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
             LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR,
+            // The encoder's buffers are big; without the arena they go back to the system after each clip.
+            EnableCpuMemArena = arena,
         };
-        encoder = new InferenceSession(Path.Combine(dir, "encoder.int8.onnx"), opts);
+        using (var encOpts = Options(arena: false)) encoder = new InferenceSession(Path.Combine(dir, "encoder.int8.onnx"), encOpts);
+        using var opts = Options(arena: true);
         decoder = new InferenceSession(Path.Combine(dir, "decoder.int8.onnx"), opts);
         joiner = new InferenceSession(Path.Combine(dir, "joiner.int8.onnx"), opts);
         tokens = ParakeetMath.ReadTokens(File.ReadAllLines(Path.Combine(dir, "tokens.txt")));
         blank = Array.IndexOf(tokens, "<blk>");
         if (blank < 0) blank = tokens.Length - 1;
+        stateNames = decoder.InputNames.Where(k => k != "targets" && k != "target_length").ToArray();
+        try
+        {
+            // A model that does not fit fails here, once, instead of on every clip.
+            if (stateNames.Length != 2) throw new InvalidDataException($"unexpected decoder inputs: {string.Join(", ", decoder.InputNames)}");
+            int encDim = encoder.OutputMetadata.TryGetValue("outputs", out var meta) && meta.Dimensions.Length == 3 && meta.Dimensions[1] > 0
+                ? meta.Dimensions[1] : 1024;
+            var logits = new Decoding(this, encDim).Joint(0);
+            if (logits.Length != tokens.Length + ParakeetMath.Durations.Length)
+                throw new InvalidDataException($"the joiner gives {logits.Length} scores for {tokens.Length} tokens");
+        }
+        catch
+        {
+            Dispose();
+            throw;
+        }
     }
 
     public void Dispose() { encoder.Dispose(); decoder.Dispose(); joiner.Dispose(); }
 
-    /// 16 kHz mono samples → segments with times in seconds from the start.
+    /// 16 kHz mono samples → segments with times in seconds from the start. Long audio goes through the
+    /// encoder in windows of at most 30 s (its memory grows with the square of the length).
     public List<Segment> Transcribe(float[] samples)
     {
-        if (samples.Length < ParakeetMath.Hop * 10) return new();
-        var (feats, frames) = ParakeetMath.Features(samples);
-        var (enc, encFrames) = Encode(feats, frames);
-        var hits = Decode(enc, encFrames);
+        var hits = new List<(int Token, int Frame)>();
+        foreach (var (start, length) in ParakeetMath.Windows(samples))
+        {
+            if (length < ParakeetMath.Hop * 10) continue;
+            var piece = new float[length];
+            Array.Copy(samples, start, piece, 0, length);
+            var (feats, frames) = ParakeetMath.Features(piece);
+            var (enc, encFrames, dim) = Encode(feats, frames);
+            int offset = start / ParakeetMath.StepSamples;
+            foreach (var (token, frame) in new Decoding(this, dim, enc, encFrames).Run())
+                hits.Add((token, frame + offset));
+        }
         return ParakeetMath.Segments(hits, tokens, samples.Length / (double)ParakeetMath.SampleRate);
     }
 
-    (float[] Data, int Frames) Encode(float[] feats, int frames)
+    (float[] Data, int Frames, int Dim) Encode(float[] feats, int frames)
     {
         var inputs = new List<NamedOnnxValue>
         {
@@ -57,48 +89,59 @@ public sealed class ParakeetEngine : IDisposable
         var data = new float[t * dim];
         for (int d = 0; d < dim; d++)
             for (int i = 0; i < t; i++) data[i * dim + d] = src[d * t + i];
-        return (data, Math.Min(len, t));
+        return (data, Math.Min(len, t), dim);
     }
 
-    List<(int Token, int Frame)> Decode(float[] enc, int frames)
+    /// One window's decoding: the prediction network's state and the encoder frames it scores.
+    sealed class Decoding
     {
-        const int encDim = 1024, predDim = 640;
-        var stateNames = decoder.InputNames.Where(k => k != "targets" && k != "target_length").ToArray();
-        var h = new float[2 * predDim];
-        var c = new float[2 * predDim];
-        float[] decOut = Array.Empty<float>();
+        readonly ParakeetEngine e;
+        readonly int encDim, frames;
+        readonly float[] enc;
+        float[] h = new float[2 * PredDim], c = new float[2 * PredDim], decOut = Array.Empty<float>();
+
+        /// `enc` is `frames` vectors of `encDim` values; without it (the load check), one frame of zeros.
+        public Decoding(ParakeetEngine engine, int encDim, float[]? enc = null, int frames = 1)
+        {
+            e = engine; this.encDim = encDim; this.enc = enc ?? new float[encDim]; this.frames = frames;
+            Predict(e.blank);  // the prediction network starts from the blank token
+        }
+
+        public List<(int Token, int Frame)> Run() => ParakeetMath.GreedyTdt(frames, e.tokens.Length, e.blank, Joint, Predict);
+
         void Predict(int token)
         {
             var inputs = new List<NamedOnnxValue>
             {
                 NamedOnnxValue.CreateFromTensor("targets", new DenseTensor<int>(new[] { token }, new[] { 1, 1 })),
                 NamedOnnxValue.CreateFromTensor("target_length", new DenseTensor<int>(new[] { 1 }, new[] { 1 })),
-                NamedOnnxValue.CreateFromTensor(stateNames[0], new DenseTensor<float>(h, new[] { 2, 1, predDim })),
-                NamedOnnxValue.CreateFromTensor(stateNames[1], new DenseTensor<float>(c, new[] { 2, 1, predDim })),
+                NamedOnnxValue.CreateFromTensor(e.stateNames[0], new DenseTensor<float>(h, new[] { 2, 1, PredDim })),
+                NamedOnnxValue.CreateFromTensor(e.stateNames[1], new DenseTensor<float>(c, new[] { 2, 1, PredDim })),
             };
-            using var outs = decoder.Run(inputs);
+            using var outs = e.decoder.Run(inputs);
             var list = outs.ToList();
             // Outputs, in order: decoder output [1, 640, 1], lengths, then the two new states.
+            if (list.Count != 4) throw new InvalidDataException($"the decoder gives {list.Count} outputs");
             decOut = list[0].AsTensor<float>().ToArray();
             h = list[2].AsTensor<float>().ToArray();
             c = list[3].AsTensor<float>().ToArray();
+            if (decOut.Length != PredDim || h.Length != 2 * PredDim || c.Length != 2 * PredDim)
+                throw new InvalidDataException("the decoder's outputs are not the expected size");
         }
-        float[] Joint(int t)
+
+        public float[] Joint(int t)
         {
-            var e = new float[encDim];
-            Array.Copy(enc, t * encDim, e, 0, encDim);
+            var v = new float[encDim];
+            Array.Copy(enc, t * encDim, v, 0, encDim);
             var inputs = new List<NamedOnnxValue>
             {
-                NamedOnnxValue.CreateFromTensor("encoder_outputs", new DenseTensor<float>(e, new[] { 1, encDim, 1 })),
-                NamedOnnxValue.CreateFromTensor("decoder_outputs", new DenseTensor<float>(decOut, new[] { 1, predDim, 1 })),
+                NamedOnnxValue.CreateFromTensor("encoder_outputs", new DenseTensor<float>(v, new[] { 1, encDim, 1 })),
+                NamedOnnxValue.CreateFromTensor("decoder_outputs", new DenseTensor<float>(decOut, new[] { 1, PredDim, 1 })),
             };
-            using var outs = joiner.Run(inputs);
+            using var outs = e.joiner.Run(inputs);
             return outs.First().AsTensor<float>().ToArray();
         }
-        Predict(blank);  // the prediction network starts from the blank token
-        return ParakeetMath.GreedyTdt(frames, tokens.Length, blank, Joint, Predict);
     }
-
 }
 
 /// The parts of Parakeet that need no model: log-mel features exactly like NeMo's preprocessor,
@@ -111,6 +154,35 @@ public static class ParakeetMath
     /// Durations the TDT joiner predicts after the vocabulary scores.
     public static readonly int[] Durations = { 0, 1, 2, 3, 4 };
     const int MaxTokensPerFrame = 10;
+    /// Samples per encoder step (80 ms): windows start on these, so frame numbers just add up.
+    public const int StepSamples = Hop * 8;
+    /// Longest audio given to the encoder at once.
+    public const int MaxWindowSamples = 30 * SampleRate;
+    /// A window is cut at the quietest 80 ms in its last few seconds, so words are rarely split.
+    const int CutSearchSamples = 4 * SampleRate;
+
+    /// Pieces of at most 30 s that cover `samples` end to end: (first sample, length). Each starts on an
+    /// encoder step; cuts go where it is quietest near the end of the window.
+    public static List<(int Start, int Length)> Windows(float[] samples)
+    {
+        var list = new List<(int, int)>();
+        int n = samples.Length, start = 0;
+        while (n - start > MaxWindowSamples)
+        {
+            int end = start + MaxWindowSamples, best = end;
+            double quietest = double.MaxValue;
+            for (int cut = end; cut >= end - CutSearchSamples; cut -= StepSamples)
+            {
+                double energy = 0;
+                for (int i = cut - StepSamples / 2; i < cut + StepSamples / 2; i++) energy += (double)samples[i] * samples[i];
+                if (energy < quietest) { quietest = energy; best = cut; }
+            }
+            list.Add((start, best - start));
+            start = best;
+        }
+        if (n > start) list.Add((start, n - start));
+        return list;
+    }
 
     static readonly Lazy<float[]> Window = new(HannInFft);
     static readonly Lazy<(float[] Bank, int[] From, int[] To)> Mel = new(() =>
@@ -256,6 +328,8 @@ public static class ParakeetMath
         while (t < frames)
         {
             var logits = joint(t);
+            if (logits.Length < vocab + Durations.Length)
+                throw new InvalidDataException($"the joiner gave {logits.Length} scores for {vocab} tokens");
             int token = ArgMax(logits, 0, vocab);
             int skip = Durations[ArgMax(logits, vocab, Durations.Length)];
             if (token != blank)

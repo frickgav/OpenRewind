@@ -33,7 +33,7 @@ public class TranscriptionModelTests : IDisposable
             foreach (var f in m.Files)
             {
                 Assert.Matches(new Regex("^https://huggingface\\.co/[^/]+/[^/]+/resolve/[0-9a-f]{40}/"), f.Url);
-                Assert.EndsWith("/" + f.Name, f.Url);
+                Assert.EndsWith("/" + f.Name.Replace(SpeechModels.OwnSuffix, ""), f.Url);
                 Assert.Matches(new Regex("^[0-9a-f]{64}$"), f.Sha256);
                 Assert.True(f.Size > 0);
             }
@@ -53,14 +53,29 @@ public class TranscriptionModelTests : IDisposable
     }
 
     [Fact]
-    public void WhisperDownloadsLandWhereWhisperLooks()
+    public void WhisperDownloadsLandWhereWhisperLooksWithoutReplacingTheUsersOwnFile()
     {
         var m = SpeechModels.ById("whisper-small");
-        Assert.Equal(Path.Combine(home, "models", "ggml-small.bin"), m.PathOf(home, m.Files[0]));
+        Assert.Equal(Path.Combine(home, "models", "ggml-small.openrewind.bin"), m.PathOf(home, m.Files[0]));
+        Assert.EndsWith("/ggml-small.bin", m.Files[0].Url);
         Directory.CreateDirectory(Path.Combine(home, "models"));
         File.WriteAllBytes(m.PathOf(home, m.Files[0]), new byte[3]);
         Assert.Equal(m.PathOf(home, m.Files[0]), Transcriber.FindModel(null, home));
         Assert.False(SpeechModels.IsDownloaded(m, home));  // wrong size
+        // The user's own ggml-small.bin is another file: a download never writes over it.
+        Assert.NotEqual(Path.Combine(home, "models", "ggml-small.bin"), m.PathOf(home, m.Files[0]));
+    }
+
+    [Fact]
+    public void ParakeetWarnsAboutLanguagesItDoesNotKnow()
+    {
+        var p = SpeechModels.ById(SpeechModels.ParakeetId);
+        Assert.Null(SpeechModels.LanguageWarning(p, "auto"));
+        Assert.Null(SpeechModels.LanguageWarning(p, "de"));
+        Assert.Null(SpeechModels.LanguageWarning(p, "EN"));
+        Assert.Contains("(ja)", SpeechModels.LanguageWarning(p, "ja"));
+        Assert.Null(SpeechModels.LanguageWarning(SpeechModels.ById("whisper-small"), "ja"));
+        Assert.Equal(25, SpeechModels.ParakeetLanguages.Count);
     }
 
     [Fact]
@@ -156,10 +171,72 @@ public class TranscriptionModelTests : IDisposable
         var path = Path.Combine(home, "m.onnx");
         File.WriteAllBytes(path, data);
         Assert.True(SpeechModels.EnsureVerified(path, f));
-        Assert.True(File.Exists(path + ".verified"));
+        Assert.False(File.Exists(path + ".verified"));  // nothing on disk that could vouch for a swapped file
+        var written = File.GetLastWriteTimeUtc(path);
         File.WriteAllBytes(path, Encoding.UTF8.GetBytes("model bytez"));  // same size, new contents and time
         File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddMinutes(1));
         Assert.False(SpeechModels.EnsureVerified(path, f));
+        // Even with its old date put back, a new run of the app hashes it again.
+        File.SetLastWriteTimeUtc(path, written);
+        SpeechModels.ForgetVerified();
+        Assert.False(SpeechModels.EnsureVerified(path, f));
+    }
+
+    [Fact]
+    public async Task ADownloadCutShortKeepsWhatCame()
+    {
+        var data = Enumerable.Range(0, 50_000).Select(i => (byte)(i * 3)).ToArray();
+        var model = new SpeechModel("test", "Test", SpeechEngine.Parakeet, "", "test", new[] { Fake("m.onnx", data) });
+        var path = model.PathOf(home, model.Files[0]);
+        var e = await Assert.ThrowsAsync<IOException>(() =>
+            SpeechModels.Download(model, home, null, CancellationToken.None, new FakeServer(_ => Ok(data[..20_000]))));
+        Assert.Contains("Try Again", e.Message);
+        Assert.Equal(20_000, new FileInfo(path + ".part").Length);
+        // Try Again asks for the rest only.
+        var server = new FakeServer(r => Ok(data[(int)r.Headers.Range!.Ranges.First().From!.Value..], HttpStatusCode.PartialContent));
+        await SpeechModels.Download(model, home, null, CancellationToken.None, server);
+        Assert.Equal(20_000, server.Requests.Single().Headers.Range!.Ranges.First().From);
+        Assert.Equal(data, File.ReadAllBytes(path));
+    }
+
+    /// Sends a few bytes, then nothing.
+    sealed class StalledStream(byte[] start) : Stream
+    {
+        int at;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => at; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            if (at < start.Length)
+            {
+                int n = Math.Min(buffer.Length, start.Length - at);
+                start.AsMemory(at, n).CopyTo(buffer);
+                at += n;
+                return n;
+            }
+            await Task.Delay(Timeout.Infinite, ct);
+            return 0;
+        }
+    }
+
+    [Fact]
+    public async Task ADownloadThatStallsGivesUpAndKeepsWhatCame()
+    {
+        var data = Enumerable.Range(0, 30_000).Select(i => (byte)i).ToArray();
+        var model = new SpeechModel("test", "Test", SpeechEngine.Parakeet, "", "test", new[] { Fake("m.onnx", data) });
+        var server = new FakeServer(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new StalledStream(data[..1000])) });
+        var e = await Assert.ThrowsAsync<IOException>(() =>
+            SpeechModels.Download(model, home, null, CancellationToken.None, server, TimeSpan.FromMilliseconds(300)));
+        Assert.Contains("no data from the server", e.Message);
+        Assert.Equal(1000, new FileInfo(model.PathOf(home, model.Files[0]) + ".part").Length);
     }
 
     sealed class SyncProgress(Action<(long, long)> report) : IProgress<(long Done, long Total)>
@@ -242,6 +319,39 @@ public class TranscriptionModelTests : IDisposable
     }
 
     [Fact]
+    public void LongAudioGoesThroughTheEncoderInBoundedWindows()
+    {
+        // Five minutes of a tone, with a quiet stretch at 27 s into each 30 s.
+        var samples = new float[5 * 60 * 16000];
+        for (int i = 0; i < samples.Length; i++)
+        {
+            var sec = i / 16000.0 % 30;
+            samples[i] = sec is > 26.9 and < 27.2 ? 0 : (float)(0.3 * Math.Sin(i * 0.05));
+        }
+        var windows = ParakeetMath.Windows(samples);
+        Assert.True(windows.Count >= 10);
+        Assert.Equal(0, windows[0].Start);
+        int next = 0;
+        foreach (var (start, length) in windows)
+        {
+            Assert.Equal(next, start);  // end to end, nothing left out or read twice
+            Assert.Equal(0, start % ParakeetMath.StepSamples);  // frame numbers add up
+            Assert.InRange(length, 1, ParakeetMath.MaxWindowSamples);
+            next = start + length;
+        }
+        Assert.Equal(samples.Length, next);
+        // The first cut lands in the quiet stretch, not in the middle of the tone.
+        var cut = windows[0].Length / 16000.0;
+        Assert.InRange(cut, 26.9, 27.2);
+        // Each window's features are bounded: 30 s is 3001 frames.
+        var (_, frames) = ParakeetMath.Features(samples[windows[1].Start..(windows[1].Start + windows[1].Length)]);
+        Assert.True(frames <= 3001);
+        // Short audio is one window.
+        Assert.Single(ParakeetMath.Windows(new float[16000 * 30]));
+        Assert.Empty(ParakeetMath.Windows(Array.Empty<float>()));
+    }
+
+    [Fact]
     public void TokensBecomeTimedLines()
     {
         var tokens = ParakeetMath.ReadTokens(new[] { "<unk> 0", "▁Hello 1", "▁world 2", ". 3", "▁How 4", "▁are 5", "▁you 6", "? 7", "▁again 8", "<blk> 9" });
@@ -304,6 +414,40 @@ public class TranscriptionModelTests : IDisposable
     }
 
     [Fact]
+    public void ReTranscribeLeavesSilentClipsAndMeetingNotesAlone()
+    {
+        var config = Config.Load(new[] { "--home", home });
+        using var db = new Database(config.DbPath);
+        var t = DateTime.UtcNow.AddHours(-2);
+        var silent = db.InsertChunk("quiet.wav", Time.Iso(t), "microphone", true);
+        var spoken = db.InsertChunk("talk.wav", Time.Iso(t.AddMinutes(1)), "microphone", true);
+        db.SaveTranscripts(db.ChunkById(silent)!, Array.Empty<Segment>());
+        db.SaveTranscripts(db.ChunkById(spoken)!, new[] { new Segment(0, 1, "the plan") });
+        var meeting = db.InsertMeeting(new MeetingSpan(t, t.AddMinutes(10), "Zoom", "zoom.us", "", "", false), MeetingStatus.Ended);
+        var earlier = db.InsertMeeting(new MeetingSpan(t.AddDays(-3), t.AddDays(-3).AddMinutes(10), "Zoom", "zoom.us", "", "", false), MeetingStatus.Ended);
+
+        Assert.Equal(1, db.RetranscribeCount(DateTime.UtcNow.AddDays(-1), 30).Clips);
+        Assert.Equal(1, db.RequeueAudio(DateTime.UtcNow.AddDays(-1)));
+        Assert.Equal("silent", db.ChunkById(silent)!.Status);
+        Assert.Equal("pending", db.ChunkById(spoken)!.Status);
+        // Notes of that day are not made again because of the new lines; older meetings are untouched.
+        Assert.True(db.MeetingById(meeting)!.Redone);
+        Assert.False(db.MeetingById(earlier)!.Redone);
+    }
+
+    [Fact]
+    public void WordsOfAClipDeletedWhileItWasTranscribedAreDropped()
+    {
+        var config = Config.Load(new[] { "--home", home });
+        using var db = new Database(config.DbPath);
+        var id = db.InsertChunk("gone.wav", Time.Iso(DateTime.UtcNow.AddMinutes(-5)), "microphone", true);
+        var chunk = db.ChunkById(id)!;
+        db.DeleteAudio(null, null);
+        Assert.False(db.SaveTranscripts(chunk, new[] { new Segment(0, 1, "deleted words") }));
+        Assert.Equal(0, db.AudioStats().Segments);
+    }
+
+    [Fact]
     public void FreshClipsGoBeforeAReTranscribe()
     {
         var config = Config.Load(new[] { "--home", home });
@@ -346,6 +490,15 @@ public class TranscriptionModelTests : IDisposable
             Assert.Contains("ask not what your country can do for you", text.ToLowerInvariant().Replace(",", ""));
         Assert.NotEmpty(segs);
         Assert.All(segs, s => Assert.True(s.Start >= 0 && s.End <= 30.5 && s.End >= s.Start));
+
+        // Five minutes in one go (ingest-audio of a talk) goes through in 30 s windows, times in order to the end.
+        var five = Enumerable.Repeat(chunk, 10).SelectMany(s => s).ToArray();
+        sw.Restart();
+        var long_ = engine.Transcribe(five);
+        output.WriteLine($"5 minutes in {sw.Elapsed.TotalSeconds:0.0}s, {long_.Count} lines, peak memory {System.Diagnostics.Process.GetCurrentProcess().PeakWorkingSet64 / 1_000_000} MB");
+        Assert.True(long_.Count >= 10 * segs.Count - 10);
+        Assert.True(long_.Zip(long_.Skip(1)).All(p => p.First.Start <= p.Second.Start && p.First.End <= p.Second.Start + 0.01));
+        Assert.InRange(long_[^1].End, 285, 300.5);
 
         // The whole path the app takes: picked in settings, files checked, a recorded chunk in, lines in the database.
         var m = SpeechModels.ById(SpeechModels.ParakeetId);

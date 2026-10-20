@@ -70,7 +70,8 @@ on older recordings and on how time is counted). Click an app, site
   all audio, or everything (asks first).
 - **Settings → Transcription Model**: Whisper (Automatic, the default), Whisper Base, Small or
   Large v3 Turbo, or NVIDIA Parakeet v3, which needs no other setup: pick it and it downloads
-  (670 MB). **Re-transcribe Recent Audio** runs older clips through the new model. See
+  (670 MB). **Re-transcribe Recent Audio** runs older clips through the new model; the new text
+  replaces the old for good. Parakeet stays loaded (about 1 GB) while audio recording is on. See
   [Choosing a transcription model](../README.md#choosing-a-transcription-model).
 - **Settings → Local Search Server** turns on the API and browser search page at
   http://127.0.0.1:3031. Off by default. Only this PC can connect. The terminal commands

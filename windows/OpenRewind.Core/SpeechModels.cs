@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Security.Cryptography;
 
@@ -10,6 +11,8 @@ public sealed record ModelFile(string Name, string Url, string Sha256, long Size
 
 /// A speech-to-text model the user can pick in Settings → Transcription Model.
 /// Folder is under ~/.openrewind/models ("" = that folder itself, where Whisper looks for ggml-*.bin).
+/// Downloaded Whisper files get their own names (ggml-small.openrewind.bin), so a ggml-small.bin the
+/// user put there is never replaced.
 public sealed record SpeechModel(string Id, string Name, SpeechEngine Engine, string Detail, string Folder, IReadOnlyList<ModelFile> Files)
 {
     public long Size => Files.Sum(f => f.Size);
@@ -27,7 +30,10 @@ public static class SpeechModels
     const string WhisperRepo = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/";
     const string ParakeetRepo = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/2bda32ec70b097a55adaa07d9a7173915b43cc78/";
 
-    static ModelFile Whisper(string name, string sha, long size) => new(name, WhisperRepo + name, sha, size);
+    /// Ending of the Whisper files OpenRewind downloads ("ggml-small.openrewind.bin").
+    public const string OwnSuffix = ".openrewind";
+    static ModelFile Whisper(string name, string sha, long size) =>
+        new(Path.GetFileNameWithoutExtension(name) + OwnSuffix + Path.GetExtension(name), WhisperRepo + name, sha, size);
     static ModelFile Parakeet(string name, string sha, long size) => new(name, ParakeetRepo + name, sha, size);
 
     public static readonly IReadOnlyList<SpeechModel> All = new SpeechModel[]
@@ -60,6 +66,23 @@ public static class SpeechModels
 
     public static string ModelsDir(string home) => Path.Combine(home, "models");
 
+    /// What Parakeet v3 understands (ISO 639-1). It finds the language by itself and ignores --language.
+    public static readonly IReadOnlySet<string> ParakeetLanguages = new HashSet<string>
+    {
+        "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it",
+        "lv", "lt", "mt", "pl", "pt", "ro", "ru", "sk", "sl", "es", "sv", "uk",
+    };
+
+    /// A warning when `language` (the Whisper --language setting) is one Parakeet does not know, else null.
+    public static string? LanguageWarning(SpeechModel m, string? language)
+    {
+        if (m.Engine != SpeechEngine.Parakeet || string.IsNullOrWhiteSpace(language)) return null;
+        var code = language.Trim().ToLowerInvariant();
+        if (code == "auto" || ParakeetLanguages.Contains(code)) return null;
+        return $"{m.Name} does not understand the language set for transcription ({code}): it knows 25 European languages. " +
+               "Its transcripts of other languages are not usable; keep a Whisper model for them.";
+    }
+
     /// All files are there at the right size. Cheap, for menus; loading checks the hashes (EnsureVerified).
     public static bool IsDownloaded(SpeechModel m, string home) => m.Files.All(f => SizeOf(m.PathOf(home, f)) == f.Size);
 
@@ -88,27 +111,28 @@ public static class SpeechModels
 
     // MARK: verification
 
-    /// Next to each verified file: "<sha256> <size> <last-write ticks>". A file that changed since gets hashed again.
-    static string StampPath(string path) => path + ".verified";
+    /// Files this run of the app has hashed, by full path, with what they looked like then. A file that is
+    /// still the same is not hashed again; after every start, and after any change, it is. (A stamp file
+    /// next to the model would let anyone who can write there skip the hash by restoring the date.)
+    static readonly ConcurrentDictionary<string, (long Size, long Written, long Created)> verified = new();
 
-    static string Stamp(ModelFile f, string path) => $"{f.Sha256} {f.Size} {Real(path).LastWriteTimeUtc.Ticks}";
+    static (long, long, long) Identity(FileInfo fi) { fi.Refresh(); return (fi.Length, fi.LastWriteTimeUtc.Ticks, fi.CreationTimeUtc.Ticks); }
 
-    /// True when the file on disk is exactly the pinned one. Hashes it once, then trusts the stamp
-    /// while the file stays the same size and age (hashing 650 MB on every start would be slow).
+    /// True when the file on disk is exactly the pinned one. Hashes it the first time in each run of the app
+    /// (about a second for 650 MB), and again whenever it changed.
     public static bool EnsureVerified(string path, ModelFile f)
     {
-        if (SizeOf(path) != f.Size) return false;
-        try { if (File.ReadAllText(StampPath(path)).Trim() == Stamp(f, path)) return true; } catch (IOException) { }
-        if (!string.Equals(Sha256Of(path), f.Sha256, StringComparison.OrdinalIgnoreCase)) return false;
-        WriteStamp(path, f);
+        var fi = Real(path);
+        if (!fi.Exists || fi.Length != f.Size) return false;
+        var id = Identity(fi);
+        if (verified.TryGetValue(fi.FullName, out var known) && known == id) return true;
+        if (!string.Equals(Sha256Of(fi.FullName), f.Sha256, StringComparison.OrdinalIgnoreCase)) return false;
+        verified[fi.FullName] = id;
         return true;
     }
 
-    static void WriteStamp(string path, ModelFile f)
-    {
-        try { File.WriteAllText(StampPath(path), Stamp(f, path)); }
-        catch (Exception e) { Log.Write($"cannot write {StampPath(path)}: {e.Message}"); }
-    }
+    /// Forget what was hashed (tests; a new run of the app starts like this).
+    public static void ForgetVerified() => verified.Clear();
 
     public static string Sha256Of(string path)
     {
@@ -117,10 +141,14 @@ public static class SpeechModels
     }
 
     /// Every file of the model is there and matches its hash; names the first one that is not.
+    /// Never throws: a file that cannot be read is a problem too.
     public static string? Problem(SpeechModel m, string home)
     {
         foreach (var f in m.Files)
-            if (!EnsureVerified(m.PathOf(home, f), f)) return $"{f.Name} is missing or damaged";
+        {
+            try { if (!EnsureVerified(m.PathOf(home, f), f)) return $"{f.Name} is missing or damaged"; }
+            catch (Exception e) { return $"{f.Name} cannot be read ({e.Message})"; }
+        }
         return null;
     }
 
@@ -129,9 +157,11 @@ public static class SpeechModels
     /// Download every file of the model that is not there yet, check each against its pinned SHA-256,
     /// and only then move it into place. A cut-off download carries on from the `.part` file next time.
     /// Progress is (bytes done, bytes in total) over the whole model.
+    /// A connection that sends nothing for `stall` (default 60 s) fails with "no data …", keeping what came.
     public static async Task Download(SpeechModel m, string home, IProgress<(long Done, long Total)>? progress,
-                                      CancellationToken ct, HttpMessageHandler? handler = null)
+                                      CancellationToken ct, HttpMessageHandler? handler = null, TimeSpan? stall = null)
     {
+        var idle = stall ?? TimeSpan.FromSeconds(60);
         Directory.CreateDirectory(m.Dir(home));
         using var http = new HttpClient(handler ?? new HttpClientHandler(), disposeHandler: handler == null) { Timeout = Timeout.InfiniteTimeSpan };
         http.DefaultRequestHeaders.UserAgent.ParseAdd("OpenRewind");
@@ -141,15 +171,18 @@ public static class SpeechModels
             var path = m.PathOf(home, f);
             if (EnsureVerified(path, f)) { before += f.Size; progress?.Report((before, total)); continue; }
             long start = before;
-            await DownloadFile(http, f, path, done => progress?.Report((start + done, total)), ct).ConfigureAwait(false);
+            await DownloadFile(http, f, path, done => progress?.Report((start + done, total)), idle, ct).ConfigureAwait(false);
             before += f.Size;
         }
         progress?.Report((total, total));
         Log.Write($"downloaded {m.Name} to {m.Dir(home)}");
     }
 
-    static async Task DownloadFile(HttpClient http, ModelFile f, string path, Action<long> progress, CancellationToken ct)
+    static async Task DownloadFile(HttpClient http, ModelFile f, string path, Action<long> progress, TimeSpan stall, CancellationToken ct)
     {
+        // Cancelled when the server sends nothing for `stall`; reset after every read.
+        using var quiet = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        IOException Stalled() => new($"no data from the server for {stall.TotalSeconds:0} seconds; Try Again carries on where it stopped");
         var part = path + ".part";
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         long have = 0;
@@ -168,7 +201,11 @@ public static class SpeechModels
         }
         using var req = new HttpRequestMessage(HttpMethod.Get, f.Url);
         if (have > 0) req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(have, null);
-        using var resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        HttpResponseMessage resp;
+        quiet.CancelAfter(stall);
+        try { resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, quiet.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw Stalled(); }
+        using var _ = resp;
         if (have > 0 && resp.StatusCode != HttpStatusCode.PartialContent)
         {
             // The server sent the whole file again: start over.
@@ -182,25 +219,32 @@ public static class SpeechModels
             var buf = new byte[1 << 16];
             long done = have, lastReport = 0;
             int n;
-            while ((n = await src.ReadAsync(buf, ct).ConfigureAwait(false)) > 0)
+            while (true)
             {
+                quiet.CancelAfter(stall);
+                try { n = await src.ReadAsync(buf, quiet.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw Stalled(); }
+                if (n == 0) break;
                 if (done + n > f.Size) throw new InvalidDataException($"{f.Name} is bigger than expected");
                 await dst.WriteAsync(buf.AsMemory(0, n), ct).ConfigureAwait(false);
                 hash.AppendData(buf, 0, n);
                 done += n;
-                if (done - lastReport >= 1 << 20 || done == f.Size) { progress(done); lastReport = done; }
+                if (done - lastReport >= 1 << 18 || done == f.Size) { progress(done); lastReport = done; }
             }
         }
         var size = new FileInfo(part).Length;
         var sha = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
-        if (size != f.Size || sha != f.Sha256.ToLowerInvariant())
+        // Cut short: keep what came, the next try asks for the rest (and hashes the start again).
+        if (size < f.Size)
+            throw new IOException($"{f.Name} stopped at {FormatSize(size)} of {FormatSize(f.Size)}; Try Again carries on where it stopped");
+        if (sha != f.Sha256.ToLowerInvariant())
         {
             File.Delete(part);
-            throw new InvalidDataException(size != f.Size
-                ? $"{f.Name} stopped at {FormatSize(size)} of {FormatSize(f.Size)}; try again"
-                : $"{f.Name} does not match its checksum, so it was thrown away; try again");
+            throw new InvalidDataException($"{f.Name} does not match its checksum, so it was thrown away; try again");
         }
         File.Move(part, path, overwrite: true);
-        WriteStamp(path, f);
+        // Hashed on the way in: no need to read it again before loading it in this run.
+        var fi = new FileInfo(path);
+        verified[fi.FullName] = Identity(fi);
     }
 }

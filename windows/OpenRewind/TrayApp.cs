@@ -378,6 +378,9 @@ sealed class TrayApp : ApplicationContext
     /// Switch models; one that is not on this PC yet is downloaded first.
     void PickModel(SpeechModel m)
     {
+        if (SpeechModels.LanguageWarning(m, engine.Config.WhisperLanguage) is string warn &&
+            MessageBox.Show(warn + "\n\nUse it anyway?", m.Name, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            return;
         if (m.Files.Count > 0 && !SpeechModels.IsDownloaded(m, engine.Config.Home))
         {
             ModelDownloadForm.ShowFor(m, engine.Config.Home, () => UseModel(m));
@@ -418,8 +421,10 @@ sealed class TrayApp : ApplicationContext
             : "for a while";
         if (!Confirm($"Re-transcribe {what}?",
                      $"{clips} clips (up to {SpeechModels.About(seconds).Replace("about ", "")} of audio) will be transcribed again with {tx.DisplayName}. "
-                     + $"This keeps the processor busy {busy} and uses more battery. New recordings still go first, "
-                     + "and the old text stays searchable until each clip is redone.")) return;
+                     + $"This keeps the processor busy {busy} and uses more battery. New recordings still go first.\n\n"
+                     + "The new text replaces the old for good: the old text stays searchable only until each clip is redone. "
+                     + "Clips with no speech are left as they are, and meeting notes already made are kept (not made or sent again)."
+                     + (SpeechModels.LanguageWarning(tx.Model, engine.Config.WhisperLanguage) is string warn ? "\n\n" + warn : ""))) return;
         var db = engine.Db;
         Task.Run(() => Log.Write($"re-transcribing {db.RequeueAudio(from)} audio clips from {what} with {tx.DisplayName}"));
     }

@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Text.Json;
-using Microsoft.ML.OnnxRuntime;
 
 namespace OpenRewind;
 
@@ -75,8 +74,9 @@ public sealed class Transcriber
             return null;
         }
         Log.Write($"whisper: {Path.GetFileName(path)}");
-        return new Transcriber(config, db, m, bin, path, "whisper.cpp:" + Path.GetFileNameWithoutExtension(path),
-                               name ?? $"Whisper ({Path.GetFileName(path)})");
+        var stem = Path.GetFileNameWithoutExtension(path);
+        if (stem.EndsWith(SpeechModels.OwnSuffix)) stem = stem[..^SpeechModels.OwnSuffix.Length];
+        return new Transcriber(config, db, m, bin, path, "whisper.cpp:" + stem, name ?? $"Whisper ({Path.GetFileName(path)})");
     }
 
     static string ExeName => OperatingSystem.IsWindows() ? "whisper-cli.exe" : "whisper-cli";
@@ -140,14 +140,24 @@ public sealed class Transcriber
 
     bool loadFailed;
 
+    /// The one place both engines read a recorded clip: 16 kHz mono samples. Anything that changes how
+    /// clips are stored (such as encrypting them) only has to change this.
+    public static float[] LoadClipSamples(string path) => Wav.Load16k(path);
+
     public void Transcribe(AudioChunk chunk)
     {
         var sw = Stopwatch.StartNew();
         List<Segment> segments;
         try
         {
-            segments = Model.Engine == SpeechEngine.Parakeet ? Parakeet(chunk.FilePath) : Whisper(chunk.FilePath);
-            db.SaveTranscripts(chunk, segments, EngineTag);
+            var samples = LoadClipSamples(chunk.FilePath);
+            lastClipSeconds = samples.Length / (double)ParakeetMath.SampleRate;
+            segments = Model.Engine == SpeechEngine.Parakeet ? Parakeet(samples) : Whisper(samples);
+            if (!db.SaveTranscripts(chunk, segments, EngineTag))
+            {
+                Log.Write($"chunk {chunk.Id} was deleted while it was transcribed; its text is dropped");
+                return;
+            }
         }
         catch (ModelLoadException e)
         {
@@ -165,33 +175,36 @@ public sealed class Transcriber
         }
         loadFailed = false;
         var secs = sw.Elapsed.TotalSeconds;
-        Status = new TranscriberStatus(DateTime.UtcNow, secs, WavSeconds(chunk.FilePath), null);
+        Status = new TranscriberStatus(DateTime.UtcNow, secs, lastClipSeconds, null);
         var words = segments.Sum(s => s.Text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length);
         Log.Write($"transcribed chunk {chunk.Id}: {segments.Count} segments, {words} words in {secs:0.0}s");
     }
 
+    double lastClipSeconds;
+
     sealed class ModelLoadException(string message) : Exception(message);
 
-    List<Segment> Parakeet(string path)
+    List<Segment> Parakeet(float[] samples)
     {
         if (parakeet == null)
         {
-            // Check the files against their pinned hashes before loading them (only slow the first time).
+            // Check the files against their pinned hashes before loading them (once per run of the app).
             if (SpeechModels.Problem(Model, config.Home) is string bad)
                 throw new ModelLoadException($"{bad}; pick {Model.Name} again in Settings → Transcription Model to download it again");
             var sw = Stopwatch.StartNew();
+            // Anything that goes wrong while loading (missing or wrong-architecture runtime, a model that does
+            // not fit, no memory) would go wrong for every clip: stop instead of failing each one.
             try { parakeet = new ParakeetEngine(ModelPath, Threads); }
-            catch (Exception e) when (e is OnnxRuntimeException or DllNotFoundException or TypeInitializationException or IOException)
-            {
-                throw new ModelLoadException(e.Message);
-            }
+            catch (Exception e) { throw new ModelLoadException(e.Message); }
             Log.Write($"loaded {Model.Name} in {sw.Elapsed.TotalSeconds:0.0}s");
         }
         lastUsed = DateTime.UtcNow;
-        var segs = parakeet.Transcribe(Wav.Load16k(path));
+        var segs = parakeet.Transcribe(samples);
         lastUsed = DateTime.UtcNow;
         return segs.Where(s => !IsNoise(s.Text)).ToList();
     }
+
+    bool whisperChecked;
 
     void Unload()
     {
@@ -201,17 +214,21 @@ public sealed class Transcriber
         Log.Write($"unloaded {Model.Name} until there is audio to transcribe");
     }
 
-    /// Length of one of our 16 kHz 16-bit mono WAV chunks, from its size.
-    static double WavSeconds(string path)
+    List<Segment> Whisper(float[] samples)
     {
-        try { return Math.Max(0, new FileInfo(path).Length - 44) / 32000.0; } catch (IOException) { return 0; }
-    }
-
-    List<Segment> Whisper(string path)
-    {
+        // A Whisper file OpenRewind downloaded is checked against its hash before its first use in each run.
+        if (!whisperChecked && Model.Files.Count > 0 && ModelPath == Model.PathOf(config.Home, Model.Files[0]))
+        {
+            if (SpeechModels.Problem(Model, config.Home) is string bad)
+                throw new ModelLoadException($"{bad}; pick {Model.Name} again in Settings → Transcription Model to download it again");
+        }
+        whisperChecked = true;
         var tmp = Path.Combine(Path.GetTempPath(), $"openrewind-{Guid.NewGuid()}");
+        var path = tmp + ".wav";
         try
         {
+            // whisper-cli reads a file: give it the clip as LoadClipSamples read it.
+            Wav.Write(samples, ParakeetMath.SampleRate, path);
             var psi = new ProcessStartInfo(Binary)
             {
                 RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true,
@@ -230,7 +247,11 @@ public sealed class Transcriber
             }
             return Parse(File.ReadAllText(tmp + ".json"));
         }
-        finally { try { File.Delete(tmp + ".json"); } catch { } }
+        finally
+        {
+            try { File.Delete(tmp + ".json"); } catch { }
+            try { File.Delete(path); } catch { }
+        }
     }
 
     /// whisper.cpp JSON: {"transcription":[{"offsets":{"from":ms,"to":ms},"text":"..."}]}

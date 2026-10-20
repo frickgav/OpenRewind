@@ -94,6 +94,17 @@ sealed class ModelDownloadForm : Form
         status.Text = "Starting…";
         var sw = Stopwatch.StartNew();
         long first = -1;
+        var line = "Starting…";
+        var lastData = Stopwatch.StartNew();
+        // Says so when nothing has come for a while (the download gives up after 60 s of nothing).
+        using var watch = new System.Windows.Forms.Timer { Interval = 1000 };
+        watch.Tick += (_, _) =>
+        {
+            if (IsDisposed || cts == null) return;
+            var quiet = lastData.Elapsed.TotalSeconds;
+            status.Text = quiet >= 15 ? $"{line} · no data for {quiet:0} s" : line;
+        };
+        watch.Start();
         // Progress<T> reports on this (UI) thread.
         var progress = new Progress<(long Done, long Total)>(p =>
         {
@@ -102,11 +113,14 @@ sealed class ModelDownloadForm : Form
             bar.Value = (int)Math.Clamp(p.Done * 1000 / Math.Max(1, p.Total), 0, 1000);
             var rate = (p.Done - first) / Math.Max(0.5, sw.Elapsed.TotalSeconds);
             var left = rate > 0 && sw.Elapsed.TotalSeconds > 3 ? $" · {SpeechModels.About((p.Total - p.Done) / rate)} left" : "";
-            status.Text = $"{SpeechModels.FormatSize(p.Done)} of {SpeechModels.FormatSize(p.Total)}{left}";
+            line = $"{SpeechModels.FormatSize(p.Done)} of {SpeechModels.FormatSize(p.Total)}{left}";
+            status.Text = line;
+            lastData.Restart();
         });
         try
         {
             await SpeechModels.Download(model, home, progress, cts.Token);
+            watch.Stop();
             status.Text = "Checking the files…";
             var problem = await Task.Run(() => SpeechModels.Problem(model, home));
             if (problem != null) throw new InvalidDataException(problem);
@@ -119,6 +133,7 @@ sealed class ModelDownloadForm : Form
         {
             Log.Write($"downloading {model.Name} failed: {e.Message}");
             cts = null;
+            watch.Stop();
             if (IsDisposed) return;
             status.ForeColor = Ui.Warn;
             status.Text = $"The download stopped: {e.Message}";
