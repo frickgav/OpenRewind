@@ -72,7 +72,7 @@ sealed class TrayApp : ApplicationContext
         overlay.Chat = AiChat;
         updater.Start();
 
-        // Finds meetings once a minute; the window and the AI notes read what it stores.
+        // Finds meetings (and asks about notes) within seconds of a call; the window and the AI notes read what it stores.
         meetings = new MeetingWatcher(engine.Db, settings, engine.Config.AudioChunkSeconds, () => engine.Transcriber != null, a => overlay.BeginInvoke(a));
         meetings.Start();
 
@@ -244,7 +244,12 @@ sealed class TrayApp : ApplicationContext
         if (engine.AudioOn && !Permissions.MicrophoneOn)
             menu.Items.Add(Item("   ⚠ Microphone is off in Windows — Open Settings…", () => Open(Permissions.MicrophoneSettings)));
         if (engine.AudioOn && engine.Transcriber == null)
-            menu.Items.Add(Item("   Transcription off: set up Whisper…", () => Open("https://github.com/frickgav/openscreen/blob/main/windows/README.md#whisper")));
+        {
+            var picked = SpeechModels.ById(settings.TranscriptionModel);
+            menu.Items.Add(picked.Engine == SpeechEngine.Parakeet
+                ? Item($"   Transcription off: download {picked.Name}…", () => PickModel(picked))
+                : Item("   Transcription off: set up Whisper…", () => Open(WhisperHelp)));
+        }
         menu.Items.Add(new ToolStripSeparator());
 
         menu.Items.Add(new ToolStripMenuItem("Open Timeline", null, (_, _) => overlay.ShowOverlay()) { ShortcutKeyDisplayString = Shortcut.Label });
@@ -297,6 +302,7 @@ sealed class TrayApp : ApplicationContext
         s.DropDownItems.Add(KeepMenu("Keep Audio Recordings For", screen: false));
         s.DropDownItems.Add(TypingGapMenu());
         s.DropDownItems.Add(CompressItem());
+        s.DropDownItems.Add(TranscriptionMenu());
         s.DropDownItems.Add(new ToolStripSeparator());
         var del = new ToolStripMenuItem("Delete Recordings");
         del.DropDownItems.Add(Item("Last 15 Minutes", () => DeleteRecent("last 15 minutes", DateTime.UtcNow.AddMinutes(-15))));
@@ -400,6 +406,116 @@ sealed class TrayApp : ApplicationContext
         item.DropDownItems.Add(new ToolStripSeparator());
         item.DropDownItems.Add(new ToolStripMenuItem("Higher looks sharper but uses more disk space") { Enabled = false });
         return item;
+    }
+
+    // MARK: transcription model
+
+    const string WhisperHelp = "https://github.com/frickgav/openscreen/blob/main/windows/README.md#whisper";
+    const string ModelsHelp = "https://github.com/frickgav/openscreen/blob/main/README.md#choosing-a-transcription-model";
+
+    /// Which model turns speech into text, what it did last, and Re-transcribe.
+    ToolStripMenuItem TranscriptionMenu()
+    {
+        var home = engine.Config.Home;
+        var tx = engine.Transcriber;
+        var item = new ToolStripMenuItem("Transcription Model")
+        {
+            ToolTipText = "Which model turns recorded speech into text. Every model runs on this PC."
+        };
+        foreach (var m in SpeechModels.All)
+        {
+            var size = m.Files.Count == 0 ? "" : SpeechModels.IsDownloaded(m, home) ? "  —  downloaded" : $"  —  {SpeechModels.FormatSize(m.Size)} download";
+            var row = Toggle(m.Name + (m.Id == SpeechModels.DefaultId ? " (Default)" : "") + size, m.Id == settings.TranscriptionModel, () => PickModel(m));
+            row.ToolTipText = m.Detail;
+            item.DropDownItems.Add(row);
+        }
+        item.DropDownItems.Add(new ToolStripSeparator());
+        foreach (var line in TranscriptionStatus()) item.DropDownItems.Add(new ToolStripMenuItem(line) { Enabled = false });
+        if (tx == null && SpeechModels.ById(settings.TranscriptionModel).Engine == SpeechEngine.Whisper)
+            item.DropDownItems.Add(Item("Set Up Whisper…", () => Open(WhisperHelp)));
+        item.DropDownItems.Add(new ToolStripSeparator());
+        var again = new ToolStripMenuItem("Re-transcribe Recent Audio") { Enabled = tx != null };
+        again.ToolTipText = "Run audio you already recorded through the model picked now.";
+        again.DropDownItems.Add(Item("Last Hour…", () => Retranscribe("the last hour", TimeSpan.FromHours(1))));
+        again.DropDownItems.Add(Item("Last Day…", () => Retranscribe("the last day", TimeSpan.FromDays(1))));
+        again.DropDownItems.Add(Item("Last Week…", () => Retranscribe("the last week", TimeSpan.FromDays(7))));
+        item.DropDownItems.Add(again);
+        item.DropDownItems.Add(Item("About These Models…", () => Open(ModelsHelp)));
+        return item;
+    }
+
+    /// "Using NVIDIA Parakeet v3", "Last clip 14:02: 30 s of audio in 3.1 s", "4 clips waiting".
+    List<string> TranscriptionStatus()
+    {
+        var lines = new List<string>();
+        if (engine.Transcriber is not Transcriber tx)
+        {
+            lines.Add($"Not transcribing: {engine.TranscriberProblem ?? "audio recording is off"}");
+            return lines;
+        }
+        lines.Add($"Using {tx.DisplayName}");
+        var st = tx.Status;
+        if (st.Problem != null) lines.Add("Last try failed: " + (st.Problem.Length > 70 ? st.Problem[..70] + "…" : st.Problem));
+        else if (st.LastAt is DateTime at)
+            lines.Add($"Last clip {at.ToLocalTime():t}: {st.LastAudioSeconds:0} s of audio in {st.LastSeconds:0.0} s");
+        else lines.Add("No clips transcribed since it started");
+        var pending = engine.Db.AudioStats().Pending;
+        if (pending > 0) lines.Add(pending == 1 ? "1 clip waiting" : $"{pending} clips waiting");
+        return lines;
+    }
+
+    /// Switch models; one that is not on this PC yet is downloaded first.
+    void PickModel(SpeechModel m)
+    {
+        if (SpeechModels.LanguageWarning(m, engine.Config.WhisperLanguage) is string warn &&
+            MessageBox.Show(warn + "\n\nUse it anyway?", m.Name, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            return;
+        if (m.Files.Count > 0 && !SpeechModels.IsDownloaded(m, engine.Config.Home))
+        {
+            ModelDownloadForm.ShowFor(m, engine.Config.Home, () => UseModel(m));
+            return;
+        }
+        UseModel(m);
+    }
+
+    void UseModel(SpeechModel m)
+    {
+        var changed = settings.TranscriptionModel != m.Id;
+        settings.TranscriptionModel = m.Id;
+        settings.Save();
+        // Same model and it runs: nothing to do. Otherwise start it (again), which also retries a failed load.
+        if (!changed && engine.Transcriber != null && engine.Transcriber.Status.Problem == null) return;
+        engine.RestartTranscriber(m.Id);
+        Log.Write($"transcription model set to {m.Name}");
+        if (engine.Transcriber == null && m.Engine == SpeechEngine.Whisper &&
+            MessageBox.Show($"{m.Name} needs whisper-cli.exe, which is not on this PC yet ({engine.TranscriberProblem}). Open the setup steps?\n\n"
+                            + "NVIDIA Parakeet v3 needs nothing else.", "Set Up Whisper", MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes)
+            Open(WhisperHelp);
+    }
+
+    /// Queue recorded audio again for the model picked now, after saying how long it may take.
+    void Retranscribe(string what, TimeSpan span)
+    {
+        if (engine.Transcriber is not Transcriber tx) return;
+        var from = DateTime.UtcNow - span;
+        var (clips, seconds) = engine.Db.RetranscribeCount(from, engine.Config.AudioChunkSeconds);
+        if (clips == 0)
+        {
+            MessageBox.Show($"There is no transcribed audio from {what}.", "Re-transcribe", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        var st = tx.Status;
+        var busy = st.LastAt != null && st.LastAudioSeconds > 0
+            ? $"for {SpeechModels.About(seconds * st.LastSeconds / st.LastAudioSeconds)}"
+            : "for a while";
+        if (!Confirm($"Re-transcribe {what}?",
+                     $"{clips} clips (up to {SpeechModels.About(seconds).Replace("about ", "")} of audio) will be transcribed again with {tx.DisplayName}. "
+                     + $"This keeps the processor busy {busy} and uses more battery. New recordings still go first.\n\n"
+                     + "The new text replaces the old for good: the old text stays searchable only until each clip is redone. "
+                     + "Clips with no speech are left as they are, and meeting notes already made are kept (not made or sent again)."
+                     + (SpeechModels.LanguageWarning(tx.Model, engine.Config.WhisperLanguage) is string warn ? "\n\n" + warn : ""))) return;
+        var db = engine.Db;
+        Task.Run(() => Log.Write($"re-transcribing {db.RequeueAudio(from)} audio clips from {what} with {tx.DisplayName}"));
     }
 
     // MARK: search by meaning

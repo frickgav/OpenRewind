@@ -2,9 +2,9 @@ name: Mac app
 
 on:
   push:
-    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", "scripts/gif-check.py", ".github/workflows/mac.yml"]
+    paths: ["Sources/**", "Package.swift", "Package.resolved", "THIRD_PARTY_NOTICES.txt", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", "scripts/gif-check.py", ".github/workflows/mac.yml"]
   pull_request:
-    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", "scripts/gif-check.py", ".github/workflows/mac.yml"]
+    paths: ["Sources/**", "Package.swift", "Package.resolved", "THIRD_PARTY_NOTICES.txt", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", "scripts/gif-check.py", ".github/workflows/mac.yml"]
   workflow_dispatch:
 
 permissions:

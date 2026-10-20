@@ -29,6 +29,8 @@ Options:
   --chunk S       Audio chunk length in seconds (default 30)
   --whisper-model PATH   ggml Whisper model (default: auto-detect)
   --language L    Whisper language code, or auto (default auto)
+  --model ID      Transcription model for this run: whisper-auto, whisper-base, whisper-small,
+                  whisper-large-v3-turbo or parakeet-v3 (default: the one picked in Settings)
   --home DIR      Data folder (default ~/.openrewind, or $OPENREWIND_HOME)
 
 Env:
@@ -197,6 +199,9 @@ case "doctor":
     if stuck > 0 {
         print("videos to redo:  \(stuck) still hold deleted frames (rewritten in the background; turned back into pictures if that keeps failing)")
     }
+    let picked = SpeechModels.byId(config.transcriptionModel)
+    let ready = picked.files.isEmpty || SpeechModels.isDownloaded(picked, home: config.home)
+    print("transcription:   \(picked.name)\(ready ? "" : " (not downloaded: pick it in Settings → Transcription Model)")")
     if !Capture.hasScreenPermission { Capture.requestScreenPermission() }
     if !Accessibility.isTrusted { Accessibility.promptForTrust() }
 

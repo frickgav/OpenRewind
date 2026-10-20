@@ -17,6 +17,8 @@ public sealed class Config
     public string? WhisperModel { get; set; }
     public string? WhisperBinary { get; set; }
     public string WhisperLanguage { get; set; } = "auto";
+    /// Settings → Transcription Model (an id from SpeechModels), or --model.
+    public string? TranscriptionModel { get; set; }
 
     public Config(string home) { Home = home; }
 
@@ -77,6 +79,7 @@ public sealed class Config
                 case "--whisper-model": c.WhisperModel = Next(); break;
                 case "--whisper-bin": c.WhisperBinary = Next(); break;
                 case "--language": if (Next() is string l) c.WhisperLanguage = l; break;
+                case "--model": c.TranscriptionModel = Next(); break;
                 case "--home": if (Next() is string h) c.Home = h; break;
             }
         }

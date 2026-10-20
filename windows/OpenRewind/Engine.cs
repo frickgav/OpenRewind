@@ -3,7 +3,7 @@ using NAudio.CoreAudioApi;
 namespace OpenRewind;
 
 /// Owns everything that records. Screen and audio can each be turned on and off on their own.
-/// The Whisper worker runs for the whole life of the process; the API server only while it is switched on.
+/// The transcriber runs for the whole life of the process; the API server only while it is switched on.
 sealed class Engine
 {
     public readonly Config Config;
@@ -59,13 +59,42 @@ sealed class Engine
         Log.Write("local search server off");
     }
 
+    /// Why there is no transcriber ("whisper-cli not found", …), for the menu.
+    public string? TranscriberProblem { get; private set; }
+    Task? txTask;
+
     public void StartTranscriber()
     {
-        if (txCts != null || Transcriber.Create(Config, Db) is not Transcriber tx) return;
-        Transcriber = tx;
-        txCts = new CancellationTokenSource();
-        var ct = txCts.Token;
-        Task.Run(() => tx.Run(ct));
+        lock (gate)
+        {
+            if (txCts != null) return;
+            var tx = Transcriber.Create(Config, Db, out var problem);
+            TranscriberProblem = problem;
+            if (tx == null) return;
+            Transcriber = tx;
+            txCts = new CancellationTokenSource();
+            var ct = txCts.Token;
+            // A model being swapped out finishes the clip it is on first, so two never run at once.
+            var before = txTask;
+            txTask = Task.Run(async () =>
+            {
+                if (before != null) try { await before.ConfigureAwait(false); } catch { }
+                await tx.Run(ct).ConfigureAwait(false);
+            });
+        }
+    }
+
+    /// Settings → Transcription Model changed: new audio goes to the new model.
+    public void RestartTranscriber(string? modelId)
+    {
+        lock (gate)
+        {
+            Config.TranscriptionModel = modelId;
+            txCts?.Cancel();
+            txCts = null;
+            Transcriber = null;
+        }
+        StartTranscriber();
     }
 
     public void SetScreen(bool on)
