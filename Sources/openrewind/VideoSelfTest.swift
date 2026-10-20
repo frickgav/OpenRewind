@@ -78,12 +78,19 @@ enum VideoSelfTest {
                 print("could not delete one frame"); return false
             }
             thumbs.removeValue(forKey: drop)
+            // The pictures must come out as the video showed them (each lossy step was checked against the
+            // screenshot already; a JPEG of a video frame adds its own small loss on top).
+            var shown: [Int64: [UInt8]] = [:]
+            for id in thumbs.keys {
+                guard let src = db.frame(id: id)?.source, let pic = FrameImages.shared.image(src, cache: false) else { print("frame \(id) did not load"); return false }
+                shown[id] = FrameImages.comparable(pic)
+            }
             let broken = VideoCompactor(db: db, codec: BrokenEncoder(codec), dataDir: config.dataDir)
             let r5 = broken.runOnce(compress: false, now: now)
             print("without an encoder: \(r5.unpacked) video(s) turned back into pictures, \(r5.rewritten) rewritten, \(r5.failed) failed")
             guard r5.unpacked == 1, r5.failed == 0, db.segments().count == before - 1, db.stuckRewrites() == 0 else { return false }
             guard thumbs.keys.allSatisfy({ db.frame(id: $0)?.videoPath.isEmpty == true }) else { print("frames still point at the video"); return false }
-            guard checkAll(db, thumbs, w, h) else { return false }
+            guard checkAll(db, shown, w, h) else { return false }
 
             // Delete the rest: the videos and stills go too.
             db.deleteFrames(from: nil, to: now)
