@@ -38,6 +38,7 @@ extension Database {
             failure_reason TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_audio_chunks_status ON audio_chunks(status, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_audio_chunks_ts ON audio_chunks(timestamp);
         CREATE TABLE IF NOT EXISTS audio_transcriptions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             audio_chunk_id INTEGER NOT NULL REFERENCES audio_chunks(id),

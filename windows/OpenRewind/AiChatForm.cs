@@ -573,6 +573,7 @@ sealed class AiSettingsForm : Form
         MeetingWatcher.RecheckConsent(settings, this);
         _ = RefreshModels(quiet: true);
         AiChatForm.SettingsChanged();
+        JournalForm.Reload();
     }
 
     /// Fills the model list from the provider. Quiet: in the background, saying nothing if it fails.

@@ -26,6 +26,14 @@ sealed class TrayApp : ApplicationContext
     /// The AI chat keeps its conversation while its window is closed.
     readonly AiConversation aiConversation = new();
     readonly AiTools aiTools;
+    readonly MeaningController meaning;
+    /// The Search by Meaning line in the open menu, updated while the model downloads.
+    ToolStripMenuItem? meaningStatus;
+    /// The journal's own lookups, so it never offers screenshots the chat allowed.
+    readonly AiTools journalTools;
+    /// Checks every few minutes whether yesterday's recap is due (Write Each Day's Recap Automatically).
+    readonly System.Windows.Forms.Timer recapTimer = new() { Interval = 60_000 };
+    bool writingRecap;
     readonly MeetingWatcher meetings;
 
     public TrayApp(Engine engine)
@@ -35,9 +43,18 @@ sealed class TrayApp : ApplicationContext
         Program.RefreshIconIfNew(settings);
         Blocklist.Current = settings.ToBlocklist();
         timeline = new TimelineModel(engine.Db);
-        aiTools = new AiTools(engine.Db);
+        aiTools = new AiTools(engine.Db) { Meaning = engine.Meaning };
+        timeline.Meaning = engine.Meaning;
+        journalTools = new AiTools(engine.Db);
         overlay = new OverlayForm(timeline) { Look = settings.TimelineLook };
         _ = overlay.Handle;  // create it on the UI thread now
+        meaning = new MeaningController(engine);
+        meaning.Changed += () => overlay.BeginInvoke(() =>
+        {
+            if (meaningStatus != null && settings.SearchByMeaning) meaningStatus.Text = "   " + meaning.StatusLine();
+            if (overlay.Visible) overlay.Invalidate();
+        });
+        if (settings.SearchByMeaning) meaning.Start();
 
         if (settings.LocalSearchServer) StartServer();
         engine.StartTranscriber();
@@ -70,6 +87,9 @@ sealed class TrayApp : ApplicationContext
         // both paths end in UpdateIcon(), which sets the icon's tooltip and picture.
         if (PausedUntil is DateTime until) SchedulePause(until); else ApplyRecordingPrefs();
 
+        recapTimer.Tick += (_, _) => { recapTimer.Interval = 10 * 60_000; WriteDueRecap(); };
+        recapTimer.Start();
+
         BuildMenu();
         UpdateIcon();
         if (!settings.OnboardingDone) ShowSetup();
@@ -84,6 +104,38 @@ sealed class TrayApp : ApplicationContext
         setup.Show();
     }
     OnboardingForm? setup;
+
+    void ShowJournal() => JournalForm.ShowFor(settings, engine.Db, journalTools, OpenMoment, OpenAiSettings);
+
+    /// Write Each Day's Recap Automatically: yesterday's recap, the first time the app runs after
+    /// the day ended, for the AI provider it was turned on for. A failed try is retried on the next
+    /// check, up to Journal.AutoAttempts times. Days with nothing recorded, or with a recap of the
+    /// whole day already, are skipped; a recap written by hand partway through the day is replaced.
+    async void WriteDueRecap()
+    {
+        var ai = settings.Ai();
+        if (writingRecap || !ai.IsReady || !settings.JournalAutoRecapOn(ai)) return;
+        if (Journal.AutoRecapDue(DateTime.Now, settings.JournalLastAutoDay, settings.JournalAutoAttemptDay, settings.JournalAutoAttempts) is not string key
+            || Journal.FromKey(key) is not DateTime day || JournalJobs.IsWriting(key)) return;
+        void Done() { settings.JournalLastAutoDay = key; settings.Save(); }
+        if (engine.Db.Recap(key) is { Partial: false }) { Done(); return; }
+        writingRecap = true;
+        try
+        {
+            var stats = await Task.Run(() => engine.Db.JournalStats(day, journalTools));
+            if (stats.IsEmpty) { Done(); return; }
+            // Counted before the request, so one that never comes back still counts.
+            settings.JournalAutoAttempts = settings.JournalAutoAttemptDay == key ? settings.JournalAutoAttempts + 1 : 1;
+            settings.JournalAutoAttemptDay = key;
+            settings.Save();
+            var r = await JournalJobs.Write(day, settings, engine.Db, journalTools, auto: true);
+            if (r == null) return;
+            if (r.Error == null) { Done(); Log.Write($"wrote the journal recap for {key} ({r.Usage.Describe(settings.AiPriceFor(ai.Model))})"); }
+            else Log.Write($"automatic journal recap for {key} failed (try {settings.JournalAutoAttempts} of {Journal.AutoAttempts}): {r.Error}");
+        }
+        catch (Exception e) { Log.Write($"automatic journal recap for {key} failed: {e.Message}"); }
+        finally { writingRecap = false; }
+    }
 
     void ShowMeetings() => MeetingsForm.ShowFor(engine.Db, settings, meetings, OpenMoment, OpenAiSettings);
 
@@ -199,6 +251,7 @@ sealed class TrayApp : ApplicationContext
         // The browser page when the local server is on, else the timeline's own search box.
         menu.Items.Add(Item("Search…", () => { if (engine.ServerOn) Open($"http://127.0.0.1:{engine.Config.Port}/"); else overlay.ShowSearch(); }));
         menu.Items.Add(Item("Ask AI…", ShowAiChat));
+        menu.Items.Add(Item("Journal…", ShowJournal));
         menu.Items.Add(Item("Meetings…", ShowMeetings));
         menu.Items.Add(Item("Insights…", ShowInsights));
         menu.Items.Add(Item("Show Data Folder", () => Open(engine.Config.Home)));
@@ -209,6 +262,14 @@ sealed class TrayApp : ApplicationContext
         var s = new ToolStripMenuItem(Permissions.MicrophoneOn ? "Settings" : "Settings  ⚠");
         s.DropDownItems.Add(Item("Blocked Apps & Sites…", () => BlockedAppsForm.ShowFor(settings, engine.Db)));
         s.DropDownItems.Add(Item("AI Settings…", () => AiSettingsForm.ShowFor(settings)));
+        var ai = settings.Ai();
+        var autoRecap = Toggle("Write Each Day's Recap Automatically", settings.JournalAutoRecapOn(ai), () =>
+        {
+            settings.SetJournalAutoRecap(!settings.JournalAutoRecapOn(settings.Ai()));
+            JournalForm.Reload();
+        });
+        autoRecap.ToolTipText = Journal.AutoRecapInfo(ai.Kind.Title());
+        s.DropDownItems.Add(autoRecap);
         var ask = Toggle("Ask Before Taking Meeting Notes", settings.AskBeforeMeetingNotes, () =>
         {
             settings.AskBeforeMeetingNotes = !settings.AskBeforeMeetingNotes;
@@ -246,6 +307,8 @@ sealed class TrayApp : ApplicationContext
         del.DropDownItems.Add(Item("All Audio Recordings…", () => DeleteAll(screen: false, audio: true)));
         del.DropDownItems.Add(Item("Everything…", () => DeleteAll(screen: true, audio: true)));
         s.DropDownItems.Add(del);
+        s.DropDownItems.Add(new ToolStripSeparator());
+        foreach (var item in MeaningItems()) s.DropDownItems.Add(item);
         s.DropDownItems.Add(new ToolStripSeparator());
         var server = Toggle($"Local Search Server (127.0.0.1:{engine.Config.Port})", engine.ServerOn, ToggleServer);
         server.ToolTipText = "Search in the browser and let local scripts read your history through the API. Only this PC can connect.";
@@ -337,6 +400,50 @@ sealed class TrayApp : ApplicationContext
         item.DropDownItems.Add(new ToolStripSeparator());
         item.DropDownItems.Add(new ToolStripMenuItem("Higher looks sharper but uses more disk space") { Enabled = false });
         return item;
+    }
+
+    // MARK: search by meaning
+
+    IEnumerable<ToolStripItem> MeaningItems()
+    {
+        var toggle = Toggle("Search by Meaning", settings.SearchByMeaning, ToggleMeaning);
+        toggle.ToolTipText = "Find moments by what they were about, not only the exact words. Works on this PC; nothing is sent anywhere.";
+        yield return toggle;
+        meaningStatus = null;
+        if (!settings.SearchByMeaning) yield break;
+        meaningStatus = new ToolStripMenuItem("   " + meaning.StatusLine()) { Enabled = false };
+        yield return meaningStatus;
+        if (meaning.State == MeaningController.Phase.Failed) yield return Item("   Try Again", meaning.Retry);
+    }
+
+    void ToggleMeaning()
+    {
+        if (!settings.SearchByMeaning)
+        {
+            var download = meaning.ModelPresent ? ""
+                : $"\n\nTo do this it downloads a language model once (about {MiniLm.DownloadSize / 1_000_000} MB) from Hugging Face. " +
+                  "The model is checked before it is used. Your recordings are never uploaded.";
+            if (MessageBox.Show(
+                    "Search by Meaning finds moments by what they were about, even when you don't remember the exact words. " +
+                    "For example, \u201cthe flight I was booking\u201d finds the airline page.\n\n" +
+                    "OpenRewind will read your screen text and transcripts in the background to build an index on this PC. " +
+                    "It works slowly while you use the computer and on battery, and faster when you are away. " +
+                    "Blocked apps and sites are never indexed." + download,
+                    "Turn on Search by Meaning?", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK) return;
+            settings.SearchByMeaning = true;
+            settings.Save();
+            meaning.Start();
+            Log.Write("search by meaning on");
+        }
+        else
+        {
+            if (!Confirm("Turn off Search by Meaning?", "The meaning index is deleted. Keyword search keeps working. Turning it back on builds the index again.")) return;
+            settings.SearchByMeaning = false;
+            settings.Save();
+            meaning.Stop(deleteIndex: true);
+            timeline.SetByMeaning(false);
+            Log.Write("search by meaning off");
+        }
     }
 
     // MARK: timeline look
@@ -501,13 +608,14 @@ sealed class TrayApp : ApplicationContext
     void DeleteAll(bool screen, bool audio)
     {
         var what = screen && audio ? "all screenshots and audio" : screen ? "all screenshots" : "all audio recordings";
-        if (!Confirm($"Delete {what}?", $"This removes {what} from this PC. This cannot be undone.")) return;
+        if (!Confirm($"Delete {what}?", $"This removes {what} from this PC, and every journal recap. This cannot be undone.")) return;
         var db = engine.Db;
         var now = DateTime.UtcNow;
         Task.Run(() =>
         {
             int f = screen ? db.DeleteFrames(null, now) : 0;
             int a = audio ? db.DeleteAudio(null, now) : 0;
+            db.DeleteRecaps(null, null);  // each one was written from both
             db.Compact();
             Log.Write($"deleted {f} screenshots, {a} audio clips (all)");
         });
@@ -665,8 +773,10 @@ sealed class TrayApp : ApplicationContext
         overlay.HideOverlay();
         hotKey.Dispose();
         resumeTimer.Dispose();
+        recapTimer.Dispose();
         retention.Dispose();
         video.Dispose();
+        meaning.Dispose();
         updater.Dispose();
         meetings.Dispose();
         engine.Shutdown();

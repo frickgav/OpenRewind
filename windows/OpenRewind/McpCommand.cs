@@ -12,6 +12,7 @@ static class McpCommand
     {
         var config = Config.Load(args);
         Database? db = null;
+        McpMeaning? meaning = null;
 
         McpState State()
         {
@@ -30,7 +31,10 @@ static class McpCommand
             }
             var tools = new AiTools(db) { Blocked = settings.ToBlocklist() };
             if (settings.AiScreenshots) tools.Screenshots = f => ImageTools.ForAi(f.Source);  // stills and frames kept in a video
-            return new McpState(true, tools);
+            // The model runs in this process too (on the CPU, on this PC); it is loaded on first use.
+            meaning ??= new McpMeaning(db, MiniLm.Dir(config.Home));
+            tools.Meaning = meaning.Get(settings.SearchByMeaning);
+            return new McpState(true, tools, MeaningMissing: meaning.Missing);
         }
 
         // A WinExe still gets the pipes the AI app passed in. UTF-8 without a byte order mark, "\n" between messages.
@@ -39,6 +43,7 @@ static class McpCommand
         using var output = new StreamWriter(Console.OpenStandardOutput(), utf8) { NewLine = "\n" };
         Log.Write($"mcp: OpenRewind {Updater.Current} serving {config.Home}");
         new McpServer(Updater.Current, State).Run(input, output);
+        meaning?.Dispose();
         db?.Dispose();
         return 0;
     }

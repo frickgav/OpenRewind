@@ -31,6 +31,15 @@ final class FrameImages {
     /// Goes up on every release: a decode that ran across one doesn't cache what it got.
     private var releases = 0
 
+    /// The picture of frame `id`. A list of frames can be older than the database: the compactor may have moved
+    /// the frame into a video (and deleted the still) or written its video again under a new name since. When the
+    /// picture isn't where `f` says, look the frame up again.
+    func current(_ db: Database, id: Int64, _ f: FrameSource, cache: Bool = true) -> CGImage? {
+        if let img = image(f, cache: cache) { return img }
+        guard let now = db.frame(id: id)?.source, now != f else { return nil }
+        return image(now, cache: cache)
+    }
+
     /// The picture, or nil when it is gone or can't be read. `cache: false` for one-off reads (the compactor
     /// reading a whole video) that would only push the timeline's frames out of the cache.
     func image(_ f: FrameSource, cache: Bool = true) -> CGImage? {

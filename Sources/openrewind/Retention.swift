@@ -38,8 +38,12 @@ extension Database {
         let (whereSQL, args) = Self.range("timestamp", from, to)
         let and = whereSQL.isEmpty ? "WHERE" : whereSQL + " AND"
         var n = 0, stills: [String] = [], emptied: [String] = [], partial = false
-        // Meeting titles taken from these frames' windows go first (its own statement: it takes the lock).
-        if scalarInt("SELECT COUNT(*) FROM frames \(whereSQL)", args) > 0 { forgetMeetingWindows(from: from, to: to) }
+        // Search by Meaning vectors and meeting titles taken from these frames go first (their own statements:
+        // they take the lock).
+        if scalarInt("SELECT COUNT(*) FROM frames \(whereSQL)", args) > 0 {
+            forgetScreenMoments(from: from, to: to)
+            forgetMeetingWindows(from: from, to: to)
+        }
         // Held throughout, so a compaction cannot commit a new video for these frames halfway through.
         videoGate.lock()
         lock.lock()
@@ -73,6 +77,8 @@ extension Database {
         if !emptied.isEmpty { releasingVideos?(emptied) }
         Self.removeFiles(stills + emptied)
         if partial { videosNeedRewrite?() }
+        // A recap is made from its day's recordings, so it goes with them.
+        deleteRecapsWith(from: from, to: to)
         return n
     }
 
@@ -84,9 +90,11 @@ extension Database {
         let (whereSQL, args) = Self.range("timestamp", from, to)
         let paths = strings("SELECT file_path FROM audio_chunks \(whereSQL)", args)
         guard !paths.isEmpty else { return 0 }
+        forgetAudioMoments(chunkWhere: whereSQL, args)
         run("DELETE FROM audio_transcriptions WHERE audio_chunk_id IN (SELECT id FROM audio_chunks \(whereSQL))", args)
         run("DELETE FROM audio_chunks \(whereSQL)", args)
         Self.removeFiles(paths)
+        deleteRecapsWith(from: from, to: to)
         return paths.count
     }
 

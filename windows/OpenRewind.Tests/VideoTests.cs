@@ -177,6 +177,10 @@ public class VideoTests : IDisposable
         Assert.True(stats.Saved > 0);
         // The timeline and search see the video frames too.
         Assert.Equal(8, db.TimelineFrames(now.AddDays(-1)).Count(t => codec.Load(t.Source) != null));
+        // So does Export Clip, which reads only its range.
+        var clip = db.TimelineFrames(now.AddHours(-4), now.AddHours(-2));
+        Assert.Equal(7, clip.Count(t => t.Source.IsVideo));
+        Assert.Equal("p3", codec.Load(clip.First(t => t.Id == ids[3]).Source));
         Assert.Equal("p2", codec.Load(db.Search(new SearchQuery { Q = "p2" }).Rows[0].Source));
     }
 

@@ -10,6 +10,8 @@ sealed class Engine
     public readonly Database Db;
     public readonly Recorder Recorder;
     public Transcriber? Transcriber { get; private set; }
+    /// Search by Meaning; it indexes only while MeaningController has turned it on.
+    public readonly MeaningService Meaning;
     Server? server;
     CancellationTokenSource? screenCts, txCts;
     AudioStream? mic, system;
@@ -28,6 +30,7 @@ sealed class Engine
         Recorder = new Recorder(config, db);
         // Close a video before a delete removes it (Windows cannot delete an open file).
         db.ReleasingVideos += paths => { foreach (var v in paths) FrameImages.Release(v); };
+        Meaning = new MeaningService(db);
     }
 
     public bool ServerOn => server != null;
@@ -42,7 +45,7 @@ sealed class Engine
             ["accessibility_permission"] = Config.UseAccessibility,
             ["ocr_available"] = Ocr.Available,
             ["platform"] = "windows",
-        }, f => FrameImages.Jpeg(f.Source));
+        }, f => FrameImages.Jpeg(f.Source), () => Meaning);
         var s = new Server(Config.Port, api.Handle);
         s.Start();
         server = s;
@@ -183,6 +186,7 @@ sealed class Engine
         SetScreen(false);
         SetAudio(false);
         txCts?.Cancel();
+        Meaning.Stop();
         server?.Dispose();
     }
 }

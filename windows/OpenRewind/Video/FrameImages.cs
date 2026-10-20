@@ -100,6 +100,12 @@ static class FrameImages
         }
     }
 
+    /// The picture of frame `id`. A list of frames can be older than the database: the compactor may have moved
+    /// the frame into a video (and deleted the still) or written its video again under a new name since. When the
+    /// picture isn't where `f` says, look the frame up again.
+    public static Bitmap? LoadCurrent(Database db, long id, FrameSource f, bool cache = true) =>
+        Load(f, cache) ?? (db.FrameById(id) is Frame now && now.Source != f ? Load(now.Source, cache) : null);
+
     /// Read the file into memory first, so it is not locked (retention or compression may delete it).
     static Bitmap? LoadStill(string path)
     {

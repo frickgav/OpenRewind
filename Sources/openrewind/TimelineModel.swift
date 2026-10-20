@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Combine
 import ImageIO
+import VisionKit
 
 /// State behind the timeline overlay: which moment is shown, its screenshot, and audio at that moment.
 final class TimelineModel: ObservableObject {
@@ -33,6 +34,14 @@ final class TimelineModel: ObservableObject {
     /// Bumped to ask the view to focus the search box.
     @Published var focusSearchToken = 0
     var searchWork: DispatchWorkItem?
+    /// Search by Meaning, when the app has it. It can search only once its model is loaded.
+    var meaning: MeaningService?
+    /// The user picked Meaning over Keyword in the search box.
+    @Published var byMeaning = false
+    /// A meaning search is running in the background.
+    @Published var searching = false
+    /// Bumped by each search, so an older meaning search that finishes late is dropped.
+    var searchSeq = 0
     /// Set by the overlay: gives the keyboard back to the timeline (so space plays audio again).
     var leaveSearchBox: (() -> Void)?
     /// Set by the overlay: closes it without giving focus back to the app that was in front.
@@ -51,6 +60,12 @@ final class TimelineModel: ObservableObject {
     var highlightWork: DispatchWorkItem?
     var highlightCache: [String: [CGRect]] = [:]
     var highlightOrder: [String] = []
+    /// Clip start and end marked with [ and ], and the Export Clip card while it is open (see ClipExport.swift).
+    @Published var clipStart: Date?
+    @Published var clipEnd: Date?
+    @Published var exportClip: ClipRange?
+    /// Live Text on the shown screenshot, for copying what is selected (see LiveText.swift).
+    weak var liveText: ImageAnalysisOverlayView?
     private var thumbCache: [Int64: NSImage] = [:]
     private var thumbOrder: [Int64] = []
 

@@ -47,8 +47,8 @@ public sealed partial class Database
         int n;
         lock (gate)
         {
-            // Meeting titles taken from these frames' windows go first (outside the transaction: its own statement).
-            if (ScalarLong($"SELECT COUNT(*) FROM frames {where}", args) > 0) ForgetMeetingWindows(from, to);
+            // Meaning moments and meeting titles taken from these frames go first (outside the transaction: their own statements).
+            if (ScalarLong($"SELECT COUNT(*) FROM frames {where}", args) > 0) { ForgetScreenMoments(from, to); ForgetMeetingWindows(from, to); }
             using var tx = conn.BeginTransaction();
             n = (int)TxScalar(tx, $"SELECT COUNT(*) FROM frames {where}", args);
             if (n == 0) { tx.Rollback(); return 0; }
@@ -73,6 +73,8 @@ public sealed partial class Database
         if (emptied.Count > 0) ReleasingVideos?.Invoke(emptied);
         RemoveFiles(stills.Concat(emptied).ToList());
         if (partial) VideosNeedRewrite?.Invoke();
+        // A recap is made from its day's recordings, so it goes with them.
+        DeleteRecapsWith(from, to);
         return n;
     }
 
@@ -84,9 +86,11 @@ public sealed partial class Database
         var (where, args) = Range("timestamp", from, to);
         var paths = Strings($"SELECT file_path FROM audio_chunks {where}", args);
         if (paths.Count == 0) return 0;
+        ForgetAudioMoments(where, args);
         Run($"DELETE FROM audio_transcriptions WHERE audio_chunk_id IN (SELECT id FROM audio_chunks {where})", args);
         Run($"DELETE FROM audio_chunks {where}", args);
         RemoveFiles(paths);
+        DeleteRecapsWith(from, to);
         return paths.Count;
     }
 

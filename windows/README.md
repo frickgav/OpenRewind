@@ -34,8 +34,20 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   shown screenshot) limits the timeline to the moments when one app was in front. Time spent in
   other apps shrinks to breaks on the bar, ← → skip straight between that app's screenshots, and
   search only finds that app's screen text (and speech heard while it was in front).
+- **Copy and export**: drag across text on a screenshot (Windows OCR reads it when you stop on it)
+  and **Ctrl+C** copies it; with nothing selected **Ctrl+C** copies the screenshot, **Ctrl+S** saves
+  it as a PNG, **[** and **]** mark a clip and **Ctrl+E** exports it as an MP4 (H.264, with the encoder
+  built into Windows) or an animated GIF, at real time or sped up. It shows the size and time to
+  expect first, then the frame it is on and the time left, with Cancel.
+  Right-click the screenshot or use the share button at the top for the same, plus **Copy All Text**.
+  Clips use only the screenshots already saved and the app filter, and leave out blocked apps and
+  sites; see [Copy and export](../README.md#copy-and-export).
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
+- **Journal…** shows one page per day: top apps, sites and windows worked out on this PC, plus an
+  AI recap when you ask for one (see [Journal](../README.md#journal)).
+  **Settings → Write Each Day's Recap Automatically** is off by default, since it spends tokens;
+  when on, it sends yesterday's history to the AI provider it was turned on for, once a day.
 - **Ask AI…** answers questions about your history with your own key, and **Meetings…** lists your
   calls with their transcripts (see [Ask AI](../README.md#ask-ai) and [Meetings](../README.md#meetings)).
   When a call starts, a popup above the tray asks whether to take notes (**Settings → Ask Before Taking
@@ -69,6 +81,12 @@ on older recordings and on how time is counted). Click an app, site
 - **Settings → Local Search Server** turns on the API and browser search page at
   http://127.0.0.1:3031. Off by default. Only this PC can connect. The terminal commands
   `record` and `serve` always start it.
+- **Settings → Search by Meaning** (off by default) indexes your recordings in the background so
+  the timeline's search box gets a **Keyword | Meaning** switch. Turning it on downloads a model once
+  (about 90 MB, all-MiniLM-L6-v2 from Hugging Face, checked against a fixed SHA-256) into
+  `%USERPROFILE%\.openrewind\models`; it runs on your PC with ONNX Runtime and nothing you record
+  is uploaded. The line under the switch shows the download and indexing progress, with **Try
+  Again** if the download fails. See [Search by Meaning](../README.md#search-by-meaning).
 - **Settings → Allow AI Apps to Read My History (MCP)** lets Claude Desktop, Claude Code, Cursor
   and other MCP apps search your history with the Ask AI lookups. Off by default. Blocked apps and
   sites are left out of screen text (a blocked app shows as "(blocked app)" in the activity
@@ -104,6 +122,7 @@ on older recordings and on how time is counted). Click an app, site
 | Microphone | AVAudioEngine | WASAPI |
 | System audio | ScreenCaptureKit | WASAPI loopback (no permission needed) |
 | Speech to text | whisper.cpp `whisper-cli` | whisper.cpp `whisper-cli.exe` |
+| Search by Meaning | macOS sentence embedding (built in) | all-MiniLM-L6-v2 with ONNX Runtime (downloaded once) |
 | Database, API, search page | SQLite + FTS5, port 3031 | the same |
 | Compress Older Recordings | AVAssetWriter / AVAssetImageGenerator | Media Foundation sink writer / source reader |
 | App | Menu bar, ⌥⌘T | Tray, Ctrl+Alt+T |

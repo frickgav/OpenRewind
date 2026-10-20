@@ -16,6 +16,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let typingGapKey = "typingFrameGap"
     /// The local HTTP API + browser search page. Off unless the user turns it on in Settings.
     private let serverKey = "localSearchServer"
+    /// Search by Meaning: index moments in the background to find them by meaning. Off unless the user turns it on.
+    private let meaningKey = MeaningService.settingKey
     private var retention: RetentionJob!
     /// Compress Older Recordings: keep screenshots older than an hour as video. Off unless turned on.
     private let compressKey = "compressOlderRecordings"
@@ -33,7 +35,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isPaused: Bool { pausedUntil != nil }
     /// The AI chat keeps its conversation while its window is closed.
     private lazy var aiChat: AIChatModel = {
-        let m = AIChatModel(db: engine.db)
+        let m = AIChatModel(db: engine.db, meaning: engine.meaning)
         m.openMoment = { [weak self] d in self?.overlay.show(at: d) }
         // AI Settings is a normal window, which would sit under the overlay.
         m.openSettings = { [weak self] in
@@ -42,6 +44,16 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         return m
     }()
+    /// The journal keeps the day it shows while its window is closed.
+    private lazy var journal: JournalModel = {
+        let m = JournalModel(db: engine.db)
+        m.openMoment = { [weak self] d in self?.overlay.show(at: d) }
+        m.openSettings = { [weak self] in self?.showAISettings() }
+        return m
+    }()
+    /// Checks every few minutes whether yesterday's recap is due (Write Each Day's Recap Automatically).
+    private var recapTimer: Timer?
+    private var writingRecap = false
 
     /// Finds meetings once a minute; the Meetings window and the AI notes read what it stores.
     private lazy var meetings = MeetingCenter(db: engine.db, chunkSeconds: engine.config.audioChunkSeconds,
@@ -52,7 +64,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         super.init()
         copyOldSettings()
         clearOldPermissions()
-        defaults.register(defaults: [screenKey: true, audioKey: true, serverKey: false,
+        defaults.register(defaults: [screenKey: true, audioKey: true, serverKey: false, meaningKey: false,
                                      keepScreenKey: KeepFor.forever.rawValue, keepAudioKey: KeepFor.forever.rawValue,
                                      typingGapKey: 2, compressKey: false])
     }
@@ -92,6 +104,9 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         overlay = OverlayController(db: engine.db)
         overlay.chat = { [unowned self] in self.aiChat }
+        overlay.model.meaning = engine.meaning
+        engine.meaning.pace = { MeaningPace.now() }
+        if defaults.bool(forKey: meaningKey) { startMeaning() }
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
         menu.delegate = self
@@ -113,6 +128,55 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Updater.shared.start()
         updateIcon()
         if !BlocklistStore.shared.onboardingDone { showSetup() }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in self?.writeDueRecap() }
+        recapTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in self?.writeDueRecap() }
+    }
+
+    @objc private func showJournal() {
+        let j = journal
+        j.reload()
+        SetupWindows.shared.show("journal", title: "Journal", size: NSSize(width: 620, height: 800), resizable: true) {
+            JournalView(model: j)
+        }
+    }
+
+    /// Write Each Day's Recap Automatically: yesterday's recap, the first time the app runs after
+    /// the day ended, for the AI provider it was turned on for. A failed try is retried on the next
+    /// check, up to `Journal.autoAttempts` times. Days with nothing recorded, or with a recap of the
+    /// whole day already, are skipped; a recap written by hand partway through the day is replaced.
+    private func writeDueRecap() {
+        let s = AISettings.load()
+        guard !writingRecap, s.isReady, JournalSettings.isOn(for: s),
+              let key = Journal.autoRecapDue(now: Date(), lastDone: JournalSettings.lastAutoDay,
+                                             attemptDay: JournalSettings.attemptDay, attempts: JournalSettings.attempts),
+              let day = Journal.date(fromKey: key) else { return }
+        let db = engine.db, j = journal
+        guard !j.writing.contains(key) else { return }
+        if let r = db.recap(day: key), !r.partial { JournalSettings.lastAutoDay = key; return }
+        writingRecap = true
+        let tools = JournalModel.tools(db), price = AISettings.price(for: s.model)
+        Task { @MainActor [weak self] in
+            defer { self?.writingRecap = false }
+            let stats = await Task.detached { db.journalStats(day: day, tools: tools) }.value
+            guard !stats.isEmpty else { JournalSettings.lastAutoDay = key; return }
+            // Counted before the request, so one that never comes back still counts.
+            JournalSettings.attempts = JournalSettings.attemptDay == key ? JournalSettings.attempts + 1 : 1
+            JournalSettings.attemptDay = key
+            guard let r = await j.writeRecap(for: day, auto: true) else { return }
+            if let e = r.error {
+                log("automatic journal recap for \(key) failed (try \(JournalSettings.attempts) of \(Journal.autoAttempts)): \(e)")
+                return
+            }
+            JournalSettings.lastAutoDay = key
+            log("wrote the journal recap for \(key) (\(r.usage.describe(price)))")
+        }
+    }
+
+    @objc private func toggleAutoRecap() {
+        let s = AISettings.load()
+        JournalSettings.set(!JournalSettings.isOn(for: s), for: s)
+        journal.autoRecap = JournalSettings.isOn(for: s)
     }
 
     /// The first-run setup; ends in the guided tour if the user asks for it.
@@ -221,6 +285,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         SetupWindows.shared.show("aiSettings", title: "AI Settings", size: NSSize(width: 560, height: 840)) {
             AISettingsView { [weak self] in
                 self?.aiChat.reloadSettings()
+                self?.journal.reload()
                 self?.recheckMeetingConsent()
             }
         }
@@ -282,6 +347,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(tl)
         menu.addItem(action("Search…", #selector(openSearch)))
         menu.addItem(action("Ask AI…", #selector(showAIChat)))
+        menu.addItem(action("Journal…", #selector(showJournal)))
         menu.addItem(action("Meetings…", #selector(showMeetings)))
         menu.addItem(action("Insights…", #selector(showInsights)))
         menu.addItem(action("Show Data Folder", #selector(openData)))
@@ -369,6 +435,11 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let m = NSMenu()
         m.addItem(action("Blocked Apps & Sites…", #selector(showBlockedApps)))
         m.addItem(action("AI Settings…", #selector(showAISettings)))
+        let autoRecap = action("Write Each Day's Recap Automatically", #selector(toggleAutoRecap))
+        let ai = AISettings.load()
+        autoRecap.state = JournalSettings.isOn(for: ai) ? .on : .off
+        autoRecap.toolTip = Journal.autoRecapInfo(ai.kind.title)
+        m.addItem(autoRecap)
         let ask = action("Ask Before Taking Meeting Notes", #selector(toggleAskBeforeMeetingNotes))
         ask.state = MeetingCenter.askFirst ? .on : .off
         ask.toolTip = "When a call starts, ask whether to take notes for it. Off: notes are taken for every call (except apps you said Never for)."
@@ -416,6 +487,18 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         del.submenu = dm
         m.addItem(del)
+        m.addItem(.separator())
+
+        let meaning = action("Search by Meaning", #selector(toggleMeaning))
+        meaning.state = defaults.bool(forKey: meaningKey) ? .on : .off
+        meaning.toolTip = "Find moments by what they were about, not only the exact words. Works on this Mac; nothing is sent anywhere."
+        m.addItem(meaning)
+        if defaults.bool(forKey: meaningKey) {
+            let line = NSMenuItem(title: "  " + meaningStatus(), action: nil, keyEquivalent: "")
+            line.isEnabled = false
+            meaningLine = line
+            m.addItem(line)
+        }
         m.addItem(.separator())
 
         let server = action("Local Search Server (127.0.0.1:\(engine.config.port))", #selector(toggleServer))
@@ -678,12 +761,13 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func deleteAll(_ sender: NSMenuItem) {
         let screen = sender.tag != 2, audio = sender.tag != 1
         let what = screen && audio ? "all screenshots and audio" : (screen ? "all screenshots" : "all audio recordings")
-        guard confirm("Delete \(what)?", "This removes \(what) from this Mac. This cannot be undone.",
+        guard confirm("Delete \(what)?", "This removes \(what) from this Mac, and every journal recap. This cannot be undone.",
                       button: "Delete Everything") else { return }
         let db = engine.db, now = Date()
         DispatchQueue.global(qos: .userInitiated).async {
             let f = screen ? db.deleteFrames(from: nil, to: now) : 0
             let a = audio ? db.deleteAudio(from: nil, to: now) : 0
+            db.deleteRecaps(from: nil, to: nil)  // each one was written from both
             db.compact()
             log("deleted \(f) screenshots, \(a) audio clips (all)")
         }
@@ -874,6 +958,82 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openData() { NSWorkspace.shared.open(engine.config.home) }
+
+    // MARK: search by meaning
+
+    /// Load Apple's sentence model (it comes with macOS) and start indexing in the background.
+    private func startMeaning() {
+        if engine.meaning.embedder == nil {
+            engine.meaning.embedder = AppleEmbedder.make()
+            if let e = engine.meaning.embedder { log("search by meaning: using \(e.modelId)") }
+            else { log("search by meaning: macOS has no sentence model for this language") }
+        }
+        engine.meaning.start()
+    }
+
+    // The index counts run several COUNT(*) queries, so they are worked out in the background and
+    // the menu shows the last answer, updating the line when a new one is ready.
+    private weak var meaningLine: NSMenuItem?
+    private var meaningCache: String?
+    private var meaningCacheAt = Date.distantPast
+    private var meaningRefreshing = false
+
+    /// The line under the switch. Never touches the database on the main thread.
+    private func meaningStatus() -> String {
+        guard engine.meaning.embedder != nil else { return "⚠︎ Not available: macOS has no sentence model for your language" }
+        if meaningCache == nil || Date().timeIntervalSince(meaningCacheAt) > 5 { refreshMeaningStatus() }
+        return meaningCache ?? "Checking the index…"
+    }
+
+    private func refreshMeaningStatus() {
+        guard !meaningRefreshing else { return }
+        meaningRefreshing = true
+        let service = engine.meaning
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let p = service.progress()
+            let n = NumberFormatter.localizedString(from: NSNumber(value: p.moments), number: .decimal)
+            let text = p.upToDate ? "Up to date · \(n) moments" : "Indexing in the background… \(p.percent)% · \(n) moments"
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.meaningRefreshing = false
+                guard self.defaults.bool(forKey: self.meaningKey) else { return }
+                self.meaningCache = text
+                self.meaningCacheAt = Date()
+                self.meaningLine?.title = "  " + text
+            }
+        }
+    }
+
+    @objc private func toggleMeaning() {
+        if !defaults.bool(forKey: meaningKey) {
+            NSApp.activate(ignoringOtherApps: true)
+            let a = NSAlert()
+            a.messageText = "Turn on Search by Meaning?"
+            a.informativeText = "Search by Meaning finds moments by what they were about, even when you don't remember the exact words. "
+                + "For example, “the flight I was booking” finds the airline page.\n\n"
+                + "OpenRewind will read your screen text and transcripts in the background to build an index on this Mac, "
+                + "using the language model that comes with macOS. Nothing is downloaded and nothing leaves this Mac. "
+                + "It works slowly while you use the Mac and on battery, and faster when you are away. "
+                + "Blocked apps and sites are never indexed."
+            a.addButton(withTitle: "Turn On")
+            a.addButton(withTitle: "Cancel")
+            guard a.runModal() == .alertFirstButtonReturn else { return }
+            defaults.set(true, forKey: meaningKey)
+            startMeaning()
+            log("search by meaning on")
+        } else {
+            guard confirm("Turn off Search by Meaning?",
+                          "The meaning index is deleted. Keyword search keeps working. Turning it back on builds the index again.",
+                          button: "Turn Off") else { return }
+            defaults.set(false, forKey: meaningKey)
+            engine.meaning.stop()
+            engine.meaning.embedder = nil
+            engine.db.clearMeaning()
+            meaningCache = nil
+            overlay.model.setByMeaning(false)
+            log("search by meaning off")
+        }
+    }
 
     @objc private func toggleLogin() {
         do {
