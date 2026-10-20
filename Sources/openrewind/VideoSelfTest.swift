@@ -122,8 +122,10 @@ enum VideoSelfTest {
         for id in ids {
             guard let f = db.frame(id: id), let pic = FrameImages.shared.image(f.source) else { print("frame \(id) did not load"); return false }
             guard pic.width == Compaction.even(w), pic.height == Compaction.even(h) else { print("frame \(id) is \(pic.width)x\(pic.height)"); return false }
-            guard let want = thumbs[id], Compaction.similar(FrameImages.comparable(pic), want) else {
-                print("frame \(id) looks different from its screenshot"); return false
+            let got = FrameImages.comparable(pic)
+            guard let want = thumbs[id], Compaction.similar(got, want) else {
+                let off = zip(got, thumbs[id] ?? []).reduce(0) { $0 + abs(Int($1.0) - Int($1.1)) } / max(1, got.count)
+                print("frame \(id) (\(f.source.isVideo ? "video" : "still")) looks different from its screenshot: off by \(off) gray levels on average"); return false
             }
         }
         print(String(format: "read %d frames back, %.1f ms each", ids.count, Date().timeIntervalSince(clock) * 1000 / Double(max(1, ids.count))))

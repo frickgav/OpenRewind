@@ -215,8 +215,16 @@ final class AVCodec: VideoCodec {
     }
 
     func writeStill(_ frame: FrameSource, to path: String) throws {
-        guard let img = FrameImages.shared.image(frame, cache: false) else { throw Self.error("the frame could not be read") }
-        guard let data = ImageTools.jpegData(img, quality: 0.8) else { throw Self.error("the frame could not be saved as JPEG") }
+        guard let decoded = FrameImages.shared.image(frame, cache: false) else { throw Self.error("the frame could not be read") }
+        // Drawn into plain 8-bit sRGB first, like the screenshots the recorder saves: a decoded video frame
+        // carries the video's color space (BT.709), which a JPEG would not show the same.
+        guard let ctx = CGContext(data: nil, width: decoded.width, height: decoded.height, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
+            throw Self.error("cannot draw the frame")
+        }
+        ctx.draw(decoded, in: CGRect(x: 0, y: 0, width: decoded.width, height: decoded.height))
+        guard let img = ctx.makeImage(), let data = ImageTools.jpegData(img, quality: 0.8) else { throw Self.error("the frame could not be saved as JPEG") }
         try data.write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 
