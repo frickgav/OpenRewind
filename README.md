@@ -83,14 +83,11 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
 - **Ask AI** (menu bar or tray → Ask AI…) answers questions like "what did I work on today?"
   with your own key: Anthropic, OpenAI, Gemini, OpenRouter (any model it offers), or any
   OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
-<<<<<<< HEAD
 - **Meetings** (menu bar or tray → Meetings…) lists your Zoom, Teams, Meet, Webex, FaceTime and
   Slack huddle calls with their transcript, and can summarize them with your AI key. When a call
   starts, a small popup asks whether to take notes for it. See [Meetings](#meetings).
-=======
 - **Insights** (menu bar or tray → Insights…) shows where your time went today or this week,
   worked out on your computer without AI. See [Insights](#insights).
->>>>>>> origin/main
 - **Claude, Cursor and other AI apps** can search your history too, through MCP, once you turn
   it on. See [Use with Claude and other AI apps (MCP)](#use-with-claude-and-other-ai-apps-mcp).
 
@@ -130,7 +127,6 @@ elsewhere. With a local model (Ollama, LM Studio) nothing leaves your computer a
 server reached over plain http on another network gets a warning, since your key would travel
 unencrypted.
 
-<<<<<<< HEAD
 ## Meetings
 
 OpenRewind finds your calls in what it already records; nothing extra runs during a call.
@@ -175,7 +171,7 @@ Notes never contain web links (only links into your timeline), since the AI writ
 other people said. Ask AI can read them too: "what did we decide in my 2pm call?" Deleting audio
 recordings deletes the meetings in that time, and they are not found again from what is left;
 deleting screen recordings clears the window titles they kept.
-=======
+
 ## Insights
 
 Open it from the menu bar or tray (**Insights…**). Switch between **Day** and **Week**, and use
@@ -217,7 +213,6 @@ totals can be a little higher than Insights'.
 The first launch after updating builds a database index for Insights in the background (seconds,
 or about a minute for a very large history on a slow disk). Until it is done, Insights still works,
 just more slowly.
->>>>>>> origin/main
 
 ## Use with Claude and other AI apps (MCP)
 
