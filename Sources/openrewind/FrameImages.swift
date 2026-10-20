@@ -224,7 +224,7 @@ final class AVCodec: VideoCodec {
             throw Self.error("cannot draw the frame")
         }
         ctx.draw(decoded, in: CGRect(x: 0, y: 0, width: decoded.width, height: decoded.height))
-        guard let img = ctx.makeImage(), let data = ImageTools.jpegData(img, quality: 0.8) else { throw Self.error("the frame could not be saved as JPEG") }
+        guard let img = ctx.makeImage(), let data = ImageTools.jpegData(img, quality: 0.95) else { throw Self.error("the frame could not be saved as JPEG") }
         try data.write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 

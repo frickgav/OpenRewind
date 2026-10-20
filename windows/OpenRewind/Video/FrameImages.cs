@@ -247,7 +247,7 @@ sealed class MfCodec : IVideoCodec
     public void WriteStill(FrameSource frame, string path)
     {
         using var picture = FrameImages.Load(frame, cache: false) ?? throw new IOException("the frame could not be read");
-        ImageTools.WriteJpeg(picture, path, 80);
+        ImageTools.WriteJpeg(picture, path, 95);  // the only copy left, and already lossy once: keep it close
     }
 
     public void Release(string path) => FrameImages.Release(path);
