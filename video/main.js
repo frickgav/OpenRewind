@@ -9,7 +9,15 @@
 
   gsap.registerPlugin(MotionPathPlugin);
 
-  const DURATION = 17.7;               // seconds; scenes 1-4 below add up to this
+  const DURATION = 29;               // seconds; scenes 1-4 below add up to this
+
+  // Reading time inserted into each scene: [scene time, seconds of hold]. The voice-over
+  // lines are timed to fit inside these holds.
+  const HOLDS = {
+    s1: [[0.72, 0.35], [1.42, 0.35], [1.98, 0.3]],
+    s2: [[0.92, 0.6], [2.1, 0.6], [3.05, 0.3]],
+    s3: [[1.9, 1.2], [3.35, 1.0], [4.8, 1.4], [7.25, 1.6], [8.75, 1.2]],
+  };
   const $ = (s) => document.querySelector(s);
   const $$ = (s, root = document) => [...root.querySelectorAll(s)];
   const stage = $('#stage');
@@ -48,6 +56,19 @@
     return { x: (r.left - s.left + r.width * fx) / k, y: (r.top - s.top + r.height * fy) / k };
   }
 
+  /** Time warp for a scene: inserts each hold (seconds) at its breakpoint, so motion keeps
+      its speed and the viewer gets time to read. holds = [[breakpoint, seconds], ...]. */
+  function warp(holds) {
+    return (t) => t + holds.reduce((sum, [at, hold]) => sum + (t >= at - 1e-9 ? hold : 0), 0);
+  }
+
+  /** Sound cues (voice-over lines and effects). Resolved to master time after build and
+      read by render.mjs, which hands them to audio/make_soundtrack.py. */
+  const CUES = [];
+  function cue(tl, name, at, extra = {}) {
+    CUES.push({ tl, name, at, ...extra });
+  }
+
   function splitChars(text) {
     return [...text].map((c) => `<span class="ch">${c}</span>`).join('');
   }
@@ -59,7 +80,7 @@
       <div class="msgs">
         <div class="msg"><i class="av" style="background:#f472b6"></i><div><div class="who">Maya</div><div class="txt">When is the beta launch again? I can’t find it anywhere.</div></div></div>
         <div class="msg"><i class="av" style="background:#60a5fa"></i><div><div class="who">Leo</div><div class="txt">It’s in the Q3 plan doc, I read it this morning.</div></div></div>
-        <div class="msg"><i class="av" style="background:#34d399"></i><div><div class="who">Sam</div><div class="txt">Pricing review at 2. Bring the competitor numbers.</div></div></div>
+        <div class="msg"><i class="av" style="background:#34d399"></i><div><div class="who">Sam</div><div class="txt">Who’s booking flights for the Lisbon offsite?</div></div></div>
       </div></div>`,
     code: () => {
       const L = [
@@ -73,12 +94,17 @@
       ];
       return `<div class="m m-code">${L.map((l, i) => `<div class="ln"><span class="n">${i + 1}</span><span><span style="color:${l[0]}">${l[1]}</span><span style="color:${l[2]}">${l[3]}</span><span style="color:${l[4]}">${l[5]}</span></span></div>`).join('')}</div>`;
     },
-    web: () => `<div class="m m-web"><div class="url">competitor.com/pricing</div><h4>Simple pricing</h4>
+    web: () => `<div class="m m-web"><div class="url">flights.example/lisbon</div><h4>Flights to Lisbon</h4>
       <div class="cards">
-        <div class="card"><b>Starter</b><span class="price">$19</span><i class="ln2"></i><i class="ln2" style="width:70%"></i><i class="btn"></i></div>
-        <div class="card feat"><b>Pro</b><span class="price">$49</span><i class="ln2"></i><i class="ln2" style="width:80%"></i><i class="btn"></i></div>
-        <div class="card"><b>Team</b><span class="price">$99</span><i class="ln2"></i><i class="ln2" style="width:60%"></i><i class="btn"></i></div>
+        <div class="card"><b>Tue 7:05 AM</b><span class="price">SFO → LIS</span><i class="ln2"></i><i class="ln2" style="width:70%"></i><i class="btn"></i></div>
+        <div class="card feat"><b>Tue 1:40 PM</b><span class="price">SFO → LIS</span><i class="ln2"></i><i class="ln2" style="width:80%"></i><i class="btn"></i></div>
+        <div class="card"><b>Wed 9:15 AM</b><span class="price">SFO → LIS</span><i class="ln2"></i><i class="ln2" style="width:60%"></i><i class="btn"></i></div>
       </div></div>`,
+    repo: () => `<div class="m m-repo"><div class="url">github.com/frickgav/OpenRewind</div>
+      <div class="repo-head"><span class="repo-name">frickgav / <b>OpenRewind</b></span><span class="repo-pub">Public</span></div>
+      <div class="repo-tags"><span>MIT License</span><span>Free</span><span>Open source</span><span>Mac &amp; Windows</span></div>
+      <div class="repo-readme"><b>Rewind your Mac or PC.</b><p>Records your screen and audio, pulls the text out, and lets you search or scroll back through everything. 100% local.</p>
+      <i class="ln2"></i><i class="ln2" style="width:82%"></i><i class="ln2" style="width:64%"></i></div></div>`,
     doc: () => `<div class="m m-doc"><h3>Q3 launch plan</h3><div class="meta">Docs · edited 10:18 AM</div>
       <p class="hl-wrap">The <mark>beta<i></i></mark> <mark>launch<i></i></mark> is Thursday, right after the design review.</p>
       <div class="bar" style="width:92%"></div><div class="bar" style="width:78%"></div>
@@ -109,6 +135,7 @@
     chat: { bg: '#1a1d29', bars: ['#ffffff', '#5865f2', '#5865f2', '#5865f2'], side: '#12141d' },
     code: { bg: '#0f1117', bars: ['#bb9af7', '#7aa2f7', '#9ece6a', '#e0af68'] },
     web: { bg: '#eef2f7', bars: ['#0f172a', '#cbd5e1', '#cbd5e1', '#1059fb'] },
+    repo: { bg: '#0d1117', bars: ['#e6edf3', '#3fb950', '#30363d', '#30363d'] },
     doc: { bg: '#ffffff', bars: ['#0f172a', '#d1d5db', '#d1d5db', '#d1d5db'] },
   };
   const KINDS = ['chat', 'code', 'web', 'doc'];
@@ -229,7 +256,7 @@
 
   const desk = $('#desk');
   const deskWins = [
-    createMacWindow({ title: 'competitor.com', kind: 'web', x: 70, y: 96, w: 640, h: 420, parent: desk }),
+    createMacWindow({ title: 'Flights to Lisbon', kind: 'web', x: 70, y: 96, w: 640, h: 420, parent: desk }),
     createMacWindow({ title: '#launch · Chat', kind: 'chat', x: 650, y: 140, w: 600, h: 400, dark: true, parent: desk }),
     createMacWindow({ title: 'Q3 launch plan · Docs', kind: 'doc', x: 330, y: 330, w: 660, h: 430, parent: desk }),
   ];
@@ -260,7 +287,7 @@
   const stackWins = [
     createMacWindow({ title: '#launch · 3:42 PM', kind: 'chat', x: 250, y: 150, w: 600, h: 370, dark: true, parent: $('#stack') }),
     createMacWindow({ title: 'Docs · 10:18 AM', kind: 'doc', x: 660, y: 70, w: 600, h: 370, parent: $('#stack') }),
-    createMacWindow({ title: 'Pricing · 2:05 PM', kind: 'web', x: 1070, y: 150, w: 600, h: 370, parent: $('#stack') }),
+    createMacWindow({ title: 'OpenRewind on GitHub', kind: 'repo', x: 1070, y: 150, w: 600, h: 370, parent: $('#stack') }),
   ];
 
   // ---------- scenes ----------
@@ -268,6 +295,7 @@
   /** Scene 1 (0-3s): kinetic hook. "forgot" glitches, dissolves, then rewinds. */
   function scene1() {
     const tl = gsap.timeline();
+    const w = warp(HOLDS.s1);
     const [h1, h2] = [$('#hook1'), $('#hook2')];
     const chars = $$('.ch', hook3);
     const r = rng(3);
@@ -281,36 +309,40 @@
 
     const inn = { y: 0, opacity: 1, filter: 'blur(0px)', duration: 0.42, ease: POP };
     const cut = { y: -40, opacity: 0, filter: 'blur(10px)', duration: 0.1, ease: 'power2.in' };
-    tl.to(h1, inn, 0.08).to(h1, cut, 0.72)
-      .to(h2, inn, 0.8).to(h2, cut, 1.42)
-      .to(hook3, inn, 1.5)
+    tl.to(h1, inn, w(0.08)).to(h1, cut, w(0.72))
+      .to(h2, inn, w(0.8)).to(h2, cut, w(1.42))
+      .to(hook3, inn, w(1.5))
       // Glitch: RGB-split copies jitter, the word skews.
-      .to('.glitch .g1', { keyframes: [{ x: -12, opacity: 0.9, duration: 0.04 }, { x: 8, duration: 0.04 }, { x: -5, duration: 0.04 }, { x: 14, duration: 0.04 }, { x: -3, duration: 0.04 }, { x: 0, opacity: 0, duration: 0.05 }] }, 1.98)
-      .to('.glitch .g2', { keyframes: [{ x: 10, opacity: 0.9, duration: 0.04 }, { x: -9, duration: 0.04 }, { x: 6, duration: 0.04 }, { x: -12, duration: 0.04 }, { x: 4, duration: 0.04 }, { x: 0, opacity: 0, duration: 0.05 }] }, 1.98)
-      .to('.glitch .gw', { keyframes: [{ skewX: 14, duration: 0.05 }, { skewX: -10, duration: 0.05 }, { skewX: 6, duration: 0.05 }, { skewX: 0, duration: 0.06 }] }, 1.98)
-      .to(dissolve, { progress: 1, duration: 0.36, ease: 'none' }, 2.2)
+      .to('.glitch .g1', { keyframes: [{ x: -12, opacity: 0.9, duration: 0.04 }, { x: 8, duration: 0.04 }, { x: -5, duration: 0.04 }, { x: 14, duration: 0.04 }, { x: -3, duration: 0.04 }, { x: 0, opacity: 0, duration: 0.05 }] }, w(1.98))
+      .to('.glitch .g2', { keyframes: [{ x: 10, opacity: 0.9, duration: 0.04 }, { x: -9, duration: 0.04 }, { x: 6, duration: 0.04 }, { x: -12, duration: 0.04 }, { x: 4, duration: 0.04 }, { x: 0, opacity: 0, duration: 0.05 }] }, w(1.98))
+      .to('.glitch .gw', { keyframes: [{ skewX: 14, duration: 0.05 }, { skewX: -10, duration: 0.05 }, { skewX: 6, duration: 0.05 }, { skewX: 0, duration: 0.06 }] }, w(1.98))
+      .to(dissolve, { progress: 1, duration: 0.36, ease: 'none' }, w(2.2))
       // Rewind: flash, scanlines, and the dissolve plays backwards.
-      .to('#rewFlash', { opacity: 0.9, scale: 1.15, duration: 0.12, ease: 'power2.out' }, 2.56)
-      .to('#scanlines', { opacity: 1, duration: 0.1 }, 2.56)
-      .to(dissolve, { progress: 0, duration: 0.22, ease: 'power2.inOut' }, 2.58)
-      .to('#rewFlash', { opacity: 0, scale: 1.5, duration: 0.25, ease: 'power2.in' }, 2.66)
+      .to('#rewFlash', { opacity: 0.9, scale: 1.15, duration: 0.12, ease: 'power2.out' }, w(2.56))
+      .to('#scanlines', { opacity: 1, duration: 0.1 }, w(2.56))
+      .to(dissolve, { progress: 0, duration: 0.22, ease: 'power2.inOut' }, w(2.58))
+      .to('#rewFlash', { opacity: 0, scale: 1.5, duration: 0.25, ease: 'power2.in' }, w(2.66))
       // ...and the hook itself plays back in reverse, fast.
-      .to(hook3, { x: 160, opacity: 0, filter: 'blur(12px)', duration: 0.07, ease: 'none' }, 2.8)
-      .set(h2, { y: 0, x: -160, filter: 'blur(12px)', opacity: 0 }, 2.8)
-      .to(h2, { x: 0, opacity: 1, filter: 'blur(3px)', duration: 0.05, ease: 'none' }, 2.83)
-      .to(h2, { x: 160, opacity: 0, filter: 'blur(12px)', duration: 0.05, ease: 'none' }, 2.88)
-      .set(h1, { y: 0, x: -160, filter: 'blur(12px)', opacity: 0 }, 2.88)
-      .to(h1, { x: 0, opacity: 1, filter: 'blur(3px)', duration: 0.05, ease: 'none' }, 2.91)
-      .to(h1, { x: 160, opacity: 0, filter: 'blur(12px)', duration: 0.06, ease: 'none' }, 2.96)
-      .to('#scanlines', { opacity: 0, duration: 0.15 }, 2.95)
-      .to('#bgGlow', { opacity: 1, duration: 0.4 }, 2.8)
-      .set('#s1', { opacity: 0 }, 3.0);
+      .to(hook3, { x: 160, opacity: 0, filter: 'blur(12px)', duration: 0.07, ease: 'none' }, w(2.8))
+      .set(h2, { y: 0, x: -160, filter: 'blur(12px)', opacity: 0 }, w(2.8))
+      .to(h2, { x: 0, opacity: 1, filter: 'blur(3px)', duration: 0.05, ease: 'none' }, w(2.83))
+      .to(h2, { x: 160, opacity: 0, filter: 'blur(12px)', duration: 0.05, ease: 'none' }, w(2.88))
+      .set(h1, { y: 0, x: -160, filter: 'blur(12px)', opacity: 0 }, w(2.88))
+      .to(h1, { x: 0, opacity: 1, filter: 'blur(3px)', duration: 0.05, ease: 'none' }, w(2.91))
+      .to(h1, { x: 160, opacity: 0, filter: 'blur(12px)', duration: 0.06, ease: 'none' }, w(2.96))
+      .to('#scanlines', { opacity: 0, duration: 0.15 }, w(2.95))
+      .to('#bgGlow', { opacity: 1, duration: 0.4 }, w(2.8))
+      .set('#s1', { opacity: 0 }, w(3.0));
+    cue(tl, 'vo:saw', w(0.1)); cue(tl, 'vo:read', w(0.8) + 0.02); cue(tl, 'vo:forgot', w(1.5) + 0.02);
+    [w(0.08), w(0.8), w(1.5)].forEach((t) => cue(tl, 'sfx:hit', t));
+    cue(tl, 'sfx:glitch', w(1.98)); cue(tl, 'sfx:dissolve', w(2.2)); cue(tl, 'sfx:rewind', w(2.56));
     return tl;
   }
 
   /** Scene 2 (3-7s): logo, then into the Mac menu bar; cursor opens the timeline. */
   function scene2() {
     const tl = gsap.timeline();
+    const w = warp(HOLDS.s2);
     const { icon, item } = P;
     const menu = $('#mbMenu');
 
@@ -325,48 +357,51 @@
     gsap.set('#cursor', { x: 900 - 8, y: 760 - 5, opacity: 0 });
     gsap.set('#s3', { scale: 1320 / 1920, opacity: 0, y: -6 });
 
-    tl.set('#s2', { opacity: 1 }, 0)
-      .to('#logo', { opacity: 1, scale: 1, duration: 0.8, ease: POP }, 0)
-      .to('#logoRing', { opacity: 0.9, duration: 0.05 }, 0.05)
-      .to('#logoRing', { scale: 2.1, opacity: 0, duration: 0.7, ease: 'power2.out' }, 0.08)
-      .to('#wordmark', { opacity: 1, y: 0, filter: 'blur(0px)', duration: 0.5, ease: SPRING }, 0.22)
-      .to('#tagline', { opacity: 1, y: 0, filter: 'blur(0px)', duration: 0.5, ease: SPRING }, 0.36)
-      .to(['#wordmark', '#tagline'], { opacity: 0, y: -20, filter: 'blur(8px)', duration: 0.25, ease: 'power2.in' }, 0.92)
+    tl.set('#s2', { opacity: 1 }, w(0))
+      .to('#logo', { opacity: 1, scale: 1, duration: 0.8, ease: POP }, w(0))
+      .to('#logoRing', { opacity: 0.9, duration: 0.05 }, w(0.05))
+      .to('#logoRing', { scale: 2.1, opacity: 0, duration: 0.7, ease: 'power2.out' }, w(0.08))
+      .to('#wordmark', { opacity: 1, y: 0, filter: 'blur(0px)', duration: 0.5, ease: SPRING }, w(0.22))
+      .to('#tagline', { opacity: 1, y: 0, filter: 'blur(0px)', duration: 0.5, ease: SPRING }, w(0.36))
+      .to(['#wordmark', '#tagline'], { opacity: 0, y: -20, filter: 'blur(8px)', duration: 0.25, ease: 'power2.in' }, w(0.92))
       // Laptop springs up; the logo shrinks into the menu bar.
-      .to('#laptop', { y: 0, duration: 1.0, ease: SOFT }, 0.95)
-      .to('#bgGlow', { opacity: 0.45, duration: 0.6 }, 0.95)
-      .to('#logo', { x: icon.x - 960, y: icon.y - 540, scale: 26 / 220, duration: 0.75, ease: 'power3.inOut' }, 1.05)
-      .to('#mbIcon', { opacity: 1, duration: 0.1 }, 1.78)
-      .to('#logo', { opacity: 0, duration: 0.1 }, 1.8)
-      .to('#mbIcon', { backgroundColor: 'rgba(255,255,255,.22)', duration: 0.12, yoyo: true, repeat: 1 }, 1.8)
-      .to(deskWins, { opacity: 1, scale: 1, y: 0, duration: 0.6, ease: SPRING, stagger: 0.09 }, 1.45)
-      .to('#recPill', { opacity: 1, x: 0, duration: 0.4, ease: SPRING }, 1.85)
-      .to('#recDot', { opacity: 0.25, scale: 0.7, duration: 0.3, ease: 'sine.inOut', yoyo: true, repeat: 5 }, 1.9)
+      .to('#laptop', { y: 0, duration: 1.0, ease: SOFT }, w(0.95))
+      .to('#bgGlow', { opacity: 0.45, duration: 0.6 }, w(0.95))
+      .to('#logo', { x: icon.x - 960, y: icon.y - 540, scale: 26 / 220, duration: 0.75, ease: 'power3.inOut' }, w(1.05))
+      .to('#mbIcon', { opacity: 1, duration: 0.1 }, w(1.78))
+      .to('#logo', { opacity: 0, duration: 0.1 }, w(1.8))
+      .to('#mbIcon', { backgroundColor: 'rgba(255,255,255,.22)', duration: 0.12, yoyo: true, repeat: 1 }, w(1.8))
+      .to(deskWins, { opacity: 1, scale: 1, y: 0, duration: 0.6, ease: SPRING, stagger: 0.09 }, w(1.45))
+      .to('#recPill', { opacity: 1, x: 0, duration: 0.4, ease: SPRING }, w(1.85))
+      .to('#recDot', { opacity: 0.25, scale: 0.7, duration: 0.3, ease: 'sine.inOut', yoyo: true, repeat: 15 }, w(1.9))
       // Cursor to the menu-bar icon, click, menu opens.
-      .to('#cursor', { opacity: 1, duration: 0.15 }, 2.1)
-      .add(moveCursor([{ x: 1180, y: 520 }, icon], 0.75), 2.12)
-      .add(click(icon), 2.88)
-      .to('#mbIcon', { backgroundColor: 'rgba(255,255,255,.25)', duration: 0.05 }, 2.9)
-      .to(menu, { opacity: 1, scale: 1, y: 0, duration: 0.3, ease: SPRING }, 2.92)
-      .add(moveCursor([{ x: (icon.x + item.x) / 2 - 20, y: (icon.y + item.y) / 2 }, item], 0.32), 3.05)
-      .to('#miTimeline', { backgroundColor: '#1059fb', duration: 0.06 }, 3.3)
-      .add(click(item), 3.4)
-      .to(menu, { opacity: 0, duration: 0.15 }, 3.5)
-      .to('#mbIcon', { backgroundColor: 'rgba(255,255,255,0)', duration: 0.1 }, 3.5)
+      .to('#cursor', { opacity: 1, duration: 0.15 }, w(2.1))
+      .add(moveCursor([{ x: 1180, y: 520 }, icon], 0.75), w(2.12))
+      .add(click(icon), w(2.88))
+      .to('#mbIcon', { backgroundColor: 'rgba(255,255,255,.25)', duration: 0.05 }, w(2.9))
+      .to(menu, { opacity: 1, scale: 1, y: 0, duration: 0.3, ease: SPRING }, w(2.92))
+      .add(moveCursor([{ x: (icon.x + item.x) / 2 - 20, y: (icon.y + item.y) / 2 }, item], 0.32), w(3.05))
+      .to('#miTimeline', { backgroundColor: '#1059fb', duration: 0.06 }, w(3.3))
+      .add(click(item), w(3.4))
+      .to(menu, { opacity: 0, duration: 0.15 }, w(3.5))
+      .to('#mbIcon', { backgroundColor: 'rgba(255,255,255,0)', duration: 0.1 }, w(3.5))
       // Expand into the full-screen Rewind view.
-      .to('#cursor', { opacity: 0, duration: 0.15 }, 3.5)
-      .to('#laptop', { scale: 1.48, duration: 0.6, ease: 'power3.in' }, 3.52)
-      .to('#laptop', { opacity: 0, duration: 0.3, ease: 'power1.in' }, 3.6)
-      .to('#bgGlow', { opacity: 0, duration: 0.4 }, 3.55)
-      .to('#s3', { opacity: 1, duration: 0.22, ease: 'power1.out' }, 3.56)
-      .to('#s3', { scale: 1, y: 0, duration: 0.6, ease: 'power3.inOut' }, 3.55)
-      .set('#s2', { opacity: 0 }, 4.2);
+      .to('#cursor', { opacity: 0, duration: 0.15 }, w(3.5))
+      .to('#laptop', { scale: 1.48, duration: 0.6, ease: 'power3.in' }, w(3.52))
+      .to('#laptop', { opacity: 0, duration: 0.3, ease: 'power1.in' }, w(3.6))
+      .to('#bgGlow', { opacity: 0, duration: 0.4 }, w(3.55))
+      .to('#s3', { opacity: 1, duration: 0.22, ease: 'power1.out' }, w(3.56))
+      .to('#s3', { scale: 1, y: 0, duration: 0.6, ease: 'power3.inOut' }, w(3.55))
+      .set('#s2', { opacity: 0 }, w(4.2));
+    cue(tl, 'sfx:logo', 0); cue(tl, 'vo:meet', 0.15); cue(tl, 'sfx:whoosh', w(0.95)); cue(tl, 'vo:memory', w(1.1));
+    cue(tl, 'sfx:pop', w(1.45)); cue(tl, 'sfx:click', w(2.88)); cue(tl, 'sfx:click', w(3.4)); cue(tl, 'sfx:whoosh', w(3.52));
     return tl;
   }
 
   /** Scene 3 (6.5-14.8s): capture, scrub, search, Ask AI, local. */
   function scene3() {
     const tl = gsap.timeline();
+    const w = warp(HOLDS.s3);
     const caps = $$('.cap');
     gsap.set(caps, { opacity: 0, y: 26, filter: 'blur(10px)' });
     gsap.set('#counter', { opacity: 0, y: 16, xPercent: -50 });
@@ -389,67 +424,74 @@
     const T = 0.5; // scene starts at 6.5s on the master timeline; times below are master time - 6.5
 
     // Beat 1 (7.0-8.5): a snapshot every 2 seconds.
-    tl.to('#cam', { scale: 1.2, transformOrigin: '960px 1010px', duration: 0.6, ease: 'power3.inOut' }, T + 0.05);
-    capIn(tl, '#cap1', T + 0.05);
-    tl.to('#rvFrame', { opacity: 0.25, duration: 0.4 }, T + 0.05)
-      .to('#rvFrame', { opacity: 1, duration: 0.4 }, T + 1.45)
-      .to('#counter', { opacity: 1, y: 0, duration: 0.4, ease: SPRING }, T + 0.15)
-      .add(animateCounter($('#counterNum'), 0, 1800, 1.05), T + 0.2)
-      .to(visible, { opacity: 1, x: 0, scale: 1, duration: 0.45, ease: POP, stagger: 0.062 }, T + 0.15)
-      .to('#playhead', { x: 0, duration: visible.length * 0.062 + 0.1, ease: 'none' }, T + 0.15);
-    [0.35, 0.7, 1.05].forEach((t) => tl.to('#shutter', { opacity: 0.35, duration: 0.04, yoyo: true, repeat: 1, ease: 'power1.out' }, T + t));
-    capOut(tl, '#cap1', T + 1.45);
-    tl.to('#counter', { opacity: 0, y: -10, duration: 0.2 }, T + 1.45);
+    tl.to('#cam', { scale: 1.2, transformOrigin: '960px 1010px', duration: 0.6, ease: 'power3.inOut' }, w(T + 0.05));
+    capIn(tl, '#cap1', w(T + 0.05));
+    tl.to('#rvFrame', { opacity: 0.25, duration: 0.4 }, w(T + 0.05))
+      .to('#rvFrame', { opacity: 1, duration: 0.4 }, w(T + 1.45))
+      .to('#counter', { opacity: 1, y: 0, duration: 0.4, ease: SPRING }, w(T + 0.15))
+      .add(animateCounter($('#counterNum'), 0, 1800, 1.05), w(T + 0.2))
+      .to(visible, { opacity: 1, x: 0, scale: 1, duration: 0.45, ease: POP, stagger: 0.062 }, w(T + 0.15))
+      .to('#playhead', { x: 0, duration: visible.length * 0.062 + 0.1, ease: 'none' }, w(T + 0.15));
+    [0.35, 0.7, 1.05].forEach((t) => tl.to('#shutter', { opacity: 0.35, duration: 0.04, yoyo: true, repeat: 1, ease: 'power1.out' }, w(T + t)));
+    capOut(tl, '#cap1', w(T + 1.45));
+    tl.to('#counter', { opacity: 0, y: -10, duration: 0.2 }, w(T + 1.45));
 
     // Beat 2 (8.5-9.9): scroll back through your day.
-    tl.to('#cam', { scale: 1, duration: 0.45, ease: 'power3.inOut' }, T + 1.4);
-    capIn(tl, '#cap2', T + 1.55);
+    tl.to('#cam', { scale: 1, duration: 0.45, ease: 'power3.inOut' }, w(T + 1.4));
+    capIn(tl, '#cap2', w(T + 1.55));
     tl.add(scrubTimeline({
       playhead: '#playhead', strip: '#strip', slots, order: ['chat', 'code', 'web', 'doc'], label: $('#rvTime'), duration: 1.05,
-    }), T + 1.75);
-    capOut(tl, '#cap2', T + 2.85);
+    }), w(T + 1.75));
+    capOut(tl, '#cap2', w(T + 2.85));
 
     // Beat 3 (9.9-11.3): search every word you saw or heard.
-    capIn(tl, '#cap3', T + 2.95);
-    tl.to('#rvSearch', { borderColor: 'rgba(77,134,255,.8)', backgroundColor: 'rgba(16,89,251,.12)', duration: 0.2 }, T + 3.0)
-      .to('#caret', { opacity: 1, duration: 0.01 }, T + 3.0)
-      .add(typeText($('#searchText'), 'beta launch', 0.5), T + 3.08)
-      .to('#caret', { opacity: 0, duration: 0.01 }, T + 3.62)
-      .to('#rvHits', { opacity: 1, x: 0, duration: 0.35, ease: SPRING }, T + 3.62)
-      .to('#rvFrame mark i', { scaleX: 1, duration: 0.3, ease: 'power3.out', stagger: 0.08 }, T + 3.65)
-      .to('#rvAudio', { opacity: 1, y: 0, duration: 0.5, ease: POP }, T + 3.8);
-    capOut(tl, '#cap3', T + 4.3);
+    capIn(tl, '#cap3', w(T + 2.95));
+    tl.to('#rvSearch', { borderColor: 'rgba(77,134,255,.8)', backgroundColor: 'rgba(16,89,251,.12)', duration: 0.2 }, w(T + 3.0))
+      .to('#caret', { opacity: 1, duration: 0.01 }, w(T + 3.0))
+      .add(typeText($('#searchText'), 'beta launch', 0.5), w(T + 3.08))
+      .to('#caret', { opacity: 0, duration: 0.01 }, w(T + 3.62))
+      .to('#rvHits', { opacity: 1, x: 0, duration: 0.35, ease: SPRING }, w(T + 3.62))
+      .to('#rvFrame mark i', { scaleX: 1, duration: 0.3, ease: 'power3.out', stagger: 0.08 }, w(T + 3.65))
+      .to('#rvAudio', { opacity: 1, y: 0, duration: 0.5, ease: POP }, w(T + 3.8));
+    capOut(tl, '#cap3', w(T + 4.3));
 
     // Beat 4 (11.3-12.7): Ask AI, with your own key.
     const btn = P.askBtn;
-    capIn(tl, '#cap4', T + 4.4);
-    tl.set('#cursor', { x: 1360 - 8, y: 560 - 5 }, T + 4.35)
-      .to('#cursor', { opacity: 1, duration: 0.12 }, T + 4.38)
-      .add(moveCursor([{ x: 1560, y: 330 }, btn], 0.38), T + 4.4)
-      .add(click(btn), T + 4.78)
-      .to('#rvAskBtn', { backgroundColor: 'rgba(16,89,251,.6)', duration: 0.08 }, T + 4.8)
-      .to('#cursor', { opacity: 0, duration: 0.15 }, T + 4.95)
-      .to(['#rvFrame', '#rvSearch', '#rvAudio'], { x: -230, duration: 0.55, ease: SOFT }, T + 4.85)
-      .to('#rvAskBtn', { opacity: 0, duration: 0.2 }, T + 4.85)
-      .to('#ai', { opacity: 1, x: 0, duration: 0.6, ease: SPRING }, T + 4.85)
-      .to('#aiQ', { opacity: 1, y: 0, duration: 0.3, ease: SPRING }, T + 5.0)
-      .add(typeText($('#aiQText'), 'What did I work on today?', 0.38), T + 5.02)
-      .to('#aiTool', { opacity: 1, y: 0, duration: 0.25, ease: SPRING }, T + 5.42)
-      .to('#aiA', { opacity: 1, y: 0, duration: 0.35, ease: SPRING }, T + 5.52)
-      .to('.ai-line', { opacity: 1, y: 0, duration: 0.3, ease: SPRING, stagger: 0.09 }, T + 5.58);
-    capOut(tl, '#cap4', T + 6.75);
+    capIn(tl, '#cap4', w(T + 4.4));
+    tl.set('#cursor', { x: 1360 - 8, y: 560 - 5 }, w(T + 4.35))
+      .to('#cursor', { opacity: 1, duration: 0.12 }, w(T + 4.38))
+      .add(moveCursor([{ x: 1560, y: 330 }, btn], 0.38), w(T + 4.4))
+      .add(click(btn), w(T + 4.78))
+      .to('#rvAskBtn', { backgroundColor: 'rgba(16,89,251,.6)', duration: 0.08 }, w(T + 4.8))
+      .to('#cursor', { opacity: 0, duration: 0.15 }, w(T + 4.95))
+      .to(['#rvFrame', '#rvSearch', '#rvAudio'], { x: -230, duration: 0.55, ease: SOFT }, w(T + 4.85))
+      .to('#rvAskBtn', { opacity: 0, duration: 0.2 }, w(T + 4.85))
+      .to('#ai', { opacity: 1, x: 0, duration: 0.6, ease: SPRING }, w(T + 4.85))
+      .to('#aiQ', { opacity: 1, y: 0, duration: 0.3, ease: SPRING }, w(T + 5.0))
+      .add(typeText($('#aiQText'), 'What did I work on today?', 0.38), w(T + 5.02))
+      .to('#aiTool', { opacity: 1, y: 0, duration: 0.25, ease: SPRING }, w(T + 5.42))
+      .to('#aiA', { opacity: 1, y: 0, duration: 0.35, ease: SPRING }, w(T + 5.52))
+      .to('.ai-line', { opacity: 1, y: 0, duration: 0.3, ease: SPRING, stagger: 0.09 }, w(T + 5.58));
+    capOut(tl, '#cap4', w(T + 6.75));
 
     // Beat 5 (13.3-14.8): private and local. Screens fold into one tile on your computer.
-    tl.to('#cam', { scale: 0.9, opacity: 0, filter: 'blur(6px)', duration: 0.4, ease: 'power2.in' }, T + 6.80);
-    capIn(tl, '#cap5', T + 6.88);
-    tl.to('#vaultTile', { opacity: 1, scale: 1, duration: 0.6, ease: SOFT }, T + 6.90)
-      .to(vaultThumbs, { opacity: 1, y: (i) => -i * 7, x: (i) => i * 6, rotation: (i) => (i - 1.5) * 4, scale: 1, duration: 0.55, ease: SPRING, stagger: 0.05 }, T + 6.85)
-      .to('#lockBadge', { opacity: 1, scale: 1, duration: 0.55, ease: POP }, T + 7.00)
-      .to('#vaultSub', { opacity: 1, y: 0, duration: 0.4, ease: SPRING }, T + 7.12)
-      .to('.chip', { opacity: 1, y: 0, scale: 1, duration: 0.45, ease: POP, stagger: 0.05 }, T + 7.18);
-    capOut(tl, '#cap5', T + 8.25);
-    tl.to('#vault', { opacity: 0, scale: 0.96, duration: 0.25, ease: 'power2.in' }, T + 8.25)
-      .set('#s3', { opacity: 0 }, T + 8.55);
+    tl.to('#cam', { scale: 0.9, opacity: 0, filter: 'blur(6px)', duration: 0.4, ease: 'power2.in' }, w(T + 6.80));
+    capIn(tl, '#cap5', w(T + 6.88));
+    tl.to('#vaultTile', { opacity: 1, scale: 1, duration: 0.6, ease: SOFT }, w(T + 6.90))
+      .to(vaultThumbs, { opacity: 1, y: (i) => -i * 7, x: (i) => i * 6, rotation: (i) => (i - 1.5) * 4, scale: 1, duration: 0.55, ease: SPRING, stagger: 0.05 }, w(T + 6.85))
+      .to('#lockBadge', { opacity: 1, scale: 1, duration: 0.55, ease: POP }, w(T + 7.00))
+      .to('#vaultSub', { opacity: 1, y: 0, duration: 0.4, ease: SPRING }, w(T + 7.12))
+      .to('.chip', { opacity: 1, y: 0, scale: 1, duration: 0.45, ease: POP, stagger: 0.05 }, w(T + 7.18));
+    capOut(tl, '#cap5', w(T + 8.25));
+    tl.to('#vault', { opacity: 0, scale: 0.96, duration: 0.25, ease: 'power2.in' }, w(T + 8.25))
+      .set('#s3', { opacity: 0 }, w(T + 8.55));
+    cue(tl, 'vo:snap', w(T + 0.15));
+    [0.35, 0.7, 1.05].forEach((t) => cue(tl, 'sfx:shutter', w(T + t)));
+    cue(tl, 'sfx:whoosh', w(T + 1.4)); cue(tl, 'vo:scroll', w(T + 1.55)); cue(tl, 'sfx:rewind', w(T + 1.75), { dur: 1.05 });
+    cue(tl, 'vo:search', w(T + 2.95) + 0.05); cue(tl, 'sfx:type', w(T + 3.08), { dur: 0.5, n: 11 }); cue(tl, 'sfx:ding', w(T + 3.62));
+    cue(tl, 'vo:ask', w(T + 4.4)); cue(tl, 'sfx:click', w(T + 4.78)); cue(tl, 'sfx:whoosh', w(T + 4.85));
+    cue(tl, 'sfx:type', w(T + 5.02), { dur: 0.38, n: 25 }); cue(tl, 'sfx:pop', w(T + 5.52));
+    cue(tl, 'sfx:whoosh', w(T + 6.8)); cue(tl, 'vo:local', w(T + 6.88)); cue(tl, 'sfx:lock', w(T + 7.0)); cue(tl, 'sfx:pop', w(T + 7.18));
     return tl;
   }
 
@@ -467,16 +509,17 @@
       .to('#bgGrid', { opacity: 1, duration: 0.8 }, 0)
       .to(stackWins, { opacity: 1, y: 0, duration: 0.9, ease: SOFT, stagger: 0.08 }, 0.05)
       // Slow parallax drift for the rest of the video.
-      .to(stackWins[0], { x: -50, y: -10, rotationY: 22, duration: 2.7, ease: 'sine.inOut' }, 0.2)
-      .to(stackWins[1], { x: 0, y: -24, duration: 2.7, ease: 'sine.inOut' }, 0.2)
-      .to(stackWins[2], { x: 50, y: -10, rotationY: -22, duration: 2.7, ease: 'sine.inOut' }, 0.2)
-      .to('#bgGrid', { y: -40, duration: 2.9, ease: 'none' }, 0)
+      .to(stackWins[0], { x: -50, y: -10, rotationY: 22, duration: 4.7, ease: 'sine.inOut' }, 0.2)
+      .to(stackWins[1], { x: 0, y: -24, duration: 4.7, ease: 'sine.inOut' }, 0.2)
+      .to(stackWins[2], { x: 50, y: -10, rotationY: -22, duration: 4.7, ease: 'sine.inOut' }, 0.2)
+      .to('#bgGrid', { y: -60, duration: 4.9, ease: 'none' }, 0)
       .to('#headline', { opacity: 1, y: 0, filter: 'blur(0px)', duration: 0.6, ease: SPRING }, 0.35)
       .to('#pill', { opacity: 1, scale: 1, duration: 0.7, ease: POP }, 0.65)
       .to('#pillGlow', { opacity: 0.45, scale: 1, duration: 0.5 }, 0.7)
       .to('#url', { opacity: 1, y: 0, duration: 0.45, ease: SPRING }, 0.85)
       .to('#fine', { opacity: 1, y: 0, duration: 0.45, ease: SPRING }, 1.0)
-      .add(glowPulse($('#pill'), $('#pillGlow'), 1, 1.1), 1.2);
+      .add(glowPulse($('#pill'), $('#pillGlow'), 3, 1.2), 1.2);
+    cue(tl, 'sfx:impact', 0.35); cue(tl, 'vo:cta', 0.4); cue(tl, 'sfx:pop', 0.65);
     return tl;
   }
 
@@ -495,13 +538,19 @@
   function build() {
     measure();
     master = gsap.timeline({ paused: true });
+    // Each scene starts where the previous one hands over (times include the holds).
+    const reveal = warp(HOLDS.s1)(3.0);
+    const showcase = reveal + warp(HOLDS.s2)(3.5);
+    const outro = showcase + warp(HOLDS.s3)(8.75) - 0.45;
     master.addLabel('hook', 0).add(scene1(), 'hook')
-      .addLabel('reveal', 3.0).add(scene2(), 'reveal')
-      .addLabel('showcase', 6.5).add(scene3(), 'showcase')
-      .addLabel('outro', 14.8).add(scene4(), 'outro');
+      .addLabel('reveal', reveal).add(scene2(), 'reveal')
+      .addLabel('showcase', showcase).add(scene3(), 'showcase')
+      .addLabel('outro', outro).add(scene4(), 'outro');
     const d = master.duration();
     if (d > DURATION + 1e-6) console.warn(`timeline runs ${d.toFixed(3)}s, longer than ${DURATION}s`);
     if (d < DURATION) master.to({}, { duration: DURATION - d }, d); // hold the last frame
+    window.__labels = { reveal, showcase, outro };
+    window.__cues = CUES.map(({ tl, ...c }) => ({ ...c, t: +(tl.startTime() + c.at).toFixed(3) })).sort((a, b) => a.t - b.t);
     return master;
   }
 
@@ -513,9 +562,25 @@
     stage.style.transform = `scale(${Math.min(vp.width / 1920, vp.height / 1080)})`;
   }
 
+  // Soundtrack (music, effects, voice-over) follows the timeline. Browsers only allow sound
+  // after a click or key press, so it starts off.
+  const audio = $('#soundtrack');
+  let soundOn = false;
+  function syncAudio(force = false) {
+    if (!soundOn || master.paused() || master.progress() >= 1) { audio.pause(); return; }
+    if (force || Math.abs(audio.currentTime - master.time()) > 0.15) audio.currentTime = master.time();
+    if (audio.paused) audio.play().catch(() => {});
+  }
+  function setSound(on) {
+    soundOn = on;
+    $('#btnSound').textContent = on ? 'Sound on' : 'Sound off';
+    syncAudio(true);
+  }
+
   function setupControls() {
     const play = $('#btnPlay'), scrub = $('#scrub'), readout = $('#readout'), loop = $('#loop');
     const sync = () => {
+      syncAudio();
       scrub.value = Math.round(master.progress() * 1000);
       readout.textContent = `${master.time().toFixed(2)} / ${DURATION.toFixed(2)} s`;
       play.textContent = master.paused() ? 'Play' : 'Pause';
@@ -524,13 +589,17 @@
       if (master.progress() >= 1) master.restart();
       else master.paused(!master.paused());
       sync();
+      syncAudio(true);
     };
-    const restart = () => { master.restart(); sync(); };
+    const restart = () => { master.restart(); sync(); syncAudio(true); };
     master.eventCallback('onUpdate', sync);
     master.eventCallback('onComplete', () => { if (loop.checked) master.restart(); sync(); });
     play.addEventListener('click', toggle);
     $('#btnRestart').addEventListener('click', restart);
     scrub.addEventListener('input', () => { master.pause(); master.seek((scrub.value / 1000) * DURATION, false); sync(); });
+    $('#btnSound').addEventListener('click', () => setSound(!soundOn));
+    // With ?clean there are no controls: a click restarts from the top with sound.
+    if (CLEAN) stage.addEventListener('click', () => { setSound(true); restart(); });
     try { loop.checked = localStorage.getItem('orv-loop') === '1'; } catch (e) { /* storage blocked */ }
     if (params.has('loop')) loop.checked = true;
     loop.addEventListener('change', () => { try { localStorage.setItem('orv-loop', loop.checked ? '1' : '0'); } catch (e) { /* storage blocked */ } });
@@ -538,6 +607,7 @@
       if (e.target.tagName === 'INPUT' && e.target.type === 'range' && e.code !== 'Space') return;
       if (e.code === 'Space') { e.preventDefault(); toggle(); }
       if (e.key === 'r' || e.key === 'R') restart();
+      if (e.key === 'm' || e.key === 'M') setSound(!soundOn);
     });
     $('#btnExport').addEventListener('click', exportWebM);
     sync();
@@ -564,7 +634,13 @@
     try {
       if (window.CropTarget && track.cropTo) await track.cropTo(await CropTarget.fromElement(stage));
     } catch (e) { /* cropping unsupported: the whole tab is recorded */ }
-    const type = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find((t) => MediaRecorder.isTypeSupported(t));
+    // Mix the soundtrack into the recording.
+    try {
+      const a = audio.captureStream ? audio.captureStream() : audio.mozCaptureStream();
+      a.getAudioTracks().forEach((tr) => stream.addTrack(tr));
+      soundOn = true;
+    } catch (e) { /* no audio capture: video only */ }
+    const type = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find((t) => MediaRecorder.isTypeSupported(t));
     const rec = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 24e6 });
     const chunks = [];
     rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
@@ -584,6 +660,7 @@
     await new Promise((r) => setTimeout(r, 400)); // let the capture settle on frame 0
     rec.start();
     master.play(0);
+    syncAudio(true);
     setTimeout(() => rec.stop(), DURATION * 1000 + 300);
     msg.textContent = 'Recording…';
   }

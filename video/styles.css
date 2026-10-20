@@ -172,6 +172,17 @@ body.clean #viewport { inset: 0; }
 .m-web .price { font-size: 34px; font-weight: 800; }
 .m-web .ln2 { height: 10px; border-radius: 5px; background: #e2e8f0; }
 .m-web .btn { margin-top: auto; height: 40px; border-radius: 10px; background: #0f172a; }
+.m-web .price { font-size: 28px; }
+.m-repo { background: #0d1117; color: #e6edf3; }
+.m-repo .url { margin: 18px 24px; height: 40px; border-radius: 10px; background: #161b22; display: flex; align-items: center; padding: 0 16px; color: #8b949e; font-size: 16px; }
+.repo-head { display: flex; align-items: center; gap: 14px; padding: 10px 50px 0; font-size: 30px; color: #2f81f7; }
+.repo-head b { font-weight: 800; }
+.repo-pub { font-size: 15px; color: #8b949e; border: 1px solid #30363d; border-radius: 999px; padding: 3px 12px; }
+.repo-tags { display: flex; gap: 12px; padding: 22px 50px; }
+.repo-tags span { font-size: 17px; font-weight: 600; color: #3fb950; background: rgba(63,185,80,.12); border: 1px solid rgba(63,185,80,.4); border-radius: 999px; padding: 6px 14px; }
+.repo-readme { margin: 0 50px; padding: 26px 30px; border: 1px solid #30363d; border-radius: 12px; display: flex; flex-direction: column; gap: 14px; font-size: 22px; }
+.repo-readme p { margin: 0; color: #c9d1d9; font-size: 19px; line-height: 1.5; }
+.repo-readme .ln2 { height: 10px; border-radius: 5px; background: #30363d; }
 
 /* ---------- Scene 3: Rewind view ---------- */
 .cam { position: absolute; inset: 0; transform-origin: 960px 540px; will-change: transform; }
