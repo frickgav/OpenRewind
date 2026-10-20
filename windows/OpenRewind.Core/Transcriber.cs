@@ -1,35 +1,82 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Microsoft.ML.OnnxRuntime;
 
 namespace OpenRewind;
 
-/// Runs local Whisper (whisper.cpp `whisper-cli`) on pending audio chunks, one at a time.
+/// What the transcriber did last, for the Settings menu.
+public sealed record TranscriberStatus(DateTime? LastAt, double LastSeconds, double LastAudioSeconds, string? Problem);
+
+/// Turns pending audio chunks into text, one at a time, with the model picked in Settings →
+/// Transcription Model: local Whisper (whisper.cpp `whisper-cli`) or NVIDIA Parakeet v3 (ONNX Runtime).
 public sealed class Transcriber
 {
     readonly Config config;
     readonly Database db;
+    public readonly SpeechModel Model;
+    /// whisper-cli (Whisper only).
     public readonly string Binary;
-    public readonly string Model;
+    /// The ggml file (Whisper) or the model folder (Parakeet).
+    public readonly string ModelPath;
+    /// Stored with each transcript line (audio_transcriptions.engine), so it is known which model wrote it.
+    public readonly string EngineTag;
+    /// Shown in Settings: "Whisper Small", "Whisper (ggml-base.en.bin)", "NVIDIA Parakeet v3".
+    public readonly string DisplayName;
+    public TranscriberStatus Status { get; private set; } = new(null, 0, 0, null);
+    ParakeetEngine? parakeet;
+    DateTime lastUsed;
+    /// Parakeet holds about 1 GB of memory while loaded and takes a few seconds to load; let go of it after this long with nothing to do.
+    static readonly TimeSpan UnloadAfter = TimeSpan.FromMinutes(5);
+    static int Threads => Math.Max(2, Environment.ProcessorCount / 2);
 
-    Transcriber(Config config, Database db, string binary, string model)
+    Transcriber(Config config, Database db, SpeechModel model, string binary, string modelPath, string tag, string name)
     {
-        this.config = config; this.db = db; Binary = binary; Model = model;
+        this.config = config; this.db = db; Model = model; Binary = binary; ModelPath = modelPath; EngineTag = tag; DisplayName = name;
     }
 
-    public static Transcriber? Create(Config config, Database db)
+    public static Transcriber? Create(Config config, Database db) => Create(config, db, out _);
+
+    /// The picked model, ready to run; or null and why not (also written to the log).
+    public static Transcriber? Create(Config config, Database db, out string? problem)
     {
+        var m = SpeechModels.ById(config.TranscriptionModel);
+        problem = null;
+        if (m.Engine == SpeechEngine.Parakeet)
+        {
+            if (!SpeechModels.IsDownloaded(m, config.Home))
+            {
+                problem = $"{m.Name} is not downloaded";
+                Log.Write($"{problem} → audio is saved but not transcribed. Pick it again in Settings → Transcription Model to download it");
+                return null;
+            }
+            Log.Write($"transcription model: {m.Name}");
+            return new Transcriber(config, db, m, "", m.Dir(config.Home), ParakeetEngine.Tag, m.Name);
+        }
         if (FindBinary(config.WhisperBinary, config.Home) is not string bin)
         {
-            Log.Write($"whisper-cli not found → audio is saved but not transcribed. Put whisper-cli in {Path.Combine(config.Home, "whisper")} (see README)");
+            problem = "whisper-cli not found";
+            Log.Write($"whisper-cli not found → audio is saved but not transcribed. Put whisper-cli in {Path.Combine(config.Home, "whisper")} (see README), or pick NVIDIA Parakeet v3 in Settings → Transcription Model");
             return null;
         }
-        if (FindModel(config.WhisperModel, config.Home) is not string model)
+        // --whisper-model wins; then the picked size if it is downloaded; then whatever is on this computer.
+        string? path = null;
+        string? name = null;
+        if (config.WhisperModel == null && m.Files.Count > 0)
         {
-            Log.Write($"no Whisper model found → audio is saved but not transcribed. Put a ggml-*.bin in {Path.Combine(config.Home, "models")} or pass --whisper-model");
+            var picked = m.PathOf(config.Home, m.Files[0]);
+            if (File.Exists(picked)) { path = picked; name = m.Name; }
+            else Log.Write($"{m.Name} is not downloaded; using the Whisper model that is");
+        }
+        path ??= FindModel(config.WhisperModel, config.Home);
+        if (path == null)
+        {
+            problem = "no Whisper model found";
+            Log.Write($"no Whisper model found → audio is saved but not transcribed. Put a ggml-*.bin in {Path.Combine(config.Home, "models")}, pass --whisper-model, or pick a model in Settings → Transcription Model");
             return null;
         }
-        Log.Write($"whisper: {Path.GetFileName(model)}");
-        return new Transcriber(config, db, bin, model);
+        Log.Write($"whisper: {Path.GetFileName(path)}");
+        return new Transcriber(config, db, m, bin, path, "whisper.cpp:" + Path.GetFileNameWithoutExtension(path),
+                               name ?? $"Whisper ({Path.GetFileName(path)})");
     }
 
     static string ExeName => OperatingSystem.IsWindows() ? "whisper-cli.exe" : "whisper-cli";
@@ -73,28 +120,91 @@ public sealed class Transcriber
 
     public async Task Run(CancellationToken ct)
     {
-        while (!ct.IsCancellationRequested)
+        try
         {
-            if (db.NextPendingChunk() is AudioChunk chunk) await Task.Run(() => Transcribe(chunk), ct).ConfigureAwait(false);
-            else try { await Task.Delay(3000, ct).ConfigureAwait(false); } catch (TaskCanceledException) { return; }
+            while (!ct.IsCancellationRequested)
+            {
+                if (db.NextPendingChunk() is AudioChunk chunk) await Task.Run(() => Transcribe(chunk), ct).ConfigureAwait(false);
+                else
+                {
+                    if (parakeet != null && DateTime.UtcNow - lastUsed > UnloadAfter) Unload();
+                    await Task.Delay(3000, ct).ConfigureAwait(false);
+                }
+                // A model that cannot load would fail every chunk: stop until the user picks a model again.
+                if (loadFailed) return;
+            }
         }
+        catch (OperationCanceledException) { }
+        finally { Unload(); }
     }
+
+    bool loadFailed;
 
     public void Transcribe(AudioChunk chunk)
     {
         var sw = Stopwatch.StartNew();
+        List<Segment> segments;
         try
         {
-            var segments = Whisper(chunk.FilePath);
-            db.SaveTranscripts(chunk, segments);
-            var words = segments.Sum(s => s.Text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length);
-            Log.Write($"transcribed chunk {chunk.Id}: {segments.Count} segments, {words} words in {sw.Elapsed.TotalSeconds:0.0}s");
+            segments = Model.Engine == SpeechEngine.Parakeet ? Parakeet(chunk.FilePath) : Whisper(chunk.FilePath);
+            db.SaveTranscripts(chunk, segments, EngineTag);
+        }
+        catch (ModelLoadException e)
+        {
+            Log.Write($"cannot load {Model.Name}: {e.Message}");
+            loadFailed = true;
+            Status = Status with { Problem = e.Message };
+            return;
         }
         catch (Exception e)
         {
             Log.Write($"transcribe chunk {chunk.Id} failed: {e.Message}");
             db.MarkChunk(chunk.Id, "pending", e.Message);
+            Status = Status with { Problem = e.Message };
+            return;
         }
+        loadFailed = false;
+        var secs = sw.Elapsed.TotalSeconds;
+        Status = new TranscriberStatus(DateTime.UtcNow, secs, WavSeconds(chunk.FilePath), null);
+        var words = segments.Sum(s => s.Text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length);
+        Log.Write($"transcribed chunk {chunk.Id}: {segments.Count} segments, {words} words in {secs:0.0}s");
+    }
+
+    sealed class ModelLoadException(string message) : Exception(message);
+
+    List<Segment> Parakeet(string path)
+    {
+        if (parakeet == null)
+        {
+            // Check the files against their pinned hashes before loading them (only slow the first time).
+            if (SpeechModels.Problem(Model, config.Home) is string bad)
+                throw new ModelLoadException($"{bad}; pick {Model.Name} again in Settings → Transcription Model to download it again");
+            var sw = Stopwatch.StartNew();
+            try { parakeet = new ParakeetEngine(ModelPath, Threads); }
+            catch (Exception e) when (e is OnnxRuntimeException or DllNotFoundException or TypeInitializationException or IOException)
+            {
+                throw new ModelLoadException(e.Message);
+            }
+            Log.Write($"loaded {Model.Name} in {sw.Elapsed.TotalSeconds:0.0}s");
+        }
+        lastUsed = DateTime.UtcNow;
+        var segs = parakeet.Transcribe(Wav.Load16k(path));
+        lastUsed = DateTime.UtcNow;
+        return segs.Where(s => !IsNoise(s.Text)).ToList();
+    }
+
+    void Unload()
+    {
+        if (parakeet == null) return;
+        parakeet.Dispose();
+        parakeet = null;
+        Log.Write($"unloaded {Model.Name} until there is audio to transcribe");
+    }
+
+    /// Length of one of our 16 kHz 16-bit mono WAV chunks, from its size.
+    static double WavSeconds(string path)
+    {
+        try { return Math.Max(0, new FileInfo(path).Length - 44) / 32000.0; } catch (IOException) { return 0; }
     }
 
     List<Segment> Whisper(string path)
@@ -106,8 +216,8 @@ public sealed class Transcriber
             {
                 RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true,
             };
-            foreach (var a in new[] { "-m", Model, "-f", path, "-l", config.WhisperLanguage, "-oj", "-of", tmp, "-np",
-                                      "-t", Math.Max(2, Environment.ProcessorCount / 2).ToString() })
+            foreach (var a in new[] { "-m", ModelPath, "-f", path, "-l", config.WhisperLanguage, "-oj", "-of", tmp, "-np",
+                                      "-t", Threads.ToString() })
                 psi.ArgumentList.Add(a);
             using var p = Process.Start(psi) ?? throw new InvalidOperationException("cannot start whisper-cli");
             var err = p.StandardError.ReadToEndAsync();

@@ -278,9 +278,11 @@ public sealed partial class Database : IDisposable
         }
     }
 
-    /// Oldest pending chunk that has not failed too often.
+    /// Oldest pending chunk that has not failed too often. Clips from the last 15 minutes go first,
+    /// so a long Re-transcribe never holds up what was just recorded.
     public AudioChunk? NextPendingChunk(int maxAttempts = 3) =>
-        Chunks("WHERE status = 'pending' AND attempts < ? ORDER BY timestamp ASC LIMIT 1", maxAttempts).FirstOrDefault();
+        Chunks("WHERE status = 'pending' AND attempts < ? ORDER BY timestamp >= ? DESC, timestamp ASC LIMIT 1",
+               maxAttempts, Time.Iso(DateTime.UtcNow.AddMinutes(-15))).FirstOrDefault();
 
     public AudioChunk? ChunkById(long id) => Chunks("WHERE id = ?", id).FirstOrDefault();
 
@@ -300,17 +302,23 @@ public sealed partial class Database : IDisposable
         cmd.ExecuteNonQuery();
     }
 
-    /// Insert all segments of one chunk and mark it transcribed, in one transaction.
-    public void SaveTranscripts(AudioChunk chunk, IReadOnlyList<Segment> segments)
+    /// Insert all segments of one chunk and mark it transcribed, in one transaction. Lines an earlier
+    /// run left for the same chunk (Re-transcribe) are replaced. `engine` names the model that wrote them.
+    public void SaveTranscripts(AudioChunk chunk, IReadOnlyList<Segment> segments, string engine = "whisper.cpp")
     {
         lock (gate)
         {
             using var tx = conn.BeginTransaction();
+            using (var old = Cmd("DELETE FROM audio_transcriptions WHERE audio_chunk_id = ?", chunk.Id))
+            {
+                old.Transaction = tx;
+                old.ExecuteNonQuery();
+            }
             var start = Time.ParseIso(chunk.Timestamp) ?? DateTime.UtcNow;
             foreach (var s in segments)
             {
-                using var cmd = Cmd("INSERT INTO audio_transcriptions (audio_chunk_id, timestamp, start_time, end_time, transcription, device, is_input) VALUES (?,?,?,?,?,?,?)",
-                    chunk.Id, Time.Iso(start.AddSeconds(s.Start)), s.Start, s.End, s.Text, chunk.Device, chunk.IsInput ? 1 : 0);
+                using var cmd = Cmd("INSERT INTO audio_transcriptions (audio_chunk_id, timestamp, start_time, end_time, transcription, device, is_input, engine) VALUES (?,?,?,?,?,?,?,?)",
+                    chunk.Id, Time.Iso(start.AddSeconds(s.Start)), s.Start, s.End, s.Text, chunk.Device, chunk.IsInput ? 1 : 0, engine);
                 cmd.Transaction = tx;
                 cmd.ExecuteNonQuery();
             }
@@ -350,6 +358,26 @@ public sealed partial class Database : IDisposable
                 rows.Add(new Transcript(r.GetInt64(0), r.GetInt64(1), r.GetString(2), r.GetDouble(3), r.GetDouble(4),
                                         r.GetString(5), r.GetString(6), r.GetInt64(7) != 0, r.GetString(8)));
             return (rows, total);
+        }
+    }
+
+    /// Audio clips recorded since `from` that Re-transcribe would run again, and their total length in seconds
+    /// (clips are 30 s or shorter, so this counts 30 s each).
+    public (int Clips, double Seconds) RetranscribeCount(DateTime from, double clipSeconds)
+    {
+        var n = (int)ScalarLong("SELECT COUNT(*) FROM audio_chunks WHERE timestamp >= ? AND status IN ('transcribed', 'silent', 'failed')", Time.Iso(from));
+        return (n, n * clipSeconds);
+    }
+
+    /// Re-transcribe: queue the clips recorded since `from` again. Their old lines stay searchable
+    /// until the new ones replace them (SaveTranscripts). Returns how many clips were queued.
+    public int RequeueAudio(DateTime from)
+    {
+        lock (gate)
+        {
+            using var cmd = Cmd("UPDATE audio_chunks SET status = 'pending', attempts = 0, failure_reason = NULL " +
+                                "WHERE timestamp >= ? AND status IN ('transcribed', 'silent', 'failed')", Time.Iso(from));
+            return cmd.ExecuteNonQuery();
         }
     }
 
