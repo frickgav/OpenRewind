@@ -64,7 +64,7 @@ public sealed class AiConversation
                 foreach (var call in reply.ToolCalls)
                 {
                     var (result, image) = await Task.Run(() => tools.Execute(call), ct);
-                    seenUrls.UnionWith(WebAddresses(result));
+                    if (AiTools.SuppliesLinks(call.Name)) seenUrls.UnionWith(WebAddresses(result));
                     history.Add(new AiMessage { Role = AiRole.Tool, Text = result, ToolCallId = call.Id, ToolName = call.Name, Image = image });
                     var detail = image == null ? result : $"{result}\n\n[+ the screenshot as a JPEG image, {image.Length / 1024:N0} KB]";
                     add(new AiChatItem(AiChatKind.Tool, AiTools.Describe(call), detail, AiTools.Arguments(call)));
@@ -117,7 +117,7 @@ public sealed class AiConversation
 
         Now: {now:yyyy-MM-dd HH:mm} local time ({TimeZoneInfo.Local.DisplayName}), {now:dddd d MMMM yyyy}.
 
-        - Always look things up with the tools instead of guessing. For "what did I do / work on" questions, call activity_summary first, then search_screen or get_screen_text for details.
+        - Always look things up with the tools instead of guessing. For "what did I do / work on" questions, call activity_summary first, then search_screen or get_screen_text for details. For meetings and calls, call list_meetings first.
         - Times in tool answers are local. Write times the way people say them (2:15 PM).
         - When you mention a moment, link it with the link from the tool answer, e.g. [2:15 PM](openrewind://t/1760000000). The link opens that moment in the user's timeline.
         - Group work into tasks or projects instead of listing every window. Be concise.

@@ -570,6 +570,7 @@ sealed class AiSettingsForm : Form
         settings.AiScreenshots = screenshots.Checked;
         settings.Save();
         status.Text = "Saved.";
+        MeetingWatcher.RecheckConsent(settings, this);
         _ = RefreshModels(quiet: true);
         AiChatForm.SettingsChanged();
         JournalForm.Reload();

@@ -29,6 +29,7 @@ sealed class TrayApp : ApplicationContext
     /// Checks every few minutes whether yesterday's recap is due (Write Each Day's Recap Automatically).
     readonly System.Windows.Forms.Timer recapTimer = new() { Interval = 60_000 };
     bool writingRecap;
+    readonly MeetingWatcher meetings;
 
     public TrayApp(Engine engine)
     {
@@ -56,6 +57,10 @@ sealed class TrayApp : ApplicationContext
         overlay.Updater = updater;
         overlay.Chat = AiChat;
         updater.Start();
+
+        // Finds meetings once a minute; the window and the AI notes read what it stores.
+        meetings = new MeetingWatcher(engine.Db, settings, engine.Config.AudioChunkSeconds, () => engine.Transcriber != null, a => overlay.BeginInvoke(a));
+        meetings.Start();
 
         // Ctrl+Alt+T (or the shortcut picked in Settings) opens the timeline from anywhere.
         hotKey = new HotKey(Shortcut, overlay.Toggle);
@@ -116,6 +121,44 @@ sealed class TrayApp : ApplicationContext
         }
         catch (Exception e) { Log.Write($"automatic journal recap for {key} failed: {e.Message}"); }
         finally { writingRecap = false; }
+    }
+
+    void ShowMeetings() => MeetingsForm.ShowFor(engine.Db, settings, meetings, OpenMoment, OpenAiSettings);
+
+    /// What turning on meeting summaries sends, and where. Same words as the Mac app.
+    static string MeetingConsentText(string provider) =>
+        $"After each call you take notes for ends, OpenRewind sends its whole transcript (what was said and heard during the call) to {provider} "
+        + "using your key, to write a summary, decisions and action items.\n\n"
+        + $"This costs tokens on your account, and {provider}'s privacy terms apply. Calls in blocked apps and sites never become "
+        + "meetings, but the transcript is not filtered by app: anything said or played during a call is sent, even while a blocked "
+        + $"app or site was in front.\n\nOnly meetings from now on are summarized, and only to {provider}: if you switch providers "
+        + "in AI Settings, OpenRewind asks again. You can still summarize any meeting yourself in the Meetings window.";
+
+    /// Turning it on says plainly what it sends and that it costs tokens.
+    void ToggleMeetingSummaries()
+    {
+        if (settings.SummarizeMeetings)
+        {
+            settings.SummarizeMeetings = false;
+            settings.SummarizeMeetingsSince = null;
+            settings.SummarizeMeetingsProvider = null;
+            settings.Save();
+            return;
+        }
+        var ai = settings.Ai();
+        if (!ai.IsReady)
+        {
+            if (MessageBox.Show("Meeting summaries use your own AI key. Set up a provider in AI Settings first, then turn this on.",
+                                "Summarize Meetings with AI", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) == DialogResult.OK) OpenAiSettings();
+            return;
+        }
+        var text = MeetingConsentText(ai.Kind.Title());
+        if (MessageBox.Show(text, "Summarize meetings with AI?", MessageBoxButtons.OKCancel, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.OK) return;
+        settings.SummarizeMeetings = true;
+        settings.SummarizeMeetingsSince = DateTime.UtcNow;
+        settings.SummarizeMeetingsProvider = MeetingNotes.ConsentKey(ai);
+        settings.Save();
+        Log.Write("meeting summaries with AI on");
     }
 
     /// Turning it on shows how to add OpenRewind to each AI app.
@@ -195,6 +238,7 @@ sealed class TrayApp : ApplicationContext
         menu.Items.Add(Item("Search…", () => { if (engine.ServerOn) Open($"http://127.0.0.1:{engine.Config.Port}/"); else overlay.ShowSearch(); }));
         menu.Items.Add(Item("Ask AI…", ShowAiChat));
         menu.Items.Add(Item("Journal…", ShowJournal));
+        menu.Items.Add(Item("Meetings…", ShowMeetings));
         menu.Items.Add(Item("Insights…", ShowInsights));
         menu.Items.Add(Item("Show Data Folder", () => Open(engine.Config.Home)));
         foreach (var line in StorageLines()) menu.Items.Add(new ToolStripMenuItem("   " + line) { Enabled = false });
@@ -212,6 +256,24 @@ sealed class TrayApp : ApplicationContext
         });
         autoRecap.ToolTipText = Journal.AutoRecapInfo(ai.Kind.Title());
         s.DropDownItems.Add(autoRecap);
+        var ask = Toggle("Ask Before Taking Meeting Notes", settings.AskBeforeMeetingNotes, () =>
+        {
+            settings.AskBeforeMeetingNotes = !settings.AskBeforeMeetingNotes;
+            settings.Save();
+        });
+        ask.ToolTipText = "When a call starts, ask whether to take notes for it. Off: notes are taken for every call (except apps you said Never for).";
+        s.DropDownItems.Add(ask);
+        var summaries = Toggle("Summarize Meetings with AI", settings.SummarizeMeetings, ToggleMeetingSummaries);
+        summaries.ToolTipText = "Off by default. When on, the transcript of each call you take notes for is sent to your AI provider after it ends, for a summary and action items. This uses your key and costs tokens.";
+        s.DropDownItems.Add(summaries);
+        if (settings.MeetingChoices.Count > 0)
+        {
+            var remembered = string.Join(", ", settings.MeetingChoices.OrderBy(c => c.Key)
+                .Select(c => $"{c.Key}: {(c.Value == MeetingPrompt.Always ? "always" : "never")}"));
+            var forget = Item("Forget Remembered Meeting Choices", () => { settings.MeetingChoices.Clear(); settings.Save(); });
+            forget.ToolTipText = $"Ask again for every app. Remembered now: {remembered}.";
+            s.DropDownItems.Add(forget);
+        }
         s.DropDownItems.Add(new ToolStripSeparator());
         s.DropDownItems.Add(ShortcutMenu());
         s.DropDownItems.Add(ScreenshotSizeMenu());
@@ -626,6 +688,7 @@ sealed class TrayApp : ApplicationContext
         recapTimer.Dispose();
         retention.Dispose();
         updater.Dispose();
+        meetings.Dispose();
         engine.Shutdown();
         ExitThread();
     }

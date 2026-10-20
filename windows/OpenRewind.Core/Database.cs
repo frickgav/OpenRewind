@@ -155,6 +155,7 @@ public sealed partial class Database : IDisposable
         // Frames saved while a blocked window or site was in front. Older frames say 0. Mac: the same column.
         if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'blocked'") == 0)
             Exec("ALTER TABLE frames ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0");
+        MigrateMeetings();
     }
 
     /// Indexes that take a while on a big database (the whole frames table is read, screen text and

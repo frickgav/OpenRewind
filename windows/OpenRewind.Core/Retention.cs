@@ -39,6 +39,7 @@ public sealed partial class Database
         var (where, args) = Range("timestamp", from, to);
         var paths = Strings($"SELECT snapshot_path FROM frames {where}", args);
         if (paths.Count == 0) return 0;
+        ForgetMeetingWindows(from, to);
         Run($"DELETE FROM frames {where}", args);  // FTS rows go with it (trigger frames_ad)
         RemoveFiles(paths);
         // A recap is made from its day's recordings, so it goes with them.
@@ -46,9 +47,11 @@ public sealed partial class Database
         return paths.Count;
     }
 
-    /// Delete audio chunks with `from <= timestamp < to`, their transcripts and WAV files.
+    /// Delete audio chunks with `from <= timestamp < to`, their transcripts and WAV files, and the
+    /// meeting notes made from them.
     public int DeleteAudio(DateTime? from, DateTime? to)
     {
+        DeleteMeetings(from, to);
         var (where, args) = Range("timestamp", from, to);
         var paths = Strings($"SELECT file_path FROM audio_chunks {where}", args);
         if (paths.Count == 0) return 0;
