@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenRewind Launch Video</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="viewport">
+  <div id="stage">
+
+    <!-- Ambient background, shared by every scene -->
+    <div class="bg-glow" id="bgGlow"></div>
+    <div class="bg-grid" id="bgGrid"></div>
+
+    <!-- SCENE 1: the hook -->
+    <section class="scene" id="s1">
+      <h1 class="hook" id="hook1">You saw it.</h1>
+      <h1 class="hook" id="hook2">You read it.</h1>
+      <h1 class="hook" id="hook3">You forgot it.</h1>
+      <div class="rew-flash" id="rewFlash">
+        <svg viewBox="0 0 100 70" aria-hidden="true"><use href="#glyph"/></svg>
+      </div>
+      <div class="scanlines" id="scanlines"></div>
+    </section>
+
+    <!-- Logo used across scenes 1 and 2 -->
+    <div class="logo" id="logo">
+      <div class="logo-ring" id="logoRing"></div>
+      <svg class="logo-glyph" viewBox="0 0 100 70" aria-hidden="true"><use href="#glyph"/></svg>
+    </div>
+    <div class="wordmark" id="wordmark">OpenRewind</div>
+    <div class="tagline" id="tagline">Rewind it.</div>
+
+    <!-- SCENE 2: the reveal -->
+    <section class="scene" id="s2">
+      <div class="laptop" id="laptop">
+        <div class="bezel">
+          <div class="screen" id="screen">
+            <div class="wallpaper"></div>
+            <div class="menubar" id="menubar">
+              <span class="mb-apple"></span>
+              <b>Finder</b><span>File</span><span>Edit</span><span>View</span><span>Go</span><span>Window</span>
+              <div class="mb-right">
+                <span class="mb-icon" id="mbIcon"><svg viewBox="0 0 100 70" aria-hidden="true"><use href="#glyph"/></svg></span>
+                <svg class="mb-sym" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 9a15 15 0 0 1 20 0M5.5 12.5a10 10 0 0 1 13 0M9 16a5 5 0 0 1 6 0"/><circle cx="12" cy="19.5" r="1.4"/></svg>
+                <span>Tue 3:42 PM</span>
+              </div>
+            </div>
+            <div class="rec-pill" id="recPill"><i class="rec-dot" id="recDot"></i>Recording</div>
+            <div class="desk" id="desk"></div>
+            <div class="mb-menu" id="mbMenu">
+              <div class="mi mi-head">OpenRewind · Recording</div>
+              <div class="mi" id="miTimeline"><span>Open Timeline</span><kbd>⌥⌘T</kbd></div>
+              <div class="mi"><span>Ask AI…</span></div>
+              <div class="mi"><span>Meetings…</span></div>
+              <div class="mi"><span>Insights…</span></div>
+              <div class="mi-sep"></div>
+              <div class="mi"><span>Pause Recording</span></div>
+              <div class="mi"><span>Settings…</span></div>
+            </div>
+          </div>
+          <div class="notch"></div>
+        </div>
+        <div class="base"><div class="base-lip"></div></div>
+      </div>
+    </section>
+
+    <!-- SCENE 3: the full-screen Rewind view -->
+    <section class="scene" id="s3">
+      <div class="cam" id="cam">
+        <div class="rv-bg"></div>
+        <div class="rv-search" id="rvSearch">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+          <span id="searchText"></span><i class="caret" id="caret"></i>
+          <span class="rv-hits" id="rvHits">14 moments · 2 in audio</span>
+        </div>
+        <div class="rv-askbtn" id="rvAskBtn">Ask AI</div>
+        <div class="rv-frame" id="rvFrame">
+          <div class="moments" id="moments"></div>
+          <div class="shutter" id="shutter"></div>
+          <div class="rv-time" id="rvTime">Today · 3:42 PM</div>
+          <div class="rv-rewind-badge" id="rvRewBadge">
+            <svg viewBox="0 0 100 70" aria-hidden="true"><use href="#glyph"/></svg>
+          </div>
+        </div>
+        <div class="rv-audio" id="rvAudio">
+          <span class="mic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></span>
+          <span>Standup call, 9:41 AM: “so the <mark>beta launch</mark> moves to Thursday”</span>
+        </div>
+        <div class="rv-timeline" id="rvTimeline">
+          <div class="tl-ticks" id="tlTicks"></div>
+          <div class="strip-track"><div class="strip" id="strip"></div></div>
+          <div class="playhead" id="playhead"><div class="ph-knob"></div></div>
+        </div>
+        <aside class="ai" id="ai">
+          <div class="ai-head"><b>Ask OpenRewind</b><span class="ai-key">Your key · Claude</span></div>
+          <div class="ai-body">
+            <div class="bubble me" id="aiQ"><span id="aiQText"></span></div>
+            <div class="tool" id="aiTool">activity_summary · today</div>
+            <div class="bubble bot" id="aiA">
+              <p class="ai-line">You spent most of today on the <b>Q3 launch</b>:</p>
+              <p class="ai-line">• Wrote the launch plan in Docs <a>10:18 AM</a></p>
+              <p class="ai-line">• Moved the beta to Thursday on the standup call <a>9:41 AM</a></p>
+              <p class="ai-line">• Reviewed pricing pages for 40 min <a>2:05 PM</a></p>
+            </div>
+          </div>
+          <div class="ai-foot">Claude, GPT, Gemini, OpenRouter, or a local model</div>
+        </aside>
+      </div>
+
+      <!-- Beat 3: local and private -->
+      <div class="vault" id="vault">
+        <div class="vault-tile" id="vaultTile">
+          <div class="vault-stack" id="vaultStack"></div>
+          <div class="vault-path">~/.openrewind</div>
+        </div>
+        <div class="lock-badge" id="lockBadge">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+          Local only
+        </div>
+        <div class="vault-sub" id="vaultSub">No account. No cloud. Blocked apps are blurred, and it never records itself.</div>
+        <div class="chips" id="chips">
+          <span class="chip">Meetings</span>
+          <span class="chip">Insights</span>
+          <span class="chip">Clips</span>
+          <span class="chip">MCP for Claude &amp; Cursor</span>
+          <span class="chip">Mac &amp; Windows</span>
+        </div>
+      </div>
+
+      <!-- Captions sit outside the camera so they never zoom -->
+      <div class="cap-scrim"></div>
+      <div class="captions">
+        <div class="cap" id="cap1">A snapshot every 2 seconds</div>
+        <div class="cap" id="cap2">Scroll back through your day</div>
+        <div class="cap" id="cap3">Search every word you saw or heard</div>
+        <div class="cap" id="cap4">Ask AI, with your own key</div>
+        <div class="cap" id="cap5">Private and local, on your computer</div>
+      </div>
+      <div class="counter" id="counter"><span>up to</span> <b id="counterNum">0</b> <span>snapshots an hour</span></div>
+    </section>
+
+    <!-- SCENE 4: outro and CTA -->
+    <section class="scene" id="s4">
+      <div class="stack" id="stack"></div>
+      <div class="cta">
+        <h2 class="headline" id="headline">Your screen, rewindable.</h2>
+        <div class="pill-glow" id="pillGlow"></div>
+        <div class="pill" id="pill"><span>Free &amp; Open Source</span></div>
+        <div class="url" id="url">github.com/frickgav/OpenRewind</div>
+        <div class="fine" id="fine">For Mac &amp; Windows · Made by Agility Resources LLC</div>
+      </div>
+    </section>
+
+    <!-- Simulated cursor lives above every scene -->
+    <div class="cursor" id="cursor">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3l14 8-6.2 1.6L10 19z"/></svg>
+    </div>
+    <div class="ripple" id="ripple"></div>
+  </div>
+</div>
+
+<!-- Review controls (hidden with ?clean) -->
+<div id="controls">
+  <button type="button" id="btnPlay" aria-label="Play or pause (Space)">Pause</button>
+  <button type="button" id="btnRestart" aria-label="Restart (R)">Restart</button>
+  <input type="range" id="scrub" min="0" max="1000" value="0" aria-label="Scrub">
+  <span id="readout">0.00 / 17.70 s</span>
+  <label><input type="checkbox" id="loop"> Loop</label>
+  <button type="button" id="btnExport">Export WebM</button>
+  <span id="exportMsg"></span>
+</div>
+
+<!-- The OpenRewind glyph: two rounded rewind triangles, after branding/logo.png -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="glyph">
+      <polygon points="12,35 43,13 43,57" fill="currentColor" stroke="currentColor" stroke-width="13" stroke-linejoin="round"/>
+      <polygon points="56,35 87,13 87,57" fill="currentColor" stroke="currentColor" stroke-width="13" stroke-linejoin="round"/>
+    </g>
+  </defs>
+</svg>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/MotionPathPlugin.min.js"></script>
+<script src="main.js"></script>
+</body>
+</html>
