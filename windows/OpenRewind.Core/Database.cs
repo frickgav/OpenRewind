@@ -282,9 +282,11 @@ public sealed partial class Database : IDisposable
         }
     }
 
-    /// Oldest pending chunk that has not failed too often.
+    /// Oldest pending chunk that has not failed too often. Clips from the last 15 minutes go first,
+    /// so a long Re-transcribe never holds up what was just recorded.
     public AudioChunk? NextPendingChunk(int maxAttempts = 3) =>
-        Chunks("WHERE status = 'pending' AND attempts < ? ORDER BY timestamp ASC LIMIT 1", maxAttempts).FirstOrDefault();
+        Chunks("WHERE status = 'pending' AND attempts < ? ORDER BY timestamp >= ? DESC, timestamp ASC LIMIT 1",
+               maxAttempts, Time.Iso(DateTime.UtcNow.AddMinutes(-15))).FirstOrDefault();
 
     public AudioChunk? ChunkById(long id) => Chunks("WHERE id = ?", id).FirstOrDefault();
 
@@ -304,17 +306,34 @@ public sealed partial class Database : IDisposable
         cmd.ExecuteNonQuery();
     }
 
-    /// Insert all segments of one chunk and mark it transcribed, in one transaction.
-    public void SaveTranscripts(AudioChunk chunk, IReadOnlyList<Segment> segments)
+    /// Insert all segments of one chunk and mark it transcribed, in one transaction. Lines an earlier
+    /// run left for the same chunk (Re-transcribe) are replaced. `engine` names the model that wrote them.
+    /// Returns false (and saves nothing) when the clip was deleted while it was being transcribed.
+    public bool SaveTranscripts(AudioChunk chunk, IReadOnlyList<Segment> segments, string engine = "whisper.cpp")
     {
         lock (gate)
         {
             using var tx = conn.BeginTransaction();
+            using (var exists = Cmd("SELECT COUNT(*) FROM audio_chunks WHERE id = ?", chunk.Id))
+            {
+                exists.Transaction = tx;
+                if (Convert.ToInt64(exists.ExecuteScalar()) == 0)
+                {
+                    // Deleted (Delete Recordings, or kept-for-days cleanup) after it was picked up: do not bring its words back.
+                    tx.Rollback();
+                    return false;
+                }
+            }
+            using (var old = Cmd("DELETE FROM audio_transcriptions WHERE audio_chunk_id = ?", chunk.Id))
+            {
+                old.Transaction = tx;
+                old.ExecuteNonQuery();
+            }
             var start = Time.ParseIso(chunk.Timestamp) ?? DateTime.UtcNow;
             foreach (var s in segments)
             {
-                using var cmd = Cmd("INSERT INTO audio_transcriptions (audio_chunk_id, timestamp, start_time, end_time, transcription, device, is_input) VALUES (?,?,?,?,?,?,?)",
-                    chunk.Id, Time.Iso(start.AddSeconds(s.Start)), s.Start, s.End, s.Text, chunk.Device, chunk.IsInput ? 1 : 0);
+                using var cmd = Cmd("INSERT INTO audio_transcriptions (audio_chunk_id, timestamp, start_time, end_time, transcription, device, is_input, engine) VALUES (?,?,?,?,?,?,?,?)",
+                    chunk.Id, Time.Iso(start.AddSeconds(s.Start)), s.Start, s.End, s.Text, chunk.Device, chunk.IsInput ? 1 : 0, engine);
                 cmd.Transaction = tx;
                 cmd.ExecuteNonQuery();
             }
@@ -325,6 +344,7 @@ public sealed partial class Database : IDisposable
                 mark.ExecuteNonQuery();
             }
             tx.Commit();
+            return true;
         }
     }
 
@@ -354,6 +374,51 @@ public sealed partial class Database : IDisposable
                 rows.Add(new Transcript(r.GetInt64(0), r.GetInt64(1), r.GetString(2), r.GetDouble(3), r.GetDouble(4),
                                         r.GetString(5), r.GetString(6), r.GetInt64(7) != 0, r.GetString(8)));
             return (rows, total);
+        }
+    }
+
+    /// Audio clips recorded since `from` that Re-transcribe would run again, and their total length in seconds
+    /// (clips are 30 s or shorter, so this counts 30 s each).
+    public (int Clips, double Seconds) RetranscribeCount(DateTime from, double clipSeconds)
+    {
+        var n = (int)ScalarLong($"SELECT COUNT(*) FROM audio_chunks WHERE timestamp >= ? AND status IN ({RedoStatuses})", Time.Iso(from));
+        return (n, n * clipSeconds);
+    }
+
+    /// Clips Re-transcribe runs again: ones with words, and ones that failed. Clips found silent stay
+    /// silent (a new model rarely finds speech where the old one found none, and a "pending" silent clip
+    /// would look like speech to Meetings and Insights until it is done).
+    const string RedoStatuses = "'transcribed', 'failed'";
+
+    /// Re-transcribe: queue the clips recorded since `from` again. Their old lines stay searchable
+    /// until the new ones replace them for good (SaveTranscripts). Meetings in that time keep the notes
+    /// they have: the new lines do not make new notes (nor send the transcript to an AI provider again).
+    /// Returns how many clips were queued.
+    public int RequeueAudio(DateTime from)
+    {
+        lock (gate)
+        {
+            using var tx = conn.BeginTransaction();
+            void InTx(string sql, params object[] args)
+            {
+                using var c = Cmd(sql, args);
+                c.Transaction = tx;
+                c.ExecuteNonQuery();
+            }
+            var since = Time.Iso(from);
+            InTx("UPDATE meetings SET redone = 1 WHERE end_time >= ?", since);
+            // Search by Meaning indexes each clip once, in id order: forget the vectors made from the old text
+            // and move its audio cursor back, so the requeued clips are indexed again once they are redone.
+            var first = $"(SELECT MIN(id) FROM audio_chunks WHERE timestamp >= ? AND status IN ({RedoStatuses}))";
+            InTx($"DELETE FROM meaning_moments WHERE kind = 'audio' AND first_id >= {first}", since);
+            InTx($"UPDATE meaning_state SET value = CAST({first} - 1 AS TEXT) WHERE key = '{ChunkCursor}' AND CAST(value AS INTEGER) >= {first}",
+                 since, since);
+            using var cmd = Cmd("UPDATE audio_chunks SET status = 'pending', attempts = 0, failure_reason = NULL " +
+                                $"WHERE timestamp >= ? AND status IN ({RedoStatuses})", Time.Iso(from));
+            cmd.Transaction = tx;
+            var n = cmd.ExecuteNonQuery();
+            tx.Commit();
+            return n;
         }
     }
 

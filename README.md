@@ -77,9 +77,10 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
   `OPENREWIND_EXCLUDE` adds more app names from the terminal.
 - Records **microphone** (AVAudioEngine) and **system audio** (ScreenCaptureKit)
   in 30 s chunks, 16 kHz mono WAV. Silent chunks are dropped.
-- Transcribes each chunk with **local Whisper** (`whisper-cli` from
-  whisper.cpp). Transcripts go into their own FTS5 index and show up in the
-  same search as screen text.
+- Transcribes each chunk on your computer with **local Whisper** (`whisper-cli` from
+  whisper.cpp) or **NVIDIA Parakeet v3**, your pick in **Settings → Transcription Model**
+  (see [Choosing a transcription model](#choosing-a-transcription-model)). Transcripts go into
+  their own FTS5 index and show up in the same search as screen text.
 - **Ask AI** (menu bar or tray → Ask AI…) answers questions like "what did I work on today?"
   with your own key: Anthropic, OpenAI, Gemini, OpenRouter (any model it offers), or any
   OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
@@ -414,6 +415,61 @@ How it works:
   for, and many AI apps (Claude Code, Cursor) can do both. OpenRewind tells the AI to treat it as
   data only, but keep an eye on what it does with your history.
 
+## Choosing a transcription model
+
+**Settings → Transcription Model** picks what turns recorded speech into text. Every choice runs
+on your computer; audio never leaves it.
+
+| Model | Download | Languages | Notes |
+| --- | --- | --- | --- |
+| **Whisper (Automatic)** (default) | none | 99 | Uses the ggml Whisper model already on the computer (see [Whisper](#whisper)). Needs `whisper-cli`. |
+| **Whisper Base** | 148 MB | 99 | Fast, less accurate. Needs `whisper-cli`. |
+| **Whisper Small** | 488 MB | 99 | A good balance. Needs `whisper-cli`. |
+| **Whisper Large v3 Turbo** | 574 MB | 99 | The most accurate Whisper, and the slowest. Needs `whisper-cli`. |
+| **NVIDIA Parakeet v3** | 670 MB | 25 European | Very accurate, with punctuation and capitals, and fast on a CPU. Needs nothing else. |
+
+- Picking a model that is not on the computer yet shows its size and downloads it, with a progress
+  bar. Files come from a fixed commit on Hugging Face and are checked against their SHA-256 before
+  they are used (again the first time they are used after each start of the app). A download that
+  stops, or gets no data for 60 seconds, carries on where it left off with **Try Again**. They are
+  saved in `~/.openrewind/models`: Whisper files where Whisper already looks, under their own names
+  (`ggml-small.openrewind.bin`, so a `ggml-small.bin` you put there yourself is never replaced);
+  Parakeet in `models/parakeet-tdt-0.6b-v3-int8`. Delete a file to free the space.
+- The new model is used for audio recorded from then on. **Re-transcribe Recent Audio** (last hour,
+  day or week) runs older clips through it too. It says how many clips that is and about how long it
+  keeps the processor busy; new recordings still go first. The new text **replaces the old for good**
+  (the old text stays searchable only until each clip is redone). Clips where no speech was found
+  are left as they are, and meeting notes already made are kept: re-transcribing does not make them
+  again or send the transcript to your AI provider again.
+- The menu shows the model in use, when it last finished a clip and how long that took, and how many
+  clips are waiting.
+- Each transcript line records which model wrote it (`audio_transcriptions.engine`:
+  `whisper.cpp:ggml-small`, `parakeet-tdt-0.6b-v3`, …). Search, Ask AI, the timeline and MCP read
+  every line the same way.
+- Parakeet languages: Bulgarian, Croatian, Czech, Danish, Dutch, English, Estonian, Finnish, French,
+  German, Greek, Hungarian, Italian, Latvian, Lithuanian, Maltese, Polish, Portuguese, Romanian,
+  Russian, Slovak, Slovenian, Spanish, Swedish and Ukrainian. It finds the language by itself; the
+  `--language` option only applies to Whisper. For other languages pick a Whisper model: when
+  `--language` is set to one Parakeet does not know, picking Parakeet (or re-transcribing with it)
+  warns first.
+- Parakeet runs on [ONNX Runtime](https://onnxruntime.ai) (MIT), built into the app (its notice is in
+  `THIRD_PARTY_NOTICES.txt`, which ships with both apps). It holds about 1 GB of memory while it is
+  loaded and lets go of it after 5 minutes with no audio to do. **While audio recording is on, a clip
+  arrives every 30 seconds, so it stays loaded the whole time**; turn audio off, or pick Whisper, to
+  get that memory back. Long audio (`ingest-audio` of a talk, or a long `--chunk`) goes through the
+  model in pieces of at most 30 seconds, so memory stays the same however long it is. On a 4-core
+  Linux test machine (the Windows code) a 30 s clip took 3.4–3.6 s, about 9 times faster than real
+  time, and 5 minutes took 25 s.
+- From the terminal, `--model parakeet-v3` (or `whisper-small`, …) picks a model for one run, for
+  example `openrewind ingest-audio talk.wav --model parakeet-v3`.
+
+[NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) is made by NVIDIA
+and licensed [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/). OpenRewind downloads the
+version [converted to ONNX and quantized to int8](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8)
+by the [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) project (Apache-2.0), and uses it as it is.
+Whisper models are [OpenAI's Whisper](https://github.com/openai/whisper) (MIT) in the ggml format of
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT).
+
 ## Mac app
 
 ```bash
@@ -458,6 +514,9 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
   launch and every hour.
 - **Settings → Delete Recordings**: last 15 minutes, last hour, today, all
   screen, all audio, or everything (asks first).
+- **Settings → Transcription Model**: Whisper (Automatic, the default), Whisper Base, Small or
+  Large v3 Turbo, or NVIDIA Parakeet v3, plus **Re-transcribe Recent Audio**. See
+  [Choosing a transcription model](#choosing-a-transcription-model).
 - **Settings → Local Search Server** turns on the API and browser search page at
   `http://127.0.0.1:3031`. Off by default. Only this Mac can connect. The terminal
   commands `record` and `serve` always start it.
@@ -574,12 +633,16 @@ Then open http://127.0.0.1:3031.
 
 ### Whisper
 
-Needs `whisper-cli` (`brew install whisper-cpp`) and a ggml model.
-OpenRewind looks for a model in this order:
+Needs `whisper-cli` (`brew install whisper-cpp`) and a ggml model. **Settings → Transcription
+Model** downloads one (Whisper Base, Small or Large v3 Turbo), or OpenRewind looks for a model in
+this order:
 
 1. `--whisper-model PATH` or `$OPENREWIND_WHISPER_MODEL`
-2. `~/.openrewind/models/ggml-*.bin`
-3. VoiceInk's models folder (already on this Mac: `ggml-large-v3-turbo-q5_0.bin`)
+2. The Whisper size picked in Settings, once downloaded
+3. `~/.openrewind/models/ggml-*.bin`
+4. VoiceInk's models folder (already on this Mac: `ggml-large-v3-turbo-q5_0.bin`)
+
+NVIDIA Parakeet v3 needs neither `whisper-cli` nor a ggml file: pick it in Settings and it downloads.
 
 Test it without a mic:
 
@@ -636,4 +699,5 @@ Delete the folder to wipe everything, or from the terminal:
 
 ## License
 
-[MIT](LICENSE). Use it, change it, share it.
+[MIT](LICENSE). Use it, change it, share it. What the apps include from others, and under which
+licenses, is in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).
