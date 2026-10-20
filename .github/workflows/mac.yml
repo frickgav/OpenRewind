@@ -2,9 +2,9 @@ name: Mac app
 
 on:
   push:
-    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", ".github/workflows/mac.yml"]
+    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", "scripts/gif-check.py", ".github/workflows/mac.yml"]
   pull_request:
-    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", ".github/workflows/mac.yml"]
+    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", "scripts/gif-check.py", ".github/workflows/mac.yml"]
   workflow_dispatch:
 
 permissions:
@@ -34,6 +34,11 @@ jobs:
         run: codesign --display --requirements - dist/OpenRewind.app 2>&1 | grep -E '^designated => .*(certificate (leaf|root)|anchor apple generic)'
       - name: Check the CLI starts
         run: dist/OpenRewind.app/Contents/MacOS/OpenRewind help
+      # Export Clip's GIF encoder (GifWriter.swift): write a test GIF and decode it with an independent decoder.
+      - name: GIF encoder check
+        run: |
+          dist/OpenRewind.app/Contents/MacOS/OpenRewind gif-check "$RUNNER_TEMP/check.gif"
+          python3 scripts/gif-check.py "$RUNNER_TEMP/check.gif"
       # Start it as an AI app does (OpenRewind mcp, pipes for stdin/stdout) and talk MCP to it,
       # with the Settings switch off, then on with an empty history.
       - name: MCP check
