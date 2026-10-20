@@ -17,13 +17,52 @@ extension TimelineModel {
         searchWork?.cancel()
         let q = query.trimmingCharacters(in: .whitespaces)
         refreshHighlights()
-        guard !q.isEmpty else { hits = []; showResults = false; return }
+        guard !q.isEmpty else { searchSeq += 1; searching = false; hits = []; showResults = false; return }
         let work = DispatchWorkItem { [weak self] in self?.runSearch(q) }
         searchWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
     }
 
+    /// Search by Meaning is on and its model is loaded.
+    var meaningAvailable: Bool { meaning?.embedder != nil }
+    /// The search box finds moments by meaning right now.
+    var searchingByMeaning: Bool { byMeaning && meaningAvailable }
+
+    /// Keyword (the exact words) or Meaning (moments about the same thing, best first).
+    func setByMeaning(_ on: Bool) {
+        guard byMeaning != on else { return }
+        byMeaning = on
+        refreshHighlights()
+        let q = query.trimmingCharacters(in: .whitespaces)
+        if !q.isEmpty { runSearch(q) }
+    }
+
     func runSearch(_ q: String) {
+        searchSeq += 1
+        searching = false
+        if searchingByMeaning, let m = meaning {
+            // Turning the question into a vector and reading every stored one takes a moment: do it off the main thread.
+            let seq = searchSeq
+            searching = true
+            hits = []
+            selectedHit = 0
+            showResults = true
+            var mq = MeaningQuery()
+            mq.app = appFilter
+            mq.limit = 50
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let found = m.search(q, mq).compactMap(TimelineModel.searchHit)
+                DispatchQueue.main.async {
+                    guard let self, seq == self.searchSeq else { return }
+                    self.searching = false
+                    // While filtering, speech only counts when it was heard with that app in front.
+                    self.hits = found.filter { $0.kind == .screen || self.appFilter == nil || AppFilter.covers(self.frames, $0.time) }
+                    self.selectedHit = 0
+                    self.showResults = true
+                }
+            }
+            return
+        }
         var s = SearchQuery()
         s.q = q
         s.limit = 200
@@ -45,6 +84,16 @@ extension TimelineModel {
         hits = Self.collapse((screen + spoken).sorted { $0.time > $1.time })
         selectedHit = 0
         showResults = true
+    }
+
+    /// A Search by Meaning result as a row in the list.
+    static func searchHit(_ h: MeaningHit) -> SearchHit? {
+        guard let t = Time.iso.date(from: h.timestamp) else { return nil }
+        let flat = h.text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        return SearchHit(id: "m\(h.id)", kind: h.isAudio ? .audio : .screen, time: t,
+                         title: h.appName.isEmpty ? "Screen" : h.appName,
+                         snippet: flat.count > 160 ? String(flat.prefix(160)) + "…" : flat,
+                         chunkId: h.isAudio ? h.firstId : nil)
     }
 
     /// The same text stays on screen for many frames. Keep the first frame of each run
@@ -94,6 +143,7 @@ extension TimelineModel {
 
     func clearSearch() {
         query = ""; hits = []; showResults = false
+        searchSeq += 1; searching = false
         refreshHighlights()
     }
 
@@ -111,7 +161,7 @@ extension TimelineModel {
     /// once scrolling settles, since reading the words off a screenshot takes a moment.
     func refreshHighlights() {
         highlightWork?.cancel()
-        let terms = Self.terms(query)
+        let terms = highlightTerms
         guard !terms.isEmpty, let f = current, image != nil else { highlights = []; return }
         let key = "\(f.id) \(terms.joined(separator: " "))"
         if let cached = highlightCache[key] { highlights = cached; return }
@@ -124,7 +174,7 @@ extension TimelineModel {
                     self.highlightCache[key] = found
                     self.highlightOrder.append(key)
                     if self.highlightOrder.count > 64 { self.highlightCache.removeValue(forKey: self.highlightOrder.removeFirst()) }
-                    guard self.current?.id == f.id, Self.terms(self.query) == terms else { return }
+                    guard self.current?.id == f.id, self.highlightTerms == terms else { return }
                     self.highlights = found
                 }
             }
@@ -132,6 +182,9 @@ extension TimelineModel {
         highlightWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
+
+    /// Words to mark on the screenshot. None for a meaning search: its matches need not share a word with the question.
+    var highlightTerms: [String] { searchingByMeaning ? [] : Self.terms(query) }
 
     static func snippet(_ text: String, around q: String) -> String {
         let flat = text.replacingOccurrences(of: "\n", with: " ")

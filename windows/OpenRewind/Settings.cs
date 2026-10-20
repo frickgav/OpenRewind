@@ -17,6 +17,8 @@ sealed class Settings
     public int ScreenshotPercent { get; set; } = ScreenshotSizes.Default;
     /// The local HTTP API + browser search page. Off unless the user turns it on.
     public bool LocalSearchServer { get; set; } = false;
+    /// Search by Meaning: index moments in the background to find them by meaning. Off unless the user turns it on.
+    public bool SearchByMeaning { get; set; } = false;
     /// Let AI apps (Claude, Cursor, …) read the history through `OpenRewind.exe mcp`. Off unless the user turns it on.
     public bool McpEnabled { get; set; } = false;
     /// Apps that are blurred in screenshots and never have their text stored.

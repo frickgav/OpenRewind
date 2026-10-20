@@ -39,7 +39,10 @@ final class AIChatModel: ObservableObject {
     /// Screenshots kept attached; older ones are dropped because every request sends them again.
     static let imagesKept = 2
 
-    init(db: Database) { tools = AITools(db: db) }
+    init(db: Database, meaning: MeaningService? = nil) {
+        tools = AITools(db: db)
+        tools.meaning = meaning
+    }
 
     func reloadSettings() { settings = AISettings.load() }
 

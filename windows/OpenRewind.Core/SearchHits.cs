@@ -17,6 +17,20 @@ public static class SearchHits
         return Collapse(screen.Concat(spoken).OfType<SearchHit>().OrderByDescending(h => h.Time).ToList());
     }
 
+    /// Search by Meaning results for the timeline, best first (not newest first).
+    public static List<SearchHit> FromMeaning(IEnumerable<MeaningHit> hits) =>
+        hits.Select(h => Time.ParseIso(h.Timestamp) is DateTime t
+                ? new SearchHit($"m{h.Id}", h.IsAudio, t, h.AppName.Length == 0 ? "Screen" : h.AppName, MeaningSnippet(h.Text), h.IsAudio ? h.FirstId : null)
+                : null)
+            .OfType<SearchHit>().ToList();
+
+    /// The start of a moment's text on one line.
+    public static string MeaningSnippet(string text)
+    {
+        var flat = string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return flat.Length > 160 ? flat[..160] + "…" : flat;
+    }
+
     /// The same text stays on screen for many frames. Keep the first frame of each run
     /// so results are distinct moments, not 40 copies of one window.
     public static List<SearchHit> Collapse(List<SearchHit> hits)

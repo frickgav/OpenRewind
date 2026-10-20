@@ -75,6 +75,12 @@ on older recordings and on how time is counted). Click an app, site
 - **Settings → Local Search Server** turns on the API and browser search page at
   http://127.0.0.1:3031. Off by default. Only this PC can connect. The terminal commands
   `record` and `serve` always start it.
+- **Settings → Search by Meaning** (off by default) indexes your recordings in the background so
+  the timeline's search box gets a **Keyword | Meaning** switch. Turning it on downloads a model once
+  (about 90 MB, all-MiniLM-L6-v2 from Hugging Face, checked against a fixed SHA-256) into
+  `%USERPROFILE%\.openrewind\models`; it runs on your PC with ONNX Runtime and nothing you record
+  is uploaded. The line under the switch shows the download and indexing progress, with **Try
+  Again** if the download fails. See [Search by Meaning](../README.md#search-by-meaning).
 - **Settings → Allow AI Apps to Read My History (MCP)** lets Claude Desktop, Claude Code, Cursor
   and other MCP apps search your history with the Ask AI lookups. Off by default. Blocked apps and
   sites are left out of screen text (a blocked app shows as "(blocked app)" in the activity
@@ -110,6 +116,7 @@ on older recordings and on how time is counted). Click an app, site
 | Microphone | AVAudioEngine | WASAPI |
 | System audio | ScreenCaptureKit | WASAPI loopback (no permission needed) |
 | Speech to text | whisper.cpp `whisper-cli` | whisper.cpp `whisper-cli.exe` |
+| Search by Meaning | macOS sentence embedding (built in) | all-MiniLM-L6-v2 with ONNX Runtime (downloaded once) |
 | Database, API, search page | SQLite + FTS5, port 3031 | the same |
 | App | Menu bar, ⌥⌘T | Tray, Ctrl+Alt+T |
 

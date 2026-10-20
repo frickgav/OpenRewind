@@ -8,7 +8,8 @@ namespace OpenRewind;
 
 /// What the MCP server needs for one request. Read again for every request, so a change in Settings
 /// applies without restarting the AI app. Tools is null when the history cannot be read; Problem says why.
-public sealed record McpState(bool Enabled, AiTools? Tools, string? Problem = null);
+/// `MeaningMissing` says why search_by_meaning is not offered, for an app that calls it anyway.
+public sealed record McpState(bool Enabled, AiTools? Tools, string? Problem = null, string? MeaningMissing = null);
 
 /// A Model Context Protocol server, so Claude, Cursor and other AI apps can look things up in the
 /// history with the same tools Ask AI uses (same size caps, same block list). The AI app starts
@@ -27,10 +28,14 @@ public sealed class McpServer
     public const string ScreenshotsOffMessage =
         "Screenshots are off. To let AI apps see them, turn on \"Let AI look at screenshots\" in OpenRewind's AI Settings. Use the text tools instead.";
 
+    public static string MeaningOffMessage(string? why) =>
+        $"Search by Meaning is not available. {why ?? "Turn on Search by Meaning in OpenRewind's Settings."} Use search_screen or search_audio instead.";
+
     public const string Instructions =
         "OpenRewind records this user's computer: text read from screenshots, app names, window titles, browser addresses, "
         + "and transcripts of the microphone and system audio. It all stays on their computer; you can read it only through these tools.\n"
         + "- For \"what did I do / work on\" questions, call activity_summary first, then search_screen or get_screen_text for details.\n"
+        + "- When it is offered, search_by_meaning finds moments by topic when you don't know the exact words.\n"
         + "- For meetings and calls, call list_meetings first. Meeting notes were written by an AI from the call's transcript.\n"
         + "- Times in answers are the user's local time. Each moment carries an exact time like (at 2026-10-18T14:30:05-07:00); "
         + "pass it back as start, end or time to look closer.\n"
@@ -143,7 +148,7 @@ public sealed class McpServer
         };
     }
 
-    /// Always the text tools; view_screenshot only while the user allows screenshots.
+    /// Always the text tools; search_by_meaning only while it is on and ready; view_screenshot only while the user allows screenshots.
     JsonObject ListTools()
     {
         var s = state();
@@ -163,12 +168,15 @@ public sealed class McpServer
     JsonObject CallTool(JsonNode? id, JsonObject p)
     {
         if (p["name"] is not JsonValue nv || !nv.TryGetValue(out string? name)) return Error(id, -32602, "Invalid params: name is required");
-        if (!AiTools.Specs.Any(t => t.Name == name) && name != AiTools.ScreenshotSpec.Name) return Error(id, -32602, $"Unknown tool: {name}");
+        if (!AiTools.Specs.Any(t => t.Name == name) && name != AiTools.ScreenshotSpec.Name && name != AiTools.MeaningSpec.Name)
+            return Error(id, -32602, $"Unknown tool: {name}");
         var args = p["arguments"] is JsonObject a ? (JsonObject)a.DeepClone() : new JsonObject();
         var s = state();
         if (!s.Enabled) return Result(id, ToolResult(OffMessage, null, true));
         if (s.Tools is not AiTools tools) return Result(id, ToolResult(s.Problem ?? "OpenRewind cannot read your history right now.", null, true));
         if (name == AiTools.ScreenshotSpec.Name && tools.Screenshots == null) return Result(id, ToolResult(ScreenshotsOffMessage, null, true));
+        if (name == AiTools.MeaningSpec.Name && tools.Meaning?.Embedder == null)
+            return Result(id, ToolResult(MeaningOffMessage(s.MeaningMissing), null, true));
         // AI apps keep this process running for days; a summary covers at most a month so one question can't stall it.
         tools.MaxSummaryDays ??= SummaryDays;
         var (text, image) = tools.Execute(new AiToolCall("mcp", name, args));
