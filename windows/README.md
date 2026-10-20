@@ -54,6 +54,10 @@ on older recordings and on how time is counted). Click an app, site
   or Until I Delete Them (default). Older recordings are deleted at launch and every hour.
 - **Settings → Delete Recordings**: last 15 minutes, last hour, today, all screen,
   all audio, or everything (asks first).
+- **Settings → Transcription Model**: Whisper (Automatic, the default), Whisper Base, Small or
+  Large v3 Turbo, or NVIDIA Parakeet v3, which needs no other setup: pick it and it downloads
+  (670 MB). **Re-transcribe Recent Audio** runs older clips through the new model. See
+  [Choosing a transcription model](../README.md#choosing-a-transcription-model).
 - **Settings → Local Search Server** turns on the API and browser search page at
   http://127.0.0.1:3031. Off by default. Only this PC can connect. The terminal commands
   `record` and `serve` always start it.
@@ -91,7 +95,7 @@ on older recordings and on how time is counted). Click an app, site
 | Text | Accessibility tree, then Apple Vision OCR | UI Automation tree, then Windows OCR (`Windows.Media.Ocr`) |
 | Microphone | AVAudioEngine | WASAPI |
 | System audio | ScreenCaptureKit | WASAPI loopback (no permission needed) |
-| Speech to text | whisper.cpp `whisper-cli` | whisper.cpp `whisper-cli.exe` |
+| Speech to text | whisper.cpp `whisper-cli`, or Parakeet v3 on ONNX Runtime | whisper.cpp `whisper-cli.exe`, or Parakeet v3 on ONNX Runtime |
 | Database, API, search page | SQLite + FTS5, port 3031 | the same |
 | App | Menu bar, ⌥⌘T | Tray, Ctrl+Alt+T |
 
@@ -104,13 +108,16 @@ Microphone → Let desktop apps access your microphone**.
 
 ## Whisper
 
-Speech is turned into text by [whisper.cpp](https://github.com/ggml-org/whisper.cpp),
-on your PC. OpenRewind records audio without it; the clips are transcribed once it is set up:
+The easiest way to get transcripts: **Settings → Transcription Model → NVIDIA Parakeet v3**. It
+downloads by itself and needs nothing else (25 European languages). For Whisper (99 languages),
+speech is turned into text by [whisper.cpp](https://github.com/ggml-org/whisper.cpp), on your PC.
+OpenRewind records audio without it; the clips are transcribed once it is set up:
 
 1. From the [whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases), download
    `whisper-bin-x64.zip` and unzip it into `%USERPROFILE%\.openrewind\whisper`
    (so that `whisper-cli.exe` is in that folder or in `whisper\Release`).
-2. Download a model, for example
+2. Pick a Whisper size in **Settings → Transcription Model** to download it, or download a model
+   yourself, for example
    [`ggml-large-v3-turbo-q5_0.bin`](https://huggingface.co/ggerganov/whisper.cpp/tree/main)
    (good, ~550 MB) or `ggml-base.en.bin` (fast, English only, ~150 MB), into
    `%USERPROFILE%\.openrewind\models`.

@@ -33,6 +33,8 @@ static class Program
       --whisper-model PATH   ggml Whisper model (default: auto-detect)
       --whisper-bin PATH     whisper-cli.exe (default: auto-detect)
       --language L    Whisper language code, or auto (default auto)
+      --model ID      Transcription model for this run: whisper-auto, whisper-base, whisper-small,
+                      whisper-large-v3-turbo or parakeet-v3 (default: the one picked in Settings)
       --home DIR      Data folder (default %USERPROFILE%\.openrewind, or %OPENREWIND_HOME%)
 
     Env:
@@ -69,6 +71,8 @@ static class Program
         ApplicationConfiguration.Initialize();
         LoadIcons();
         var config = Config.Load(args);
+        // Settings → Transcription Model, unless --model picks one for this run.
+        config.TranscriptionModel ??= Settings.Load(config.Home).TranscriptionModel;
         if (command == "app")
         {
             Log.OpenFile(config.Home);
@@ -198,6 +202,9 @@ static class Program
                 Console.WriteLine($"audio chunks:    {a.Chunks} ({a.Pending} pending), {a.Segments} transcript segments");
                 Console.WriteLine($"whisper-cli:     {Transcriber.FindBinary(config.WhisperBinary, config.Home) ?? $"MISSING (put whisper-cli.exe in {Path.Combine(config.Home, "whisper")})"}");
                 Console.WriteLine($"whisper model:   {Transcriber.FindModel(config.WhisperModel, config.Home) ?? $"MISSING (put ggml-*.bin in {Path.Combine(config.Home, "models")})"}");
+                var picked = SpeechModels.ById(config.TranscriptionModel);
+                var ready = picked.Files.Count == 0 || SpeechModels.IsDownloaded(picked, config.Home);
+                Console.WriteLine($"transcription:   {picked.Name}{(ready ? "" : " (not downloaded: pick it in Settings → Transcription Model)")}");
                 return 0;
             }
 
