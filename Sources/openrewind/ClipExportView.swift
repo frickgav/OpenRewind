@@ -210,6 +210,8 @@ struct ExportClipCard: View {
         panel.nameFieldStringValue = ClipPlan.fileName(start, ext: f.rawValue)
         panel.directoryURL = FileManager.default.urls(for: f == .gif ? .picturesDirectory : .moviesDirectory, in: .userDomainMask).first
         guard Dialogs.run(panel) == .OK, let url = panel.url else { return }
+        // The timeline may have been closed (or locked) while the dialog was up.
+        guard model.isShown, model.exportClip != nil else { return }
         // Something on screen right away, before anything is read.
         let job = ClipExporter()
         exporter = job
