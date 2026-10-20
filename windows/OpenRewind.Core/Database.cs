@@ -66,7 +66,7 @@ public sealed partial class Database : IDisposable
         this.path = Path.GetFullPath(path);
         conn = Connect(this.path, IsEncryptedFile(this.path) ? key ?? throw new DatabaseLockedException() : null, SqliteOpenMode.ReadOnly);
         Exec("PRAGMA busy_timeout=5000;");
-        if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name IN ('display', 'video_path', 'video_frame', 'video_time')") < 4)
+        if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name IN ('display', 'video_path', 'video_frame', 'video_time', 'blocked')") < 5)
             cols = StillCols;
     }
 
@@ -221,8 +221,8 @@ public sealed partial class Database : IDisposable
         }
     }
 
-    const string FullCols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, f.display, f.video_path, f.video_frame, f.video_time";
-    const string StillCols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, '', '', 0, 0.0";
+    const string FullCols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, f.display, f.video_path, f.video_frame, f.video_time, f.blocked";
+    const string StillCols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, '', '', 0, 0.0, 0";
 
     public Frame? FrameById(long id) => Frames($"SELECT {cols} FROM frames f WHERE f.id = ?", id).FirstOrDefault();
 
@@ -509,7 +509,7 @@ public sealed partial class Database : IDisposable
                 var out_ = new List<Frame>();
                 while (r.Read())
                     out_.Add(new Frame(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetInt64(4) != 0,
-                                       r.GetString(5), r.GetString(6), r.GetString(7), r.GetInt64(8), r.GetString(9),
+                                       r.GetString(5), r.GetString(6), r.GetString(7), r.GetInt64(8), r.GetString(9), Blocked: r.GetInt64(14) != 0,
                                        Display: r.GetString(10), VideoPath: r.GetString(11), VideoFrame: (int)r.GetInt64(12), VideoTime: r.GetDouble(13)));
                 return out_;
             }

@@ -608,7 +608,8 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
   [Choosing a transcription model](#choosing-a-transcription-model).
 - **Settings → Local Search Server** turns on the API and browser search page at
   `http://127.0.0.1:3031`. Off by default. Only this Mac can connect. The terminal
-  commands `record` and `serve` always start it.
+  commands `record` and `serve` always start it. Blocked apps and sites are left out of it, as
+  in Ask AI.
 - **Settings → Search by Meaning** (off by default) indexes your recordings in the background
   so you can search by meaning, with the model that comes with macOS. See
   [Search by Meaning](#search-by-meaning).
@@ -747,6 +748,12 @@ permission is optional; it gives cleaner text than OCR.
 ## API
 
 On when you run `record` or `serve` from the terminal, or after **Settings → Local Search Server** in the app.
+
+Nothing the block list covers comes back: screenshots of a blocked app, a blocked site, a private
+window or a window or address with a blocked word are left out of `/search` (also `mode=meaning`),
+and `/frames/{id}` answers `404` for them, the same rule as Ask AI and AI apps. This includes
+screenshots saved before you blocked them. `/apps` leaves out blocked apps. Audio transcripts are
+not filtered by app (a clip has no app). The total in `pagination` counts only what can be shown.
 
 | Route | What |
 |-------|------|

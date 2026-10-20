@@ -99,7 +99,7 @@ final class Database {
         isEncrypted = encrypted
         openKey = encrypted ? key : nil
         try exec("PRAGMA busy_timeout=5000;")
-        if scalarInt("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name IN ('display', 'video_path', 'video_frame', 'video_time')", []) < 4 {
+        if scalarInt("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name IN ('display', 'video_path', 'video_frame', 'video_time', 'blocked')", []) < 5 {
             cols = Database.stillCols
         }
     }
@@ -325,8 +325,8 @@ final class Database {
 
     // MARK: - helpers
 
-    private static let fullCols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, f.display, f.video_path, f.video_frame, f.video_time"
-    private static let stillCols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, '', '', 0, 0.0"
+    private static let fullCols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, f.display, f.video_path, f.video_frame, f.video_time, f.blocked"
+    private static let stillCols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, '', '', 0, 0.0, 0"
 
     /// Turn free text into a safe FTS5 query: every word becomes a quoted prefix term.
     static func ftsQuery(_ raw: String) -> String? {
@@ -370,7 +370,8 @@ final class Database {
             out.append(Frame(id: sqlite3_column_int64(st, 0), timestamp: col(st, 1), appName: col(st, 2),
                              windowName: col(st, 3), focused: sqlite3_column_int(st, 4) != 0,
                              snapshotPath: col(st, 5), text: col(st, 6), textSource: col(st, 7),
-                             hash: sqlite3_column_int64(st, 8), browserUrl: col(st, 9), display: col(st, 10),
+                             hash: sqlite3_column_int64(st, 8), browserUrl: col(st, 9),
+                             blocked: sqlite3_column_int(st, 14) != 0, display: col(st, 10),
                              videoPath: col(st, 11), videoFrame: Int(sqlite3_column_int64(st, 12)), videoTime: sqlite3_column_double(st, 13)))
         }
         return out

@@ -414,6 +414,30 @@ public class MeaningTests : IDisposable
     }
 
     [Fact]
+    public void ApiByMeaningLeavesOutWhatIsBlockedNow()
+    {
+        var t = DateTime.UtcNow.AddHours(-1);
+        AddFrame(t, "Chrome", "Acme portal", "Invoice 1042 due Friday", "https://billing.acme.com/1042");
+        AddFrame(t.AddMinutes(3), "Notes", "Weekend", "take the puppy to the park");
+        var s = Indexed(Nothing, out _);   // indexed before anything was blocked
+        var config = Config.Load(new[] { "--home", home });
+        foreach (var later in new[]
+        {
+            new Blocklist(new[] { new BlockedApp("chrome", "Chrome") }, Array.Empty<string>(), false),
+            new Blocklist(Array.Empty<BlockedApp>(), new[] { "Acme" }, false),
+            new Blocklist(Array.Empty<BlockedApp>(), Array.Empty<string>(), false, sites: new[] { "acme.com" }),
+        })
+        {
+            var api = new Api(db, config, meaning: () => s, blocked: () => later);
+            var body = System.Text.Encoding.UTF8.GetString(api.Handle(new HttpRequest("GET", "/search",
+                new() { ["q"] = "invoice", ["mode"] = "meaning" })).Body);
+            Assert.DoesNotContain("Chrome", body);
+            Assert.DoesNotContain("Invoice", body);
+            Assert.Contains("Notes", body);
+        }
+    }
+
+    [Fact]
     public void ModelFilesAreCheckedAgainstTheirHash()
     {
         Directory.CreateDirectory(home);

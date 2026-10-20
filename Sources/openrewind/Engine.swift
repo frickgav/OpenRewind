@@ -35,11 +35,15 @@ final class Engine {
     var serverOn: Bool { server != nil }
     /// True while the app is locked; the local server then serves no history (see AppLock).
     var serverLocked: () -> Bool = { false }
+    /// What the local server leaves out. `record` and `serve` in a terminal see no Settings changes
+    /// made in the app, so they read the list again for each request (main.swift).
+    var serverBlocklist: () -> Blocklist = { BlocklistStore.shared.current }
 
     func startServer(exitOnFailure: Bool = true) throws {
         guard server == nil else { return }
         var api = API(db: db, config: config, meaning: meaning)
         api.locked = { [weak self] in self?.serverLocked() == true }
+        api.blocklist = serverBlocklist
         let s = Server(port: config.port, exitOnFailure: exitOnFailure, router: api.handle)
         try s.start()
         server = s

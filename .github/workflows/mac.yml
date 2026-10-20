@@ -2,9 +2,9 @@ name: Mac app
 
 on:
   push:
-    paths: ["Sources/**", "Package.swift", "Package.resolved", "THIRD_PARTY_NOTICES.txt", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", "scripts/gif-check.py", ".github/workflows/mac.yml"]
+    paths: ["Sources/**", "Package.swift", "Package.resolved", "THIRD_PARTY_NOTICES.txt", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", "scripts/server-check.py", "scripts/gif-check.py", ".github/workflows/mac.yml"]
   pull_request:
-    paths: ["Sources/**", "Package.swift", "Package.resolved", "THIRD_PARTY_NOTICES.txt", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", "scripts/gif-check.py", ".github/workflows/mac.yml"]
+    paths: ["Sources/**", "Package.swift", "Package.resolved", "THIRD_PARTY_NOTICES.txt", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", "scripts/server-check.py", "scripts/gif-check.py", ".github/workflows/mac.yml"]
   workflow_dispatch:
 
 permissions:
@@ -65,6 +65,12 @@ jobs:
           defaults write ai.agilityresources.openrewind mcpEnabled -bool true
           python3 scripts/mcp-check.py "$EXE" on
           defaults delete ai.agilityresources.openrewind mcpEnabled
+      # The local search server (`OpenRewind serve`, port 3031 in the app) with a block list set: a
+      # blocked app, site, word or private window never comes back from /search, /frames or /apps.
+      - name: Local server block list check
+        run: |
+          export OPENREWIND_HOME="$RUNNER_TEMP/openrewind-server-home"
+          python3 scripts/server-check.py dist/OpenRewind.app/Contents/MacOS/OpenRewind
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: OpenRewind-mac

@@ -104,6 +104,8 @@ final class Server {
 }
 
 /// REST routes for scripts and the browser search page.
+/// Frames of apps, sites and windows on the block list are left out of everything it serves (text,
+/// screenshots, app names), including ones saved before the user blocked them; same rule as Ask AI.
 struct API {
     let db: Database
     let config: Config
@@ -112,6 +114,9 @@ struct API {
     static let lockedMessage = "OpenRewind is locked. Open the timeline to unlock it, then try again."
     /// Search by Meaning (mode=meaning on /search); it answers only while it is on.
     var meaning: MeaningService? = nil
+    /// The block list, asked for once per request. The app's copy changes with Settings; the terminal
+    /// commands read it again each time (see Engine.serverBlocklist).
+    var blocklist: () -> Blocklist = { BlocklistStore.shared.current }
 
     func handle(_ req: HTTPRequest) -> HTTPResponse {
         guard req.method == "GET" else { return .error("method not allowed", status: 405) }
@@ -140,15 +145,18 @@ struct API {
             break
         }
         if locked() { return .error(API.lockedMessage, status: 423) }
+        let list = blocklist()
         switch req.path {
         case "/search":
-            return search(req.query)
+            return search(req.query, list)
         case "/apps":
+            // Blocked apps are not listed at all.
             let since = req.query["start_time"].flatMap(Time.parse)
-            return .json(["data": db.apps(since: since).map { ["app_name": $0.0, "frames": $0.1] }])
+            let apps = db.apps(since: since).filter { !list.blocksApp(bundleID: nil, name: $0.0) }
+            return .json(["data": apps.map { ["app_name": $0.0, "frames": $0.1] }])
         default:
             if req.path.hasPrefix("/frames/") {
-                return frameImage(String(req.path.dropFirst("/frames/".count)))
+                return frameImage(String(req.path.dropFirst("/frames/".count)), list)
             }
             if req.path.hasPrefix("/audio/") {
                 return audioFile(String(req.path.dropFirst("/audio/".count)))
@@ -160,7 +168,28 @@ struct API {
     /// The largest `offset` the search accepts.
     static let maxOffset = 1_000_000
 
-    private func search(_ q: [String: String]) -> HTTPResponse {
+    /// Stop reading after this many blocked frames: a block list that covers most
+    /// of the history ends the results early rather than reading all of it.
+    static let maxHiddenScan = 20_000
+
+    /// The first `want` frames of a search that `hides` leaves in, newest first, and the total without the
+    /// hidden ones read. Reads in pages until it has enough; the total is exact once the last page is read.
+    static func visibleFrames(_ db: Database, _ s: SearchQuery, want: Int, hides: (Frame) -> Bool) -> (rows: [Frame], total: Int) {
+        var q = s
+        q.limit = max(want, 200)
+        q.offset = 0
+        var shown: [Frame] = [], hidden = 0, total = 0
+        while true {
+            let (rows, n) = db.search(q)
+            if q.offset == 0 { total = n }
+            for f in rows { if hides(f) { hidden += 1 } else { shown.append(f) } }
+            q.offset += rows.count
+            if rows.count < q.limit || shown.count >= want { return (shown, max(shown.count, total - hidden)) }
+            if hidden >= maxHiddenScan { return (shown, shown.count) }
+        }
+    }
+
+    private func search(_ q: [String: String], _ list: Blocklist) -> HTTPResponse {
         let type = (q["content_type"] ?? "all").lowercased()
         let limit = min(max(Int(q["limit"] ?? "") ?? 20, 1), 100)
         // Clamped so offset + limit can never overflow (an overflow traps and would end the app).
@@ -190,7 +219,7 @@ struct API {
         // Audio has no app/window, so those filters mean "screen only".
         let wantAudio = (type == "audio" || type == "all") && (s.appName ?? "").isEmpty && (s.windowName ?? "").isEmpty
         if q["mode"]?.lowercased() == "meaning" {
-            return searchByMeaning(s, screen: wantScreen, audio: wantAudio, offset: offset, limit: limit, clip: clip)
+            return searchByMeaning(s, list, screen: wantScreen, audio: wantAudio, offset: offset, limit: limit, clip: clip)
         }
         // To page through a merged list: take the top (offset + limit) of each source, merge by time, then slice.
         let fetch = offset + limit
@@ -198,9 +227,7 @@ struct API {
         var total = 0
 
         if wantScreen {
-            var sq = s
-            sq.limit = fetch; sq.offset = 0
-            let (rows, n) = db.search(sq)
+            let (rows, n) = API.visibleFrames(db, s, want: fetch) { list.hides($0) }
             total += n
             items += rows.map { f in (f.timestamp, ["type": "OCR", "content": [
                 "frame_id": f.id, "text": clip(f.text), "timestamp": f.timestamp,
@@ -232,7 +259,7 @@ struct API {
 
     /// mode=meaning: the moments closest in meaning to q, best first, in the same shape as the word search
     /// plus a "score". Blocked apps and sites are left out.
-    private func searchByMeaning(_ s: SearchQuery, screen: Bool, audio: Bool, offset: Int, limit: Int, clip: (String) -> String) -> HTTPResponse {
+    private func searchByMeaning(_ s: SearchQuery, _ list: Blocklist, screen: Bool, audio: Bool, offset: Int, limit: Int, clip: (String) -> String) -> HTTPResponse {
         guard let m = meaning, m.embedder != nil else { return .error("Search by Meaning is off", status: 400) }
         let text = (s.q ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return .json(["data": [], "pagination": ["limit": limit, "offset": offset, "total": 0]]) }
@@ -242,7 +269,7 @@ struct API {
         mq.screen = screen; mq.audio = audio
         mq.limit = min(200, offset + limit)
         mq.match = { app, window in has(app, s.appName) && has(window, s.windowName) }
-        let hits = m.search(text, mq)
+        let hits = m.search(text, mq, blocked: list)
         let page: [[String: Any]] = hits.dropFirst(offset).prefix(limit).map { h -> [String: Any] in
             if h.isAudio {
                 let c = db.chunk(id: h.firstId)
@@ -276,8 +303,9 @@ struct API {
         return HTTPResponse(contentType: "audio/wav", body: data)
     }
 
-    private func frameImage(_ idStr: String) -> HTTPResponse {
-        guard let id = Int64(idStr), let f = db.frame(id: id) else { return .error("frame not found", status: 404) }
+    private func frameImage(_ idStr: String, _ list: Blocklist) -> HTTPResponse {
+        // A blocked frame answers as if it did not exist.
+        guard let id = Int64(idStr), let f = db.frame(id: id), !list.hides(f) else { return .error("frame not found", status: 404) }
         // Only serve files inside our own data dir. The picture is a still, or a frame of a video
         // (Compress Older Recordings).
         let file = f.videoPath.isEmpty ? f.snapshotPath : f.videoPath

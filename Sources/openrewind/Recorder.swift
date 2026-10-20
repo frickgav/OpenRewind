@@ -169,8 +169,9 @@ final class Recorder {
     /// Dedup, extract text, store snapshot, insert row. Returns the new frame id, or nil if skipped.
     /// `blocked`: a blocked window or site is in front (pass no pid, so its text is not read); the frame
     /// is marked so Insights leaves it out. `display` names the screen (older frames of one screen go
-    /// into one video, see VideoCompactor).
-    func ingest(image: CGImage, window: ActiveWindow, pid: pid_t?, blocked: Bool = false, display: String = "") throws -> Int64? {
+    /// into one video, see VideoCompactor). `url` is the address when there is no pid to read it from
+    /// (`openrewind ingest --url`).
+    func ingest(image: CGImage, window: ActiveWindow, pid: pid_t?, blocked: Bool = false, display: String = "", url: String = "") throws -> Int64? {
         let hash = ImageTools.dHash(image)
         let thumb = ImageTools.thumbnail(image)
         let key = window.appName + "\u{1F}" + window.windowName
@@ -182,7 +183,7 @@ final class Recorder {
 
         var text = ""
         var source = "ocr"
-        var url = ""
+        var url = url
         if config.useAccessibility, let pid, pid > 0 {
             let w = Accessibility.focusedWindow(pid: pid)
             if let ax = w.text { text = ax; source = "accessibility" }

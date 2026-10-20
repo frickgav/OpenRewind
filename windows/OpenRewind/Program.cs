@@ -149,6 +149,7 @@ static class Program
 
             case "record":
                 _ = Database.BuildSlowIndexesInBackground(config.DbPath);
+                engine.ServerBlocklist = () => Settings.Load(config.Home).ToBlocklist();
                 engine.StartServer();
                 engine.SetScreen(true);
                 if (config.RecordMic || config.RecordSystemAudio) engine.SetAudio(true);
@@ -157,6 +158,7 @@ static class Program
                 return 0;
 
             case "serve":
+                engine.ServerBlocklist = () => Settings.Load(config.Home).ToBlocklist();
                 engine.StartServer();
                 Thread.Sleep(Timeout.Infinite);
                 return 0;

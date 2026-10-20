@@ -80,6 +80,12 @@ public sealed class Blocklist
     public bool BlocksFrame(string? appName, string? windowName, string? url) =>
         BlocksWindow(null, appName, windowName) || BlocksUrl(url);
 
+    /// True for a stored frame saved while a blocked window or site was in front, or one the list covers now
+    /// (same rule as Ask AI and AI apps): by app, private window, blocked word in the title or address, or
+    /// blocked site. The local search server leaves these out. Mac: Blocklist.hides(_ f: Frame).
+    public bool HidesFrame(Frame f) =>
+        f.Blocked || BlocksWindow(f.AppName, f.AppName, f.WindowName) || BlocksUrl(f.BrowserUrl) || HasKeyword(f.BrowserUrl);
+
     public bool HasKeyword(string? title) => keywordRx != null && !string.IsNullOrEmpty(title) && keywordRx.IsMatch(title);
 
     /// Browsers that mark private windows in the window title.

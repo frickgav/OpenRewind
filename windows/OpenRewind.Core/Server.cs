@@ -107,6 +107,8 @@ public sealed class Server : IDisposable
 }
 
 /// REST routes for scripts and the browser search page, the same as the Mac app's.
+/// Frames of apps, sites and windows on the block list are left out of everything it serves (text,
+/// screenshots, app names), including ones saved before the user blocked them; same rule as Ask AI.
 public sealed class Api
 {
     readonly Database db;
@@ -124,13 +126,17 @@ public sealed class Api
     /// Search by Meaning, while it is on (mode=meaning on /search).
     readonly Func<MeaningService?> meaning;
 
+    /// The block list, asked for once per request: the one recording uses (Blocklist.Current) unless a test passes one.
+    readonly Func<Blocklist> blocked;
+
     public Api(Database db, Config config, Func<Dictionary<string, object?>>? healthExtras = null, Func<Frame, byte[]?>? frameJpeg = null,
-               Func<MeaningService?>? meaning = null)
+               Func<MeaningService?>? meaning = null, Func<Blocklist>? blocked = null)
     {
         this.db = db; this.config = config;
         this.healthExtras = healthExtras ?? (() => new());
         this.frameJpeg = frameJpeg;
         this.meaning = meaning ?? (() => null);
+        this.blocked = blocked ?? (() => Blocklist.Current);
     }
 
     public HttpResponse Handle(HttpRequest req)
@@ -162,15 +168,17 @@ public sealed class Api
                 return HttpResponse.Json(h);
         }
         if (Locked?.Invoke() == true) return HttpResponse.Error(LockedMessage, 423);
+        var list = blocked();
         switch (req.Path)
         {
             case "/search":
-                return Search(req.Query);
+                return Search(req.Query, list);
             case "/apps":
+                // Blocked apps are not listed at all.
                 var since = req.Query.TryGetValue("start_time", out var st) ? Time.Parse(st) : null;
-                return HttpResponse.Json(new { data = db.Apps(since).Select(x => new { app_name = x.App, frames = x.Frames }) });
+                return HttpResponse.Json(new { data = db.Apps(since).Where(x => !list.BlocksApp(x.App, x.App)).Select(x => new { app_name = x.App, frames = x.Frames }) });
         }
-        if (req.Path.StartsWith("/frames/")) return FrameImage(req.Path["/frames/".Length..]);
+        if (req.Path.StartsWith("/frames/")) return FrameImage(req.Path["/frames/".Length..], list);
         if (req.Path.StartsWith("/audio/")) return AudioFile(req.Path["/audio/".Length..]);
         return HttpResponse.Error("not found", 404);
     }
@@ -178,7 +186,30 @@ public sealed class Api
     /// The largest `offset` the search accepts.
     public const int MaxOffset = 1_000_000;
 
-    HttpResponse Search(Dictionary<string, string> q)
+    /// Stop reading after this many blocked frames: a block list that covers most of the history ends
+    /// the results early rather than reading all of it.
+    public const int MaxHiddenScan = 20_000;
+
+    /// The first `want` frames of a search that `hides` leaves in, newest first, and the total without the
+    /// hidden ones read. Reads in pages until it has enough; the total is exact once the last page is read.
+    public static (List<Frame> Rows, int Total) VisibleFrames(Database db, SearchQuery s, int want, Func<Frame, bool> hides)
+    {
+        var q = new SearchQuery { Q = s.Q, AppName = s.AppName, WindowName = s.WindowName, StartTime = s.StartTime, EndTime = s.EndTime,
+                                  Limit = Math.Max(want, 200), Offset = 0 };
+        var shown = new List<Frame>();
+        int hidden = 0, total = 0;
+        while (true)
+        {
+            var (rows, n) = db.Search(q);
+            if (q.Offset == 0) total = n;
+            foreach (var f in rows) { if (hides(f)) hidden++; else shown.Add(f); }
+            q.Offset += rows.Count;
+            if (rows.Count < q.Limit || shown.Count >= want) return (shown, Math.Max(shown.Count, total - hidden));
+            if (hidden >= MaxHiddenScan) return (shown, shown.Count);
+        }
+    }
+
+    HttpResponse Search(Dictionary<string, string> q, Blocklist list)
     {
         string? Get(string k) => q.TryGetValue(k, out var v) ? v : null;
         var type = (Get("content_type") ?? "all").ToLowerInvariant();
@@ -207,13 +238,12 @@ public sealed class Api
         var wantAudio = (type == "audio" || type == "all") && string.IsNullOrEmpty(s.AppName) && string.IsNullOrEmpty(s.WindowName);
         // To page through a merged list: take the top (offset + limit) of each source, merge by time, then slice.
         var fetch = offset + limit;
-        if (Get("mode")?.ToLowerInvariant() == "meaning") return SearchByMeaning(s, wantScreen, wantAudio, offset, limit, Clip);
+        if (Get("mode")?.ToLowerInvariant() == "meaning") return SearchByMeaning(s, list, wantScreen, wantAudio, offset, limit, Clip);
         var items = new List<(string Ts, object Item)>();
         int total = 0;
         if (wantScreen)
         {
-            s.Limit = fetch; s.Offset = 0;
-            var (rows, n) = db.Search(s);
+            var (rows, n) = VisibleFrames(db, s, fetch, list.HidesFrame);
             total += n;
             items.AddRange(rows.Select(f => (f.Timestamp, (object)new
             {
@@ -247,7 +277,7 @@ public sealed class Api
 
     /// mode=meaning: the moments closest in meaning to q, best first, in the same shape as the word search
     /// plus a "score". Blocked apps and sites are left out.
-    HttpResponse SearchByMeaning(SearchQuery s, bool screen, bool audio, int offset, int limit, Func<string, string> clip)
+    HttpResponse SearchByMeaning(SearchQuery s, Blocklist list, bool screen, bool audio, int offset, int limit, Func<string, string> clip)
     {
         if (meaning() is not MeaningService m || m.Embedder == null) return HttpResponse.Error("Search by Meaning is off", 400);
         if (string.IsNullOrWhiteSpace(s.Q)) return HttpResponse.Json(new { data = Array.Empty<object>(), pagination = new { limit, offset, total = 0 } });
@@ -256,7 +286,7 @@ public sealed class Api
         {
             Start = s.StartTime, End = s.EndTime, Screen = screen, Audio = audio, Limit = Math.Min(200, offset + limit),
             Match = (app, window) => Has(app, s.AppName) && Has(window, s.WindowName),
-        });
+        }, list);
         var page = hits.Skip(offset).Take(limit).Select(h =>
         {
             if (h.IsAudio)
@@ -295,9 +325,10 @@ public sealed class Api
         return Serve(c.FilePath, "audio/wav", "audio file missing");
     }
 
-    HttpResponse FrameImage(string idStr)
+    HttpResponse FrameImage(string idStr, Blocklist list)
     {
-        if (!long.TryParse(idStr, out var id) || db.FrameById(id) is not Frame f) return HttpResponse.Error("frame not found", 404);
+        // A blocked frame answers as if it did not exist.
+        if (!long.TryParse(idStr, out var id) || db.FrameById(id) is not Frame f || list.HidesFrame(f)) return HttpResponse.Error("frame not found", 404);
         // Only frames of our own data dir, whichever way the picture is stored.
         if (!InDataDir(f.VideoPath.Length > 0 ? f.VideoPath : f.SnapshotPath)) return HttpResponse.Error("snapshot missing", 404);
         if (frameJpeg == null) return Serve(f.SnapshotPath, "image/jpeg", "snapshot missing");

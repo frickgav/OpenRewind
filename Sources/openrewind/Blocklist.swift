@@ -297,6 +297,15 @@ final class SiteWindows {
     }
 }
 
+extension Blocklist {
+    /// True for a stored frame saved while a blocked window or site was in front, or one the block list
+    /// covers now (same rule as Ask AI and AI apps): by app, private window, blocked word in the title or
+    /// address, or blocked site. The local search server leaves these out. Windows: Blocklist.HidesFrame.
+    func hides(_ f: Frame) -> Bool {
+        f.blocked || blocksFrame(appName: f.appName, windowName: f.windowName, url: f.browserUrl) || Blocklist.hasKeyword(f.browserUrl, keywords)
+    }
+}
+
 /// One page of a recent site: its address, the window title it had, and when it was last on screen.
 struct RecentPage: Hashable {
     var url: String
