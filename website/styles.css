@@ -354,8 +354,8 @@ kbd {
 .foot-cols a { display: block; margin: 8px 0; transition: color .2s; }
 .foot-cols a:hover { color: var(--ink); }
 .foot-brand .foot-made { margin-top: 8px; }
-.foot-made a, .foot-legal a { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
-.foot-made a:hover, .foot-legal a:hover { color: var(--ink); }
+.foot-made a { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
+.foot-made a:hover { color: var(--ink); }
 .foot-legal { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 48px; font-size: 14px; color: var(--fog); }
 
 /* Scroll reveal */
