@@ -20,6 +20,7 @@ static class Program
       OpenRewind delete <15m|1h|today|all|older:week>
                                   Delete recordings in that range
       OpenRewind doctor           Check what works on this PC
+      OpenRewind video-check      Check that this PC can write and read the videos of Compress Older Recordings
       OpenRewind mcp              MCP server for AI apps, over stdin/stdout (also --mcp).
                                   Turn on Settings → Allow AI Apps to Read My History first
 
@@ -202,16 +203,45 @@ static class Program
                 Console.WriteLine($"audio chunks:    {a.Chunks} ({a.Pending} pending), {a.Segments} transcript segments");
                 Console.WriteLine($"whisper-cli:     {Transcriber.FindBinary(config.WhisperBinary, config.Home) ?? $"MISSING (put whisper-cli.exe in {Path.Combine(config.Home, "whisper")})"}");
                 Console.WriteLine($"whisper model:   {Transcriber.FindModel(config.WhisperModel, config.Home) ?? $"MISSING (put ggml-*.bin in {Path.Combine(config.Home, "models")})"}");
+                Console.WriteLine($"video storage:   {VideoCheck()}");
+                var v = db.VideoStats();
+                Console.WriteLine($"videos:          {v.Segments} ({v.Bytes / (1 << 20)} MB, saving {v.Saved / (1 << 20)} MB)");
+                if (v.Segments > 0)
+                {
+                    var (seen, bad) = MfCodec.CheckVideos(db);
+                    Console.WriteLine(bad == 0
+                        ? $"videos play:     ok ({seen} checked)"
+                        : $"videos play:     {bad} of {seen} checked DO NOT OPEN on this PC (a missing video codec?)");
+                }
+                int stuck = db.StuckRewrites();
+                if (stuck > 0) Console.WriteLine($"videos to redo:  {stuck} still hold deleted frames (rewritten in the background; turned back into pictures if that keeps failing)");
                 var picked = SpeechModels.ById(config.TranscriptionModel);
                 var ready = picked.Files.Count == 0 || SpeechModels.IsDownloaded(picked, config.Home);
                 Console.WriteLine($"transcription:   {picked.Name}{(ready ? "" : " (not downloaded: pick it in Settings → Transcription Model)")}");
                 return 0;
             }
 
+            case "video-check":
+            {
+                Console.WriteLine($"video storage: {VideoCheck()}");
+                return VideoSelfTest.Run(Console.Out) ? 0 : 1;
+            }
+
             default:
                 Console.WriteLine(Usage);
                 return 2;
         }
+    }
+
+    /// Which codec Compress Older Recordings would use: encodes and reads back a short test clip.
+    static string VideoCheck()
+    {
+        var codec = new MfCodec();
+        return codec.Usable switch
+        {
+            "h264" => "H.264",
+            _ => $"not available ({codec.ProbeError})",
+        };
     }
 
     /// The logo from the .ico built into the exe, at the tray's size (16 px, or more on scaled screens).

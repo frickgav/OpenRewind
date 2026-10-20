@@ -19,6 +19,9 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Search by Meaning: index moments in the background to find them by meaning. Off unless the user turns it on.
     private let meaningKey = MeaningService.settingKey
     private var retention: RetentionJob!
+    /// Compress Older Recordings: keep screenshots older than an hour as video. Off unless turned on.
+    private let compressKey = "compressOlderRecordings"
+    private var video: VideoJob!
     /// Last measured size of the data folder; measured in the background when the menu opens.
     private var dataSize: Int64?
     private var measuring = false
@@ -63,7 +66,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         clearOldPermissions()
         defaults.register(defaults: [screenKey: true, audioKey: true, serverKey: false, meaningKey: false,
                                      keepScreenKey: KeepFor.forever.rawValue, keepAudioKey: KeepFor.forever.rawValue,
-                                     typingGapKey: 2])
+                                     typingGapKey: 2, compressKey: false])
     }
 
     /// The app used to be OpenScreen (bundle id ai.agilityresources.openscreen). Bring its menu
@@ -115,6 +118,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let until = pausedUntil { schedulePause(until) } else { applyRecordingPrefs() }
         retention = RetentionJob(db: engine.db, screen: keep(keepScreenKey), audio: keep(keepAudioKey))
         retention.start()
+        video = VideoJob(db: engine.db, dataDir: engine.config.dataDir, enabled: defaults.bool(forKey: compressKey))
+        video.start()
         meetings.start()
         Database.buildSlowIndexesInBackground(path: engine.config.dbPath)
 
@@ -473,6 +478,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         m.addItem(keepMenu("Keep Screen Recordings For", key: keepScreenKey))
         m.addItem(keepMenu("Keep Audio Recordings For", key: keepAudioKey))
         m.addItem(typingGapMenu())
+        m.addItem(compressItem())
         m.addItem(transcriptionMenu())
         m.addItem(.separator())
 
@@ -545,6 +551,29 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         item.submenu = sub
         return item
+    }
+
+    /// Keep screenshots older than an hour as video. Turning it off stops making videos; old ones still play.
+    private func compressItem() -> NSMenuItem {
+        let on = defaults.bool(forKey: compressKey)
+        let item = action("Compress Older Recordings", #selector(toggleCompress))
+        item.state = on ? .on : .off
+        item.toolTip = "Keep screenshots older than an hour as video instead of one picture each: about 5 to 10 times less disk space. "
+            + "New, and not yet tested on many Macs, so it is off unless you turn it on. Videos already made keep playing when it is off."
+        if let why = video.unavailable {
+            item.title += " (not available on this Mac)"
+            item.toolTip = "This Mac has no working video encoder: \(why)"
+            if !on { item.action = nil }  // can still be turned off
+        }
+        return item
+    }
+
+    @objc private func toggleCompress() {
+        let on = !defaults.bool(forKey: compressKey)
+        defaults.set(on, forKey: compressKey)
+        video.enabled = on
+        log("compress older recordings \(on ? "on" : "off")")
+        if on { video.kick() }
     }
 
     @objc private func setTypingGap(_ sender: NSMenuItem) {
@@ -954,7 +983,10 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func storageLines() -> [String] {
         let size = dataSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "measuring…"
-        var lines = ["Using \(size)"]
+        // Compressed recordings: how much less the videos take than the screenshots they replaced.
+        let v = engine.db.videoStats()
+        let saved = v.segments > 0 ? " · video saves " + ByteCountFormatter.string(fromByteCount: v.saved, countStyle: .file) : ""
+        var lines = ["Using \(size)" + saved]
         if let oldest = engine.db.oldestRecording() {
             let f = DateFormatter()
             f.dateStyle = .medium; f.timeStyle = .short
@@ -964,6 +996,9 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             lines.append("No recordings yet")
         }
+        // Deleted frames that are still inside a video until it is written again (or turned back into pictures).
+        let stuck = engine.db.stuckRewrites()
+        if stuck > 0 { lines.append("\(stuck) video\(stuck == 1 ? "" : "s") still hold\(stuck == 1 ? "s" : "") deleted frames · being redone") }
         return lines
     }
 
@@ -1150,7 +1185,10 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func quit() { NSApp.terminate(nil) }
+    @objc private func quit() {
+        video?.stop()
+        NSApp.terminate(nil)
+    }
 }
 
 /// The macOS privacy permissions OpenRewind uses.

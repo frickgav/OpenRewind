@@ -240,7 +240,7 @@ sealed class AiChatPanel : Panel
         send.Text = "Stop";
         input.Enabled = false;
         AddRow(thinking);
-        tools.Screenshots = settings.AiScreenshots ? f => ImageTools.ForAi(f.SnapshotPath) : null;
+        tools.Screenshots = settings.AiScreenshots ? f => ImageTools.ForAi(f.Source) : null;
         try { await convo.Ask(q, new AiClient(ai), tools, AddItem, settings.AiPriceFor(ai.Model), cts.Token); }
         finally
         {

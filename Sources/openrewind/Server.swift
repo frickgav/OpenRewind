@@ -194,7 +194,8 @@ struct API {
             items += rows.map { f in (f.timestamp, ["type": "OCR", "content": [
                 "frame_id": f.id, "text": clip(f.text), "timestamp": f.timestamp,
                 "app_name": f.appName, "window_name": f.windowName, "focused": f.focused,
-                "file_path": f.snapshotPath, "text_source": f.textSource, "offset_index": 0, "tags": [],
+                "file_path": f.videoPath.isEmpty ? f.snapshotPath : f.videoPath, "text_source": f.textSource,
+                "offset_index": f.videoFrame, "tags": [],
             ] as [String: Any]]) }
         }
         if wantAudio {
@@ -210,6 +211,12 @@ struct API {
         items.sort { $0.ts > $1.ts }
         let page = items.dropFirst(offset).prefix(limit).map { $0.item }
         return .json(["data": Array(page), "pagination": ["limit": limit, "offset": offset, "total": total]])
+    }
+
+    /// Inside our own data dir (with the trailing slash, so a sibling folder like data-x/ is not).
+    private func isInDataDir(_ path: String) -> Bool {
+        let dir = config.dataDir.standardizedFileURL.path
+        return path.hasPrefix(dir.hasSuffix("/") ? dir : dir + "/")
     }
 
     /// mode=meaning: the moments closest in meaning to q, best first, in the same shape as the word search
@@ -241,7 +248,7 @@ struct API {
             return ["type": "OCR", "content": [
                 "frame_id": h.firstId, "text": clip(h.text), "timestamp": h.timestamp,
                 "app_name": h.appName, "window_name": h.windowName, "focused": f?.focused ?? true,
-                "file_path": f?.snapshotPath ?? "", "text_source": f?.textSource ?? "ocr", "offset_index": 0, "tags": [],
+                "file_path": f.map { $0.videoPath.isEmpty ? $0.snapshotPath : $0.videoPath } ?? "", "text_source": f?.textSource ?? "ocr", "offset_index": 0, "tags": [],
                 "score": h.score,
             ] as [String: Any]]
         }
@@ -251,7 +258,7 @@ struct API {
     private func audioFile(_ idStr: String) -> HTTPResponse {
         guard let id = Int64(idStr), let c = db.chunk(id: id) else { return .error("audio not found", status: 404) }
         let path = URL(fileURLWithPath: c.filePath).standardizedFileURL.path
-        guard path.hasPrefix(config.dataDir.standardizedFileURL.path),
+        guard isInDataDir(path),
               let data = FileManager.default.contents(atPath: path) else {
             return .error("audio file missing", status: 404)
         }
@@ -260,19 +267,19 @@ struct API {
 
     private func frameImage(_ idStr: String) -> HTTPResponse {
         guard let id = Int64(idStr), let f = db.frame(id: id) else { return .error("frame not found", status: 404) }
-        // Only serve files inside our own data dir.
-        let path = URL(fileURLWithPath: f.snapshotPath).standardizedFileURL.path
-        guard path.hasPrefix(config.dataDir.standardizedFileURL.path),
-              let data = FileManager.default.contents(atPath: path) else {
+        // Only serve files inside our own data dir. The picture is a still, or a frame of a video
+        // (Compress Older Recordings).
+        let file = f.videoPath.isEmpty ? f.snapshotPath : f.videoPath
+        let path = URL(fileURLWithPath: file).standardizedFileURL.path
+        guard !file.isEmpty, isInDataDir(path), FileManager.default.fileExists(atPath: path) else {
             return .error("snapshot missing", status: 404)
         }
-        // Chrome and Firefox cannot show HEIC: send JPEG.
-        if path.hasSuffix(".heic") {
-            guard let img = ImageTools.load(URL(fileURLWithPath: path)), let jpg = ImageTools.jpegData(img) else {
-                return .error("cannot decode snapshot", status: 500)
-            }
-            return HTTPResponse(contentType: "image/jpeg", body: jpg)
+        // A JPEG still goes out as it is. Chrome and Firefox cannot show HEIC, and a video frame is no file: send JPEG.
+        if f.videoPath.isEmpty, !path.hasSuffix(".heic") {
+            guard let data = FileManager.default.contents(atPath: path) else { return .error("snapshot missing", status: 404) }
+            return HTTPResponse(contentType: "image/jpeg", body: data)
         }
-        return HTTPResponse(contentType: "image/jpeg", body: data)
+        guard let jpg = FrameImages.shared.jpeg(f.source) else { return .error("cannot decode snapshot", status: 500) }
+        return HTTPResponse(contentType: "image/jpeg", body: jpg)
     }
 }

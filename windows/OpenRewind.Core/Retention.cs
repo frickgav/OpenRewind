@@ -34,18 +34,48 @@ public static class KeepForInfo
 public sealed partial class Database
 {
     /// Delete frames with `from <= timestamp < to`. null = open end. Returns frames deleted.
+    /// A video left with no frames is deleted; one that still has frames outside the range is marked
+    /// for the compactor to write again without the deleted ones (see VideoCompactor.RunOnce).
+    /// The rows and the marks change in one transaction, so a crash can't leave deleted pictures in a
+    /// video nobody will rewrite; files are deleted only after it commits.
     public int DeleteFrames(DateTime? from, DateTime? to)
     {
         var (where, args) = Range("timestamp", from, to);
-        var paths = Strings($"SELECT snapshot_path FROM frames {where}", args);
-        if (paths.Count == 0) return 0;
-        ForgetScreenMoments(from, to);
-        ForgetMeetingWindows(from, to);
-        Run($"DELETE FROM frames {where}", args);  // FTS rows go with it (trigger frames_ad)
-        RemoveFiles(paths);
+        var and = where.Length == 0 ? "WHERE" : where + " AND";
+        List<string> stills, emptied = new();
+        bool partial = false;
+        int n;
+        lock (gate)
+        {
+            // Meaning moments and meeting titles taken from these frames go first (outside the transaction: their own statements).
+            if (ScalarLong($"SELECT COUNT(*) FROM frames {where}", args) > 0) { ForgetScreenMoments(from, to); ForgetMeetingWindows(from, to); }
+            using var tx = conn.BeginTransaction();
+            n = (int)TxScalar(tx, $"SELECT COUNT(*) FROM frames {where}", args);
+            if (n == 0) { tx.Rollback(); return 0; }
+            stills = TxStrings(tx, $"SELECT snapshot_path FROM frames {where}", args);
+            var videos = TxStrings(tx, $"SELECT DISTINCT video_path FROM frames {and} video_path != ''", args);
+            TxRun(tx, $"DELETE FROM frames {where}", args);  // FTS rows go with it (trigger frames_ad)
+            foreach (var v in videos)
+            {
+                if (TxScalar(tx, "SELECT COUNT(*) FROM frames WHERE video_path = ? AND video_path != ''", v) == 0)
+                {
+                    TxRun(tx, "DELETE FROM video_segments WHERE path = ?", v);
+                    emptied.Add(v);
+                }
+                else
+                {
+                    TxRun(tx, "UPDATE video_segments SET needs_rewrite = 1 WHERE path = ?", v);
+                    partial = true;
+                }
+            }
+            tx.Commit();
+        }
+        if (emptied.Count > 0) ReleasingVideos?.Invoke(emptied);
+        RemoveFiles(stills.Concat(emptied).ToList());
+        if (partial) VideosNeedRewrite?.Invoke();
         // A recap is made from its day's recordings, so it goes with them.
         DeleteRecapsWith(from, to);
-        return paths.Count;
+        return n;
     }
 
     /// Delete audio chunks with `from <= timestamp < to`, their transcripts and WAV files, and the

@@ -455,8 +455,8 @@ public sealed partial class Database
     public Frame? FrameNear(DateTime t)
     {
         var iso = Time.Iso(t);
-        var before = Frames($"SELECT {Cols} FROM frames f WHERE f.timestamp <= ? ORDER BY f.timestamp DESC LIMIT 1", iso).FirstOrDefault();
-        var after = Frames($"SELECT {Cols} FROM frames f WHERE f.timestamp > ? ORDER BY f.timestamp ASC LIMIT 1", iso).FirstOrDefault();
+        var before = Frames($"SELECT {cols} FROM frames f WHERE f.timestamp <= ? ORDER BY f.timestamp DESC LIMIT 1", iso).FirstOrDefault();
+        var after = Frames($"SELECT {cols} FROM frames f WHERE f.timestamp > ? ORDER BY f.timestamp ASC LIMIT 1", iso).FirstOrDefault();
         double Gap(Frame? f) => f != null && Time.ParseIso(f.Timestamp) is DateTime d ? Math.Abs((d - t).TotalSeconds) : double.MaxValue;
         var best = Gap(before) <= Gap(after) ? before : after;
         return Gap(best) <= 600 ? best : null;

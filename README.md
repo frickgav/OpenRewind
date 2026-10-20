@@ -96,6 +96,52 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
 - **Claude, Cursor and other AI apps** can search your history too, through MCP, once you turn
   it on. See [Use with Claude and other AI apps (MCP)](#use-with-claude-and-other-ai-apps-mcp).
 
+## Compress Older Recordings
+
+**Settings → Compress Older Recordings** keeps screenshots older than an hour as short videos
+instead of one picture each. Screens change little from one frame to the next, so a video takes
+about 5 to 10 times less disk space. **It is off by default**: it is new and has not been tested on
+many Macs and PCs yet. The storage line in the menu shows what the videos save
+("Using 3.1 GB · video saves 14.2 GB").
+
+- Each video holds up to five minutes of one screen (frames of different sizes go in separate
+  videos). The last hour stays as pictures, so the recent timeline is exactly as before.
+- The Mac uses HEVC (H.265) when it has a hardware HEVC encoder, else H.264; every Mac this app
+  runs on can play both. Windows always uses H.264: playing HEVC on Windows needs the optional
+  HEVC Video Extensions, and a data folder restored on a PC without them would show nothing for
+  its older recordings. The Mac uses AVFoundation, Windows uses Media Foundation, both built into
+  the system; nothing is downloaded and nothing leaves the computer.
+- Captures wider or taller than 4096 x 2304 (ultrawide and 5K screens) are scaled down to fit,
+  since that is the most every H.264 encoder takes. A screenshot that still fails to go into a
+  video three times stays a picture.
+- Crash-safe: a video is written to a temporary file, read back and compared with the pictures,
+  moved into place, and the frames are pointed at it in one database transaction. Only then are
+  the pictures deleted. Quitting or crashing at any point loses nothing; the next run cleans up.
+- The timeline, search highlights, the local API (`GET /frames/{id}` still returns a JPEG), and
+  Ask AI's screenshots all read frames through one loader. It seeks exactly to each frame, keeps
+  the last few videos open (closed after 30 s unused on Windows) and the last 48 frames decoded
+  (at most 256 MB), so scrubbing stays quick. A keyframe every 20 frames means one frame never
+  needs more than 20 decoded to show it.
+- Deleting recordings and **Keep Recordings For** work the same: a video whose frames are all
+  deleted is deleted; one that loses only some of them is written again without them, soon after.
+  The delete and the note that the video must be redone are one database transaction, and every
+  pass also checks for videos holding more pictures than frames point at (a delete by an older
+  copy of the app, say), so deleted pictures can't be left in a video. If a video can't be
+  written again (no encoder any more, a damaged file), the frames it keeps are saved as pictures
+  and the video is deleted. Until that is done the menu and `doctor` say how many videos still
+  hold deleted frames.
+- Video is lossy. Each frame is checked against its screenshot when the video is made, but it is
+  not pixel for pixel the same. Writing a video again after a delete decodes it and encodes it
+  again, which loses a little more; that happens about once per video (**Keep Recordings For**
+  trims whole five-minute videos most of the time).
+- Turning it off stops making new videos. Videos already made keep playing.
+- `openrewind video-check` (Mac) or `OpenRewind.exe video-check` (Windows) checks that this
+  computer can make the videos: it compresses made-up screenshots in a temporary folder, reads
+  every frame back, deletes some and checks the rewrite, compresses a capture wider than 4096
+  pixels, and (on the Mac) turns a video back into pictures. `doctor` shows which codec would be
+  used, how much space the videos save, and whether the videos already made still open (after
+  moving the data folder to another computer, say).
+
 ## Search by Meaning
 
 Keyword search finds the words you type. Search by Meaning also finds moments that are *about*
@@ -554,6 +600,9 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
   launch and every hour.
 - **Settings → Delete Recordings**: last 15 minutes, last hour, today, all
   screen, all audio, or everything (asks first).
+- **Settings → Compress Older Recordings** keeps screenshots older than an hour as video, for
+  about 5 to 10 times less disk space. Off by default; see
+  [Compress Older Recordings](#compress-older-recordings).
 - **Settings → Transcription Model**: Whisper (Automatic, the default), Whisper Base, Small or
   Large v3 Turbo, or NVIDIA Parakeet v3, plus **Re-transcribe Recent Audio**. See
   [Choosing a transcription model](#choosing-a-transcription-model).
@@ -703,7 +752,7 @@ On when you run `record` or `serve` from the terminal, or after **Settings → L
 |-------|------|
 | `GET /health` | Status, frame count, permissions |
 | `GET /search?q=&app_name=&window_name=&start_time=&end_time=&limit=&offset=&max_content_length=` | Full-text search. Times: ISO, `2h ago`, `today`, `yesterday`, `YYYY-MM-DD` |
-| `GET /frames/{id}` | Snapshot as JPEG |
+| `GET /frames/{id}` | Snapshot as JPEG (also for frames kept in a video) |
 | `GET /apps?start_time=` | Apps with frame counts |
 | `GET /audio/{chunk_id}` | Audio chunk WAV |
 
@@ -718,8 +767,10 @@ Response: `{"data":[{"type":"OCR","content":{"frame_id","text","timestamp","app_
 
 ## Data
 
-`~/.openrewind/db.sqlite`, `~/.openrewind/data/<date>/*.heic` (`*.jpg` on Windows and older recordings), and
-`~/.openrewind/data/audio/<date>/*.wav`.
+`~/.openrewind/db.sqlite`, `~/.openrewind/data/<date>/*.heic` (`*.jpg` on Windows and older recordings),
+`~/.openrewind/data/video/<date>/*.mp4` (with Compress Older Recordings on), and
+`~/.openrewind/data/audio/<date>/*.wav`. In the API, a frame kept in a video has the video as
+`file_path` and its frame number in it as `offset_index`.
 Delete the folder to wipe everything, or from the terminal:
 
 ```bash
@@ -734,7 +785,6 @@ Delete the folder to wipe everything, or from the terminal:
 - Meeting summaries (Ask AI and the Journal recap summarize the day's transcripts, but not each meeting on its own)
 - UI input events (clicks, keys)
 - Browser URL per frame
-- Video chunk encoding (ffmpeg) instead of JPEGs
 - Plugins
 
 ## License

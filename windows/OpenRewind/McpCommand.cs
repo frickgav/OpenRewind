@@ -30,7 +30,7 @@ static class McpCommand
                 }
             }
             var tools = new AiTools(db) { Blocked = settings.ToBlocklist() };
-            if (settings.AiScreenshots) tools.Screenshots = f => ImageTools.ForAi(f.SnapshotPath);
+            if (settings.AiScreenshots) tools.Screenshots = f => ImageTools.ForAi(f.Source);  // stills and frames kept in a video
             // The model runs in this process too (on the CPU, on this PC); it is loaded on first use.
             meaning ??= new McpMeaning(db, MiniLm.Dir(config.Home));
             tools.Meaning = meaning.Get(settings.SearchByMeaning);

@@ -13,6 +13,14 @@ struct TimelineFrame {
     var end: Date? = nil
     /// Saved while a blocked window or site was in front; never copied or exported.
     var blocked = false
+
+    /// Set when the picture is a frame of a video (Compress Older Recordings); `path` is then "".
+    var videoPath = ""
+    var videoFrame = 0
+    var videoTime = 0.0
+
+    /// Where the picture is. Read it with FrameImages.
+    var source: FrameSource { FrameSource(stillPath: path, videoPath: videoPath, videoFrame: videoFrame, videoTime: videoTime) }
 }
 
 struct TimelineAudio {
@@ -50,7 +58,7 @@ extension Database {
     /// Frames matching `filter` (with `?` for each of `args`). Call with the lock held.
     private func readFrames(_ filter: String, _ args: [String]) -> [TimelineFrame] {
         var st: OpaquePointer?
-        let sql = "SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url, blocked FROM frames " + filter
+        let sql = "SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url, blocked, video_path, video_frame, video_time FROM frames " + filter
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(st) }
         for (i, a) in args.enumerated() { bind(st, Int32(i + 1), a) }
@@ -59,7 +67,8 @@ extension Database {
             guard let t = Time.iso.date(from: col(st, 1)) else { continue }
             out.append(TimelineFrame(id: sqlite3_column_int64(st, 0), time: t, appName: col(st, 2),
                                      windowName: col(st, 3), path: col(st, 4), url: col(st, 5),
-                                     blocked: sqlite3_column_int(st, 6) != 0))
+                                     blocked: sqlite3_column_int(st, 6) != 0, videoPath: col(st, 7),
+                                     videoFrame: Int(sqlite3_column_int64(st, 8)), videoTime: sqlite3_column_double(st, 9)))
         }
         return out
     }

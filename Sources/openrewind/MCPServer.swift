@@ -233,7 +233,7 @@ struct MCPServer {
             guard let history = db else { return MCPState(enabled: true, problem: "OpenRewind cannot read its history.") }
             var tools = AITools(db: history)
             tools.blocklist = BlocklistStore.shared.reload()
-            tools.screenshots = AISettings.screenshotsAllowed ? { AITools.jpegForAI($0.snapshotPath) } : nil
+            tools.screenshots = AISettings.screenshotsAllowed ? { AITools.jpegForAI($0) } : nil
             // Search by Meaning uses macOS's own sentence model, so this process can load it too.
             var missing: String?
             if !UserDefaults.standard.bool(forKey: MeaningService.settingKey) {

@@ -72,6 +72,12 @@ on older recordings and on how time is counted). Click an app, site
   or Until I Delete Them (default). Older recordings are deleted at launch and every hour.
 - **Settings → Delete Recordings**: last 15 minutes, last hour, today, all screen,
   all audio, or everything (asks first).
+- **Settings → Compress Older Recordings** keeps screenshots older than an hour as H.264 video
+  (not HEVC, which needs an optional codec to play on many PCs), for about 5 to 10 times less disk space. Off by default,
+  because it is new; it reads "(not available on this PC)" when Windows has no working video
+  encoder (some N editions without the Media Feature Pack). Turning it off stops making videos;
+  ones already made keep playing. Details in the
+  [main README](../README.md#compress-older-recordings).
 - **Settings → Transcription Model**: Whisper (Automatic, the default), Whisper Base, Small or
   Large v3 Turbo, or NVIDIA Parakeet v3, which needs no other setup: pick it and it downloads
   (670 MB). **Re-transcribe Recent Audio** runs older clips through the new model; the new text
@@ -129,6 +135,7 @@ on older recordings and on how time is counted). Click an app, site
 | Speech to text | whisper.cpp `whisper-cli`, or Parakeet v3 on ONNX Runtime | whisper.cpp `whisper-cli.exe`, or Parakeet v3 on ONNX Runtime |
 | Search by Meaning | macOS sentence embedding (built in) | all-MiniLM-L6-v2 with ONNX Runtime (downloaded once) |
 | Database, API, search page | SQLite + FTS5, port 3031 | the same |
+| Compress Older Recordings | AVAssetWriter / AVAssetImageGenerator | Media Foundation sink writer / source reader |
 | App | Menu bar, ⌥⌘T | Tray, Ctrl+Alt+T |
 
 Windows OCR uses the languages installed for your Windows display language. If
@@ -163,6 +170,7 @@ OpenRewind records audio without it; the clips are transcribed once it is set up
 
 ```powershell
 .\OpenRewind.exe doctor
+.\OpenRewind.exe video-check     # can this PC make the videos of Compress Older Recordings?
 .\OpenRewind.exe record          # record + API, no tray icon
 .\OpenRewind.exe delete older:week
 .\OpenRewind.exe mcp             # MCP server for AI apps over stdin/stdout (what they start)

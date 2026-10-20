@@ -113,14 +113,19 @@ public sealed class Api
     readonly Config config;
     /// Platform facts for /health (permissions etc.).
     readonly Func<Dictionary<string, object?>> healthExtras;
+    /// A frame's picture as JPEG (the app's FrameImages: stills and frames inside videos). Without it only
+    /// JPEG stills can be served.
+    readonly Func<Frame, byte[]?>? frameJpeg;
 
     /// Search by Meaning, while it is on (mode=meaning on /search).
     readonly Func<MeaningService?> meaning;
 
-    public Api(Database db, Config config, Func<Dictionary<string, object?>>? healthExtras = null, Func<MeaningService?>? meaning = null)
+    public Api(Database db, Config config, Func<Dictionary<string, object?>>? healthExtras = null, Func<Frame, byte[]?>? frameJpeg = null,
+               Func<MeaningService?>? meaning = null)
     {
         this.db = db; this.config = config;
         this.healthExtras = healthExtras ?? (() => new());
+        this.frameJpeg = frameJpeg;
         this.meaning = meaning ?? (() => null);
     }
 
@@ -205,7 +210,8 @@ public sealed class Api
                 content = new
                 {
                     frame_id = f.Id, text = Clip(f.Text), timestamp = f.Timestamp, app_name = f.AppName, window_name = f.WindowName,
-                    focused = f.Focused, file_path = f.SnapshotPath, text_source = f.TextSource, offset_index = 0, tags = Array.Empty<string>(),
+                    focused = f.Focused, file_path = f.VideoPath.Length > 0 ? f.VideoPath : f.SnapshotPath, text_source = f.TextSource,
+                    offset_index = f.VideoFrame, tags = Array.Empty<string>(),
                 },
             })));
         }
@@ -264,7 +270,7 @@ public sealed class Api
                 content = new
                 {
                     frame_id = h.FirstId, text = clip(h.Text), timestamp = h.Timestamp, app_name = h.AppName, window_name = h.WindowName,
-                    focused = f?.Focused ?? true, file_path = f?.SnapshotPath ?? "", text_source = f?.TextSource ?? "ocr", offset_index = 0,
+                    focused = f?.Focused ?? true, file_path = f == null ? "" : f.VideoPath.Length > 0 ? f.VideoPath : f.SnapshotPath, text_source = f?.TextSource ?? "ocr", offset_index = 0,
                     tags = Array.Empty<string>(), score = h.Score,
                 },
             };
@@ -281,17 +287,26 @@ public sealed class Api
     HttpResponse FrameImage(string idStr)
     {
         if (!long.TryParse(idStr, out var id) || db.FrameById(id) is not Frame f) return HttpResponse.Error("frame not found", 404);
-        return Serve(f.SnapshotPath, "image/jpeg", "snapshot missing");
+        // Only frames of our own data dir, whichever way the picture is stored.
+        if (!InDataDir(f.VideoPath.Length > 0 ? f.VideoPath : f.SnapshotPath)) return HttpResponse.Error("snapshot missing", 404);
+        if (frameJpeg == null) return Serve(f.SnapshotPath, "image/jpeg", "snapshot missing");
+        return frameJpeg(f) is byte[] jpg ? new HttpResponse { ContentType = "image/jpeg", Body = jpg } : HttpResponse.Error("snapshot missing", 404);
     }
 
     /// Only serve files inside our own data dir.
     HttpResponse Serve(string path, string type, string missing)
     {
+        if (!InDataDir(path) || !File.Exists(Path.GetFullPath(path))) return HttpResponse.Error(missing, 404);
+        return new HttpResponse { ContentType = type, Body = File.ReadAllBytes(Path.GetFullPath(path)) };
+    }
+
+    bool InDataDir(string path)
+    {
+        if (path.Length == 0) return false;
         var full = Path.GetFullPath(path);
         var root = Path.GetFullPath(config.DataDir).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         var cmp = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-        if (!full.StartsWith(root, cmp) || !File.Exists(full)) return HttpResponse.Error(missing, 404);
-        return new HttpResponse { ContentType = type, Body = File.ReadAllBytes(full) };
+        return full.StartsWith(root, cmp);
     }
 }
 

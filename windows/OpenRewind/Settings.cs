@@ -15,6 +15,8 @@ sealed class Settings
     public int TypingFrameGap { get; set; } = 2;
     /// Saved screenshot size as a percent of the screen (see ScreenshotSizes.Choices).
     public int ScreenshotPercent { get; set; } = ScreenshotSizes.Default;
+    /// Compress Older Recordings: keep frames older than an hour as video. Off until it has been tested on more PCs.
+    public bool CompressOlderRecordings { get; set; } = false;
     /// The local HTTP API + browser search page. Off unless the user turns it on.
     public bool LocalSearchServer { get; set; } = false;
     /// Search by Meaning: index moments in the background to find them by meaning. Off unless the user turns it on.

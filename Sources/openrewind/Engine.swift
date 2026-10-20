@@ -27,6 +27,8 @@ final class Engine {
         self.config = config
         self.db = db
         self.recorder = Recorder(config: config, db: db)
+        // Videos about to be deleted (all their frames are gone): close them first.
+        db.releasingVideos = { paths in paths.forEach(FrameImages.shared.release) }
         self.meaning = MeaningService(db: db)
     }
 

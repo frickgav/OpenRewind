@@ -22,16 +22,16 @@ static class ClipExporter
     /// Write `plan` as a `w`×`h` clip to `path`. Reports how many of the plan's frames are done, about ten times a
     /// second. The file is only there when this finishes without an exception; a cancelled or failed export
     /// leaves nothing behind.
-    public static async Task Export(ClipPlan.Result plan, ClipFormat format, int w, int h, string path, IProgress<int> progress, CancellationToken ct)
+    public static async Task Export(Database db, ClipPlan.Result plan, ClipFormat format, int w, int h, string path, IProgress<int> progress, CancellationToken ct)
     {
         if (plan.Frames.Count == 0) throw new InvalidOperationException("No screenshots in that range.");
         var tmp = Path.Combine(Path.GetDirectoryName(path) ?? ".", "." + Path.GetFileName(path) + ".part");
         try
         {
             var report = new Reporter(progress, plan.Frames.Count);
-            if (format == ClipFormat.Gif) await Task.Run(() => WriteGif(plan.Frames, w, h, tmp, report, ct), ct);
+            if (format == ClipFormat.Gif) await Task.Run(() => WriteGif(db, plan.Frames, w, h, tmp, report, ct), ct);
             // The video stops itself when cancelled (it ends the stream), so the encoder lets go of the file.
-            else await Task.Run(() => WriteMp4(plan, w, h, tmp, report, ct));
+            else await Task.Run(() => WriteMp4(db, plan, w, h, tmp, report, ct));
             ct.ThrowIfCancellationRequested();
             File.Move(tmp, path, overwrite: true);
         }
@@ -51,15 +51,12 @@ static class ClipExporter
         }
     }
 
-    /// Size of a screenshot file, or null if it can't be read.
-    public static Size? ImageSize(string path)
+    /// Size of a screenshot (a still, or a frame kept in a video), or null if it can't be read.
+    public static Size? ImageSize(Database db, TimelineFrame f)
     {
-        try
-        {
-            using var img = Image.FromStream(new MemoryStream(File.ReadAllBytes(path)), false, false);
-            return img.Size;
-        }
-        catch { return null; }
+        if (!f.Source.IsVideo && FrameImages.StillSize(f.Path) is var (sw, sh)) return new Size(sw, sh);
+        using var img = FrameImages.LoadCurrent(db, f.Id, f.Source, cache: false);
+        return img?.Size;
     }
 
     /// Passes progress on at most ten times a second (and always the last one), so a long clip does not flood the window.
@@ -85,12 +82,14 @@ static class ClipExporter
         }
     }
 
-    /// A screenshot scaled to fit `w`×`h` on black, as BGRA rows top to bottom. Null if the file is gone.
-    static byte[]? Pixels(string path, int w, int h)
+    /// A screenshot (a still, or a frame kept in a video) scaled to fit `w`×`h` on black, as BGRA rows top to
+    /// bottom. Null if it is gone. Read past the picture cache, so an export does not push out the timeline's.
+    static byte[]? Pixels(Database db, TimelineFrame f, int w, int h)
     {
         try
         {
-            using var src = Image.FromStream(new MemoryStream(File.ReadAllBytes(path)));
+            using var src = FrameImages.LoadCurrent(db, f.Id, f.Source, cache: false);
+            if (src == null) return null;
             using var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
             using (var g = Graphics.FromImage(bmp))
             {
@@ -116,7 +115,7 @@ static class ClipExporter
         }
     }
 
-    static void WriteGif(List<ClipFrame> frames, int w, int h, string path, Reporter report, CancellationToken ct)
+    static void WriteGif(Database db, List<ClipFrame> frames, int w, int h, string path, Reporter report, CancellationToken ct)
     {
         using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16);
         var gif = new GifWriter(file, w, h);
@@ -125,14 +124,14 @@ static class ClipExporter
         {
             ct.ThrowIfCancellationRequested();
             // A missing file keeps the picture before it.
-            last = Pixels(frames[i].Frame.Path, w, h) ?? last ?? new byte[w * h * 4];
+            last = Pixels(db, frames[i].Frame, w, h) ?? last ?? new byte[w * h * 4];
             gif.AddFrame(last, w * 4, frames[i].Duration);
             report.Done(i + 1);
         }
         gif.Finish();
     }
 
-    static void WriteMp4(ClipPlan.Result plan, int w, int h, string path, Reporter report, CancellationToken ct)
+    static void WriteMp4(Database db, ClipPlan.Result plan, int w, int h, string path, Reporter report, CancellationToken ct)
     {
         // Each video sample, with the frame of the plan it shows.
         var samples = new List<(ClipFrame Sample, int Frame)>();
@@ -147,7 +146,7 @@ static class ClipExporter
             CanSeek = false,
         };
         int next = 0;
-        string? lastPath = null;
+        FrameSource? lastSource = null;
         byte[]? pixels = null;
         source.Starting += (_, e) => e.Request.SetActualStartPosition(TimeSpan.Zero);
         source.SampleRequested += (_, e) =>
@@ -155,11 +154,11 @@ static class ClipExporter
             // No sample ends the stream: at the end, or as soon as the export is cancelled.
             if (ct.IsCancellationRequested || next >= samples.Count) { e.Request.Sample = null; return; }
             var (s, frame) = samples[next++];
-            if (s.Frame.Path != lastPath)
+            if (s.Frame.Source != lastSource)
             {
                 // A new array each time: the encoder may still hold the last one.
-                pixels = Pixels(s.Frame.Path, w, h) ?? pixels ?? new byte[w * h * 4];
-                lastPath = s.Frame.Path;
+                pixels = Pixels(db, s.Frame, w, h) ?? pixels ?? new byte[w * h * 4];
+                lastSource = s.Frame.Source;
             }
             var sample = MediaStreamSample.CreateFromBuffer(pixels!.AsBuffer(), TimeSpan.FromSeconds(s.At));
             sample.Duration = TimeSpan.FromSeconds(s.Duration);
@@ -312,7 +311,7 @@ sealed class ExportClipForm : Form
         var plan = ClipPlan.Make(frames, i.Start, i.End, i.Speed, i.Format, f => ClipPlan.Hides(list, f));
         if (plan.Frames.Count == 0)
             return new(i, null, 0, 0, plan.Blocked > 0 ? "Every screenshot in that range is from a blocked app or site." : "No screenshots in that range.");
-        if (plan.Frames.Select(f => ClipExporter.ImageSize(f.Frame.Path)).FirstOrDefault(s => s != null) is not Size size)
+        if (plan.Frames.Select(f => ClipExporter.ImageSize(db, f.Frame)).FirstOrDefault(s => s != null) is not Size size)
             return new(i, null, 0, 0, "The screenshots in that range were deleted.");
         var (w, h) = ClipPlan.OutputSize(size.Width, size.Height, i.Format);
         return new(i, plan, w, h, null);
@@ -402,7 +401,7 @@ sealed class ExportClipForm : Form
             totalFrames = x.Plan.Frames.Count;
             ShowProgress();
             var report = new Progress<int>(n => { doneFrames = n; ShowProgress(); });
-            await ClipExporter.Export(x.Plan, inputs.Format, x.W, x.H, path, report, token);
+            await ClipExporter.Export(model.Db, x.Plan, inputs.Format, x.W, x.H, path, report, token);
             status.Text = $"Saved {Path.GetFileName(path)} ({ClipPlan.FileSize(new FileInfo(path).Length)}) in {ClipPlan.Length(clock.Elapsed.TotalSeconds)}.";
             doneLinks.Visible = true;
         }

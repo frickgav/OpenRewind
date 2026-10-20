@@ -4,8 +4,15 @@ namespace OpenRewind;
 
 /// BrowserUrl is the address of the browser tab in this frame, or "". Blocked: a blocked window or
 /// site was in front (the frame keeps only the app name; Insights leaves it out).
+/// Display names the screen it was taken on. A frame's picture is either the still file at SnapshotPath,
+/// or (after Compress Older Recordings) frame VideoFrame of the video at VideoPath, VideoTime seconds in.
+/// Read it with the app's FrameImages, never from the paths directly.
 public record Frame(long Id, string Timestamp, string AppName, string WindowName, bool Focused,
-                    string SnapshotPath, string Text, string TextSource, long Hash, string BrowserUrl = "", bool Blocked = false);
+                    string SnapshotPath, string Text, string TextSource, long Hash, string BrowserUrl = "", bool Blocked = false,
+                    string Display = "", string VideoPath = "", int VideoFrame = 0, double VideoTime = 0)
+{
+    public FrameSource Source => new(SnapshotPath, VideoPath, VideoFrame, VideoTime);
+}
 
 public record AudioChunk(long Id, string FilePath, string Timestamp, string Device, bool IsInput, string Status);
 
@@ -32,6 +39,9 @@ public sealed partial class Database : IDisposable
 {
     readonly SqliteConnection conn;
     readonly object gate = new();
+    /// The frame columns to read. A read-only open (the MCP server) may see a database the recording app
+    /// has not migrated yet; it then reads every frame as a still.
+    readonly string cols = FullCols;
 
     public Database(string path)
     {
@@ -50,6 +60,8 @@ public sealed partial class Database : IDisposable
         conn = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
         conn.Open();
         Exec("PRAGMA busy_timeout=5000;");
+        if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name IN ('display', 'video_path', 'video_frame', 'video_time')") < 4)
+            cols = StillCols;
     }
 
     /// After the data folder moved from ~/.openscreen (see Config), point the stored screenshot
@@ -64,7 +76,7 @@ public sealed partial class Database : IDisposable
         lock (gate)
         {
             using var tx = conn.BeginTransaction();
-            foreach (var (table, col) in new[] { ("frames", "snapshot_path"), ("audio_chunks", "file_path") })
+            foreach (var (table, col) in new[] { ("frames", "snapshot_path"), ("frames", "video_path"), ("video_segments", "path"), ("audio_chunks", "file_path") })
             {
                 using var cmd = Cmd($"UPDATE {table} SET {col} = ? || substr({col}, ?) WHERE substr({col}, 1, ?) = ?",
                                     fresh, old.EnumerateRunes().Count() + 1, old.EnumerateRunes().Count(), old);
@@ -144,7 +156,7 @@ public sealed partial class Database : IDisposable
             VALUES ('delete', old.id, old.transcription, old.device);
         END;
         """);
-        // Added later: older databases do not have this column yet.
+        // Added later: older databases do not have these columns yet. The Mac app adds the same ones.
         if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'browser_url'") == 0)
             Exec("ALTER TABLE frames ADD COLUMN browser_url TEXT NOT NULL DEFAULT ''");
         MigrateJournal();
@@ -155,6 +167,7 @@ public sealed partial class Database : IDisposable
         // Frames saved while a blocked window or site was in front. Older frames say 0. Mac: the same column.
         if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'blocked'") == 0)
             Exec("ALTER TABLE frames ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0");
+        MigrateVideo();
         MigrateMeaning();
         MigrateMeetings();
     }
@@ -195,15 +208,16 @@ public sealed partial class Database : IDisposable
     {
         lock (gate)
         {
-            using var cmd = Cmd("INSERT INTO frames (timestamp, app_name, window_name, focused, snapshot_path, text, text_source, hash, browser_url, blocked) VALUES (?,?,?,?,?,?,?,?,?,?); SELECT last_insert_rowid();",
-                f.Timestamp, f.AppName, f.WindowName, f.Focused ? 1 : 0, f.SnapshotPath, f.Text, f.TextSource, f.Hash, f.BrowserUrl, f.Blocked ? 1 : 0);
+            using var cmd = Cmd("INSERT INTO frames (timestamp, app_name, window_name, focused, snapshot_path, text, text_source, hash, browser_url, blocked, display) VALUES (?,?,?,?,?,?,?,?,?,?,?); SELECT last_insert_rowid();",
+                f.Timestamp, f.AppName, f.WindowName, f.Focused ? 1 : 0, f.SnapshotPath, f.Text, f.TextSource, f.Hash, f.BrowserUrl, f.Blocked ? 1 : 0, f.Display);
             return (long)cmd.ExecuteScalar()!;
         }
     }
 
-    const string Cols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url";
+    const string FullCols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, f.display, f.video_path, f.video_frame, f.video_time";
+    const string StillCols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, '', '', 0, 0.0";
 
-    public Frame? FrameById(long id) => Frames($"SELECT {Cols} FROM frames f WHERE f.id = ?", id).FirstOrDefault();
+    public Frame? FrameById(long id) => Frames($"SELECT {cols} FROM frames f WHERE f.id = ?", id).FirstOrDefault();
 
     public (List<Frame> Rows, int Total) Search(SearchQuery s)
     {
@@ -221,7 +235,7 @@ public sealed partial class Database : IDisposable
         if (s.EndTime != null) { where.Add("f.timestamp <= ?"); args.Add(s.EndTime); }
         var whereSql = where.Count == 0 ? "" : "WHERE " + string.Join(" AND ", where);
         var total = (int)ScalarLong($"SELECT COUNT(*) FROM {from} {whereSql}", args.ToArray());
-        var rows = Frames($"SELECT {Cols} FROM {from} {whereSql} ORDER BY f.timestamp DESC LIMIT ? OFFSET ?",
+        var rows = Frames($"SELECT {cols} FROM {from} {whereSql} ORDER BY f.timestamp DESC LIMIT ? OFFSET ?",
                           args.Concat(new object[] { s.Limit, s.Offset }).ToArray());
         return (rows, total);
     }
@@ -258,7 +272,7 @@ public sealed partial class Database : IDisposable
     public (int Count, string? Last) Stats()
     {
         var n = (int)ScalarLong("SELECT COUNT(*) FROM frames");
-        var last = Frames($"SELECT {Cols} FROM frames f ORDER BY id DESC LIMIT 1").FirstOrDefault()?.Timestamp;
+        var last = Frames($"SELECT {cols} FROM frames f ORDER BY id DESC LIMIT 1").FirstOrDefault()?.Timestamp;
         return (n, last);
     }
 
@@ -488,7 +502,8 @@ public sealed partial class Database : IDisposable
                 var out_ = new List<Frame>();
                 while (r.Read())
                     out_.Add(new Frame(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetInt64(4) != 0,
-                                       r.GetString(5), r.GetString(6), r.GetString(7), r.GetInt64(8), r.GetString(9)));
+                                       r.GetString(5), r.GetString(6), r.GetString(7), r.GetInt64(8), r.GetString(9),
+                                       Display: r.GetString(10), VideoPath: r.GetString(11), VideoFrame: (int)r.GetInt64(12), VideoTime: r.GetDouble(13)));
                 return out_;
             }
             catch (SqliteException e) { Log.Write($"sql error: {e.Message}"); return new(); }

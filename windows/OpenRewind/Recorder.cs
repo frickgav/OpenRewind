@@ -70,15 +70,16 @@ sealed class Recorder
         Redactor.Apply(image, screen.Bounds, wins);
         // A blocked window in front: keep the app name for the timeline, but not its title or text.
         if (list.BlocksWindow(Blocklist.IdFor(win.ExePath), win.AppName, win.WindowName) || siteWindows.Blocks(win.Hwnd, list))
-            Ingest(image, win with { WindowName = "" }, blocked: true);
+            Ingest(image, win with { WindowName = "" }, blocked: true, display: screen.DeviceName);
         else
-            Ingest(image, win);
+            Ingest(image, win, display: screen.DeviceName);
     }
 
     /// Dedup, extract text, store snapshot, insert row. Returns the new frame id, or null if skipped.
     /// `blocked`: a blocked window or site is in front; its text is not read and the frame is marked,
-    /// so Insights leaves it out.
-    public long? Ingest(Bitmap image, ActiveWindow window, bool blocked = false)
+    /// so Insights leaves it out. `display` names the screen (older frames of one screen go into one
+    /// video, see VideoCompactor).
+    public long? Ingest(Bitmap image, ActiveWindow window, bool blocked = false, string display = "")
     {
         var hash = ImageTools.DHash(image);
         var thumb = ImageTools.Thumbnail(image);
@@ -122,7 +123,7 @@ sealed class Recorder
         var file = Path.Combine(dayDir, ts.Replace(':', '-') + ".jpg");
         using (var small = ImageTools.Scaled(image, config.SnapshotScale)) ImageTools.WriteJpeg(small, file);
 
-        var id = db.Insert(new Frame(0, ts, window.AppName, window.WindowName, true, file, text, source, unchecked((long)hash), url, blocked));
+        var id = db.Insert(new Frame(0, ts, window.AppName, window.WindowName, true, file, text, source, unchecked((long)hash), url, blocked, display));
         lastThumb = thumb; lastText = text; lastKey = key; lastWrite = DateTime.UtcNow;
         Log.Write($"frame {id} {window.AppName} — {text.Length} chars via {source}");
         return id;

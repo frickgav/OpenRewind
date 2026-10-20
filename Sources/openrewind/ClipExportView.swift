@@ -234,7 +234,7 @@ struct ExportClipCard: View {
                     return
                 }
                 totalFrames = plan.frames.count
-                job.export(plan, format: f, size: size, to: url, progress: { doneFrames = $0 }) { finished($0, url: url) }
+                job.export(plan, db: db, format: f, size: size, to: url, progress: { doneFrames = $0 }) { finished($0, url: url) }
             }
         }
     }

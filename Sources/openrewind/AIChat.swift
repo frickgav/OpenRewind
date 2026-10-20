@@ -60,7 +60,7 @@ final class AIChatModel: ObservableObject {
         seenURLs.formUnion(Self.webAddresses(in: q))
         busy = true
         let client = AIClient(settings: settings)
-        tools.screenshots = AISettings.screenshotsAllowed ? { AITools.jpegForAI($0.snapshotPath) } : nil
+        tools.screenshots = AISettings.screenshotsAllowed ? { AITools.jpegForAI($0) } : nil
         tools.blocklist = BlocklistStore.shared.current
         let kind = settings.kind, price = AISettings.price(for: settings.model)
         task = Task { @MainActor [weak self] in

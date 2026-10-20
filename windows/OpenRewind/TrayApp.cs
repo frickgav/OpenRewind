@@ -17,6 +17,8 @@ sealed class TrayApp : ApplicationContext
     /// Turns recording back on when a timed pause ends.
     readonly System.Windows.Forms.Timer resumeTimer = new();
     readonly RetentionJob retention;
+    /// Compress Older Recordings, and rewriting videos after deletes.
+    readonly VideoJob video;
     readonly Updater updater;
     /// Last measured size of the data folder; measured in the background when the menu opens.
     long? dataSize;
@@ -61,6 +63,7 @@ sealed class TrayApp : ApplicationContext
         resumeTimer.Tick += (_, _) => CheckPause();
         retention = new RetentionJob(engine.Db, settings.Screen, settings.Audio);
         retention.Start();
+        video = new VideoJob(engine.Db, engine.Config, settings.CompressOlderRecordings);
         _ = Database.BuildSlowIndexesInBackground(engine.Config.DbPath);
 
         updater = new Updater(settings) { QuitApp = Quit };
@@ -298,6 +301,7 @@ sealed class TrayApp : ApplicationContext
         s.DropDownItems.Add(KeepMenu("Keep Screen Recordings For", screen: true));
         s.DropDownItems.Add(KeepMenu("Keep Audio Recordings For", screen: false));
         s.DropDownItems.Add(TypingGapMenu());
+        s.DropDownItems.Add(CompressItem());
         s.DropDownItems.Add(TranscriptionMenu());
         s.DropDownItems.Add(new ToolStripSeparator());
         var del = new ToolStripMenuItem("Delete Recordings");
@@ -356,6 +360,28 @@ sealed class TrayApp : ApplicationContext
                 engine.Recorder.MinorChangeGap = secs;
                 settings.Save();
             }));
+        return item;
+    }
+
+    /// Keep screenshots older than an hour as video. Turning it off stops making videos; old ones still play.
+    ToolStripMenuItem CompressItem()
+    {
+        var item = Toggle("Compress Older Recordings", settings.CompressOlderRecordings, () =>
+        {
+            settings.CompressOlderRecordings = !settings.CompressOlderRecordings;
+            video.Enabled = settings.CompressOlderRecordings;
+            settings.Save();
+            Log.Write($"compress older recordings {(video.Enabled ? "on" : "off")}");
+            if (video.Enabled) video.Kick();
+        });
+        item.ToolTipText = "Keep screenshots older than an hour as video instead of one picture each: about 5 to 10 times less disk space. "
+                           + "New, and not yet tested on many PCs, so it is off unless you turn it on. Videos already made keep playing when it is off.";
+        if (video.Unavailable is string why)
+        {
+            item.Text += " (not available on this PC)";
+            item.ToolTipText = $"This PC has no working video encoder: {why}";
+            item.Enabled = settings.CompressOlderRecordings;  // can still be turned off
+        }
         return item;
     }
 
@@ -752,13 +778,18 @@ sealed class TrayApp : ApplicationContext
     List<string> StorageLines()
     {
         var size = dataSize is long n ? FormatBytes(n) : "measuring…";
-        var lines = new List<string> { $"Using {size}" };
+        // Compressed recordings: how much less the videos take than the screenshots they replaced.
+        var v = engine.Db.VideoStats();
+        var lines = new List<string> { $"Using {size}" + (v.Segments > 0 ? $" · video saves {FormatBytes(v.Saved)}" : "") };
         if (engine.Db.OldestRecording() is DateTime oldest)
         {
             var local = oldest.ToLocalTime();
             lines.Add($"Goes back to {local:g} ({Ago(oldest)})");
         }
         else lines.Add("No recordings yet");
+        // Deleted frames that are still inside a video until it is written again (or turned back into pictures).
+        if (engine.Db.StuckRewrites() is int stuck and > 0)
+            lines.Add($"{stuck} video{(stuck == 1 ? "" : "s")} still hold{(stuck == 1 ? "s" : "")} deleted frames · being redone");
         return lines;
     }
 
@@ -860,6 +891,7 @@ sealed class TrayApp : ApplicationContext
         resumeTimer.Dispose();
         recapTimer.Dispose();
         retention.Dispose();
+        video.Dispose();
         meaning.Dispose();
         updater.Dispose();
         meetings.Dispose();

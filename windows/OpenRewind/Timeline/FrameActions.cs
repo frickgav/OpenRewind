@@ -82,7 +82,7 @@ sealed partial class TimelineModel
         Task.Run(() =>
         {
             // Its own copy of the picture: GDI+ images can't be shared across threads.
-            using var bmp = ReadImage(f.Path) as Bitmap;
+            using var bmp = Picture(f);  // still or video frame
             var text = bmp == null ? null : Ocr.Words(bmp);
             ui?.Post(_ =>
             {
