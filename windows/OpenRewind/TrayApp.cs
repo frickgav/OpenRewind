@@ -69,7 +69,7 @@ sealed class TrayApp : ApplicationContext
         overlay.Chat = AiChat;
         updater.Start();
 
-        // Finds meetings once a minute; the window and the AI notes read what it stores.
+        // Finds meetings (and asks about notes) within seconds of a call; the window and the AI notes read what it stores.
         meetings = new MeetingWatcher(engine.Db, settings, engine.Config.AudioChunkSeconds, () => engine.Transcriber != null, a => overlay.BeginInvoke(a));
         meetings.Start();
 
