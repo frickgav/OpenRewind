@@ -94,7 +94,7 @@ public class McpTests : IDisposable
     {
         var names = ((JsonArray)Ask(Server(), """{"jsonrpc":"2.0","id":1,"method":"tools/list"}""")["result"]!["tools"]!)
             .Select(t => (string)t!["name"]!).ToList();
-        Assert.Equal(new[] { "activity_summary", "search_screen", "search_audio", "get_screen_text" }, names);
+        Assert.Equal(new[] { "activity_summary", "search_screen", "search_audio", "get_screen_text", "list_meetings" }, names);
         var tool = Ask(Server(), """{"jsonrpc":"2.0","id":1,"method":"tools/list"}""")["result"]!["tools"]![1]!;
         Assert.Equal("object", (string?)tool["inputSchema"]!["type"]);
         Assert.Equal("query", (string?)tool["inputSchema"]!["required"]![0]);
@@ -136,8 +136,8 @@ public class McpTests : IDisposable
         var s = Server();
         // initialize and tools/list still work, so the app shows OpenRewind as connected.
         Assert.NotNull(Ask(s, """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}""")["result"]);
-        Assert.Equal(4, ((JsonArray)Ask(s, """{"jsonrpc":"2.0","id":2,"method":"tools/list"}""")["result"]!["tools"]!).Count);
-        foreach (var tool in new[] { "activity_summary", "search_screen", "search_audio", "get_screen_text", "view_screenshot" })
+        Assert.Equal(AiTools.Specs.Length, ((JsonArray)Ask(s, """{"jsonrpc":"2.0","id":2,"method":"tools/list"}""")["result"]!["tools"]!).Count);
+        foreach (var tool in new[] { "activity_summary", "search_screen", "search_audio", "get_screen_text", "list_meetings", "view_screenshot" })
         {
             var r = Ask(s, Call(tool, new JsonObject { ["query"] = "x" }));
             Assert.True((bool)r["result"]!["isError"]!);
