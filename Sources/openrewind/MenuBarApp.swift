@@ -52,7 +52,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var recapTimer: Timer?
     private var writingRecap = false
 
-    /// Finds meetings once a minute; the Meetings window and the AI notes read what it stores.
+    /// Finds meetings (and asks about notes) within seconds of a call; the Meetings window and the AI notes read what it stores.
     private lazy var meetings = MeetingCenter(db: engine.db, chunkSeconds: engine.config.audioChunkSeconds,
                                               transcribing: { [weak self] in self?.engine.transcriber != nil })
 

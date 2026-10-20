@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 
 namespace OpenRewind;
 
-/// Finds meetings once a minute (MeetingTracker) and, when the user turned on
+/// Finds meetings (MeetingTracker: a quick check every 10 seconds, a full run every minute) and, when the user turned on
 /// "Summarize Meetings with AI", asks their provider for notes after each one ends.
 /// The Mac app does the same in MeetingCenter (Meetings.swift).
 sealed class MeetingWatcher : IDisposable
@@ -27,7 +27,11 @@ sealed class MeetingWatcher : IDisposable
         this.db = db; this.settings = settings; this.chunkSeconds = chunkSeconds; this.transcribing = transcribing; this.ui = ui;
     }
 
-    public void Start() => timer = new System.Threading.Timer(_ => Tick(), null, TimeSpan.FromSeconds(20), TimeSpan.FromMinutes(1));
+    /// Every 10 seconds a quick look for a call window just brought to the front (so the popup shows
+    /// within seconds), and every minute the full run.
+    public void Start() => timer = new System.Threading.Timer(_ => Tick(), null, MeetingTracker.SpotEvery, MeetingTracker.SpotEvery);
+
+    DateTime lastUpdate = DateTime.MinValue;
 
     void Tick()
     {
@@ -35,9 +39,18 @@ sealed class MeetingWatcher : IDisposable
         try
         {
             var now = DateTime.UtcNow;
-            var ended = MeetingTracker.Update(db, Blocklist.Current, now, chunkSeconds, transcribing());
-            foreach (var m in ended) Log.Write($"meeting ended: {m.App}, {m.Start.ToLocalTime():t}–{m.End.ToLocalTime():t}");
-            var late = settings.SummarizeMeetings ? MeetingTracker.Late(db, now) : new();
+            var ended = new List<Meeting>();
+            var late = new List<Meeting>();
+            if (now - lastUpdate >= MeetingTracker.UpdateEvery || now < lastUpdate)
+            {
+                lastUpdate = now;
+                ended = MeetingTracker.Update(db, Blocklist.Current, now, chunkSeconds, transcribing());
+                foreach (var m in ended) Log.Write($"meeting ended: {m.App}, {m.Start.ToLocalTime():t}–{m.End.ToLocalTime():t}");
+                if (settings.SummarizeMeetings) late = MeetingTracker.Late(db, now);
+            }
+            else if (MeetingTracker.Spot(db, Blocklist.Current, now) is Meeting spotted)
+                Log.Write($"meeting started: {spotted.App}, call window in front");
+            else return;
             var recent = db.MeetingsBetween(now - TimeSpan.FromDays(1), now);
             ui(() =>
             {

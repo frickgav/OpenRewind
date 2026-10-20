@@ -26,7 +26,8 @@ public class MeetingDetectorTests
     [Fact]
     public void StartsWhenAMeetingAppIsInFrontWithSound()
     {
-        var frames = Frames(0, 5, "Code").Concat(Frames(5, 40, "zoom.us", "Zoom Meeting")).Concat(Frames(40, 90, "Code"));
+        // Zoom with no window title could be its home screen: the meeting starts once others are heard.
+        var frames = Frames(0, 5, "Code").Concat(Frames(5, 40, "zoom.us")).Concat(Frames(40, 90, "Code"));
         var m = Assert.Single(Detect(frames, Sound(8, 39), now: 90));
         Assert.Equal(At(8), m.Start);
         Assert.Equal("Zoom", m.App);
@@ -35,6 +36,27 @@ public class MeetingDetectorTests
         Assert.False(m.Live);
         // The app was last in front until 40:00, the sound went on to 38:50.
         Assert.Equal(At(40), m.End);
+    }
+
+    [Fact]
+    public void ACallWindowStartsAMeetingWithoutWaitingForSound()
+    {
+        // Zoom's meeting window: the meeting starts when it came to the front, before anyone spoke.
+        var frames = Frames(0, 5, "Code").Concat(Frames(5, 40, "zoom.us", "Zoom Meeting")).Concat(Frames(40, 90, "Code"));
+        Assert.Equal(At(5), Assert.Single(Detect(frames, Sound(8, 39), now: 90)).Start);
+
+        // A Meet tab in front for 16 seconds, with no sound at all, is still a call.
+        var meet = new[]
+        {
+            new MeetingFrame(At(0), "Claude", "Claude", ""),
+            new MeetingFrame(At(1), "Dia", "Personal: Meet - Weekly sync", "https://meet.google.com/emy-tdss-qyf"),
+            new MeetingFrame(At(1).AddSeconds(16), "Messages", "Messages", ""),
+        };
+        var m = Assert.Single(Detect(meet, Array.Empty<MeetingAudio>(), now: 2));
+        Assert.Equal(At(1), m.Start);
+        Assert.Equal("Google Meet", m.App);
+        Assert.Equal("Meet - Weekly sync", m.Title);
+        Assert.True(m.Live);
     }
 
     [Fact]
@@ -199,14 +221,52 @@ public class MeetingDetectorTests
     [InlineData("Microsoft Teams", "Chat | Sam Lee | Microsoft Teams", "", null)]
     [InlineData("Microsoft Teams", "Calendar | Calendar | Microsoft Teams", "", null)]
     [InlineData("Microsoft Edge", "Activity | Microsoft Teams", "https://teams.microsoft.com/v2/", null)]
+    [InlineData("Dia", "Personal: Meet - Weekly sync", "", "Google Meet")]
+    [InlineData("Arc", "Work: Meet – abc-defg-hij", "", "Google Meet")]
+    [InlineData("Google Chrome", "Meet — abc-defg-hij", "", "Google Meet")]
+    [InlineData("Dia", "Personal: Google Meet", "", null)]
+    [InlineData("Dia", "Meet", "https://meet.google.com/landing", null)]
+    [InlineData("Arc", "Zoom", "https://app.zoom.us/wc/home", null)]
+    [InlineData("Safari", "x", "https://zoom.us/j/123456789", "Zoom")]
     public void KnowsMeetingAppsAndSites(string app, string window, string url, string? label) =>
         Assert.Equal(label, MeetingApps.Match(app, window, url));
+
+    /// Which windows are a call by themselves (asked about at once), and which need others heard too.
+    [Theory]
+    [InlineData("Dia", "Personal: Meet - Weekly sync", "https://meet.google.com/emy-tdss-qyf", "Google Meet")]
+    [InlineData("Dia", "Personal: Meet - Weekly sync", "", "Google Meet")]
+    [InlineData("Google Chrome", "Meet – abc-defg-hij", "", "Google Meet")]
+    [InlineData("Arc", "x", "https://app.zoom.us/wc/123/join", "Zoom")]
+    [InlineData("Safari", "x", "https://zoom.us/j/123456789", "Zoom")]
+    [InlineData("zoom.us", "Zoom Meeting", "", "Zoom")]
+    [InlineData("Zoom", "Zoom Webinar", "", "Zoom")]
+    [InlineData("Microsoft Teams", "Meeting with Sam Lee | Microsoft Teams", "", "Microsoft Teams")]
+    [InlineData("Microsoft Teams", "Call with Sam Lee | Microsoft Teams", "", "Microsoft Teams")]
+    [InlineData("Microsoft Edge", "x", "https://teams.microsoft.com/l/meetup-join/19%3ameeting", "Microsoft Teams")]
+    [InlineData("Cisco Webex Meetings", "Pat's Personal Room", "", "Webex")]
+    [InlineData("Firefox", "x", "https://acme.webex.com/meet/pat", "Webex")]
+    [InlineData("FaceTime", "Sam Lee", "", "FaceTime")]
+    [InlineData("Slack", "Huddle: #design", "", "Slack huddle")]
+    // Not a call by itself: Meet's start page, Zoom's home, Teams named after its meeting, FaceTime's main window.
+    [InlineData("Google Chrome", "Google Meet", "https://meet.google.com/", null)]
+    [InlineData("Dia", "Personal: Google Meet", "https://meet.google.com/landing", null)]
+    [InlineData("zoom.us", "", "", null)]
+    [InlineData("Zoom Workplace", "Zoom Workplace", "", null)]
+    [InlineData("Arc", "Zoom", "https://app.zoom.us/wc/home", null)]
+    [InlineData("Microsoft Teams", "Weekly sync | Microsoft Teams", "", null)]
+    [InlineData("Microsoft Teams", "Chat | Sam Lee | Microsoft Teams", "", null)]
+    [InlineData("Cisco Webex Meetings", "Webex", "", null)]
+    [InlineData("FaceTime", "FaceTime", "", null)]
+    public void KnowsWhichWindowsAreCalls(string app, string window, string url, string? label) =>
+        Assert.Equal(label, MeetingApps.Call(app, window, url));
 
     [Theory]
     [InlineData("Weekly sync | Microsoft Teams", "Weekly sync")]
     [InlineData("Meet - abc-defg-hij - Google Chrome", "Meet - abc-defg-hij")]
     [InlineData("Design review - Microsoft​ Edge", "Design review")]
     [InlineData("Zoom Meeting", "")]
+    [InlineData("Personal: Meet - Weekly sync", "Meet - Weekly sync")]
+    [InlineData("Meet - Weekly sync - Dia", "Meet - Weekly sync")]
     [InlineData("Plan - draft", "Plan - draft")]
     public void CleansWindowTitles(string raw, string clean) => Assert.Equal(clean, MeetingApps.CleanTitle(raw));
 }
@@ -414,6 +474,113 @@ public class MeetingStoreTests : IDisposable
             var chunk = new AudioChunk(db.InsertChunk("", Time.Iso(at), "system audio", false), "", Time.Iso(at), "system audio", false, "pending");
             db.SaveTranscripts(chunk, new[] { new Segment(0, 10, $"they said {c}") });
         }
+    }
+
+    void Frame(DateTime t, string app, string window, string url = "") =>
+        db.Insert(new Frame(0, Time.Iso(t), app, window, true, "", "", "ocr", 0, url));
+
+    /// Joining a Meet in Dia at `start`, 16 seconds on the call tab, then other apps every 30 seconds
+    /// for `minutes`, with no sound recorded. What happened to Gavien.
+    void JoinAndTabAway(DateTime start, int minutes)
+    {
+        Frame(start, "Dia", "Personal: Meet - Weekly sync", "https://meet.google.com/emy-tdss-qyf");
+        for (int i = 0; i < minutes * 2; i++)
+            Frame(start.AddSeconds(16 + i * 30), i % 2 == 0 ? "Claude" : "Messages", "chat");
+    }
+
+    [Fact]
+    public void AsksAtOnceOnACallPageWithoutSound()
+    {
+        var start = DateTime.UtcNow.AddMinutes(-5);
+        JoinAndTabAway(start, 0);
+        // The quick check ten seconds later finds the call: no sound, no full run needed.
+        var m = MeetingTracker.Spot(db, None, start.AddSeconds(10));
+        Assert.NotNull(m);
+        Assert.Equal("Google Meet", m!.App);
+        Assert.Equal(start, m.Start, TimeSpan.FromSeconds(1));
+        Assert.True(m.IsLive);
+        var plan = MeetingPrompt.PlanFor(db.MeetingsBetween(start.AddDays(-1), start.AddSeconds(10)), true, null, None);
+        Assert.Equal(new[] { m.Id }, plan.Ask.Select(x => x.Id));
+        // Asking turned off: notes are taken without a popup.
+        Assert.Equal(new[] { (m.Id, MeetingChoice.Take) },
+                     MeetingPrompt.PlanFor(new[] { m }, false, null, None).Decided);
+
+        // One popup per call: later checks and the full run keep the same meeting.
+        Assert.Null(MeetingTracker.Spot(db, None, start.AddSeconds(20)));
+        MeetingTracker.Update(db, None, start.AddSeconds(30));
+        Assert.Equal(m.Id, Assert.Single(db.Meetings()).Id);
+        Assert.Null(MeetingTracker.Spot(db, None, start.AddSeconds(40)));
+    }
+
+    [Fact]
+    public void NeverAsksForAStartPageOrABlockedOrPrivateCall()
+    {
+        var start = DateTime.UtcNow.AddMinutes(-5);
+        Frame(start, "Dia", "Personal: Google Meet", "https://meet.google.com/landing");
+        Frame(start.AddSeconds(5), "Google Chrome", "Google Meet", "https://meet.google.com/");
+        Frame(start.AddSeconds(10), "zoom.us", "Zoom Workplace");
+        Frame(start.AddSeconds(15), "Arc", "Zoom", "https://app.zoom.us/wc/home");
+        Frame(start.AddSeconds(20), "zoom.us", "");
+        Assert.Null(MeetingTracker.Spot(db, None, start.AddSeconds(30)));
+        MeetingTracker.Update(db, None, start.AddSeconds(30));
+        Assert.Empty(db.Meetings());
+
+        var later = start.AddSeconds(40);
+        Frame(later, "Google Chrome", "Meet - abc-defg-hij (Incognito)", "https://meet.google.com/abc-defg-hij");
+        var site = new Blocklist(Array.Empty<BlockedApp>(), Array.Empty<string>(), true, sites: new[] { "meet.google.com" });
+        var privateOnly = new Blocklist(Array.Empty<BlockedApp>(), Array.Empty<string>(), true);
+        Assert.Null(MeetingTracker.Spot(db, site, later.AddSeconds(10)));
+        Assert.Null(MeetingTracker.Spot(db, privateOnly, later.AddSeconds(10)));
+        Assert.Empty(db.Meetings());
+    }
+
+    [Fact]
+    public void ACallTheUserSaidYesToIsKeptAfterTheyTabAway()
+    {
+        var start = DateTime.UtcNow.AddMinutes(-60);
+        JoinAndTabAway(start, 30);
+        // Only the microphone, picking up noise, while in other apps.
+        for (int i = 1; i < 40; i++) db.InsertChunk("", Time.Iso(start.AddSeconds(i * 30)), "microphone", true);
+        var m = MeetingTracker.Spot(db, None, start.AddSeconds(10))!;
+        db.SetMeetingChoice(m.Id, MeetingChoice.Take);
+
+        // Full runs while the user is in other apps: the call goes on with the microphone.
+        Assert.Empty(MeetingTracker.Update(db, None, start.AddMinutes(5)));
+        var live = Assert.Single(db.Meetings());
+        Assert.Equal(m.Id, live.Id);
+        Assert.True(live.IsLive);
+        Assert.Equal(start, live.Start, TimeSpan.FromSeconds(1));
+        Assert.Equal(MeetingChoice.Take, live.Choice);
+        Assert.True(live.End >= start.AddMinutes(4));
+
+        // Later it ends, and is handed back to be summarized.
+        var ended = Assert.Single(MeetingTracker.Update(db, None, start.AddMinutes(45), transcribing: false));
+        Assert.Equal(m.Id, ended.Id);
+        Assert.Equal(MeetingStatus.Ended, ended.Status);
+        Assert.Equal(start, ended.Start, TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public void ACallTheUserSaidYesToIsKeptEvenWithNoSoundAtAll()
+    {
+        var start = DateTime.UtcNow.AddMinutes(-60);
+        JoinAndTabAway(start, 20);
+        var m = MeetingTracker.Spot(db, None, start.AddSeconds(10))!;
+        db.SetMeetingChoice(m.Id, MeetingChoice.Take);
+        MeetingTracker.Update(db, None, start.AddMinutes(2));
+        MeetingTracker.Update(db, None, start.AddMinutes(30));
+        var kept = Assert.Single(db.Meetings());
+        Assert.Equal(m.Id, kept.Id);
+        Assert.Equal(start, kept.Start, TimeSpan.FromSeconds(1));
+        Assert.Equal(MeetingStatus.Ended, kept.Status);
+
+        // Even when the recordings no longer show it as a call, a Take Notes meeting is ended, not dropped.
+        var other = DateTime.UtcNow.AddMinutes(-20);
+        for (int i = 0; i < 20; i++) Frame(other.AddSeconds(i * 30), "Code", "x");
+        var row = db.InsertMeeting(new MeetingSpan(other, other.AddMinutes(5), "Zoom", "zoom.us", "", "", true), MeetingStatus.Live);
+        db.SetMeetingChoice(row, MeetingChoice.Take);
+        MeetingTracker.Update(db, None, other.AddMinutes(12));
+        Assert.Equal(MeetingStatus.Ended, db.MeetingById(row)!.Status);
     }
 
     [Fact]
