@@ -327,9 +327,14 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(toggleItem("Record Audio", on: audioWanted, action: #selector(toggleAudio), symbol: "waveform"))
         if engine.audioOn, engine.transcriber == nil {
-            let warn = NSMenuItem(title: "  Transcription off: install whisper-cpp", action: nil, keyEquivalent: "")
-            warn.isEnabled = false
-            menu.addItem(warn)
+            let picked = SpeechModels.byId(SpeechModels.picked)
+            if picked.engine == .parakeet {
+                let fix = action("  Transcription off: download \(picked.name)…", #selector(pickModel(_:)))
+                fix.representedObject = picked.id
+                menu.addItem(fix)
+            } else {
+                menu.addItem(action("  Transcription off: install whisper-cpp…", #selector(openWhisperHelp)))
+            }
         }
         menu.addItem(.separator())
 
@@ -468,6 +473,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         m.addItem(keepMenu("Keep Screen Recordings For", key: keepScreenKey))
         m.addItem(keepMenu("Keep Audio Recordings For", key: keepAudioKey))
         m.addItem(typingGapMenu())
+        m.addItem(transcriptionMenu())
         m.addItem(.separator())
 
         let del = NSMenuItem(title: "Delete Recordings", action: nil, keyEquivalent: "")
@@ -544,6 +550,141 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func setTypingGap(_ sender: NSMenuItem) {
         defaults.set(sender.tag, forKey: typingGapKey)
         engine.recorder.minorChangeGap = TimeInterval(sender.tag)
+    }
+
+    // MARK: transcription model
+
+    private static let modelsHelp = URL(string: "https://github.com/frickgav/openscreen/blob/main/README.md#choosing-a-transcription-model")!
+
+    /// Which model turns speech into text, what it did last, and Re-transcribe.
+    private func transcriptionMenu() -> NSMenuItem {
+        let home = engine.config.home
+        let item = NSMenuItem(title: "Transcription Model", action: nil, keyEquivalent: "")
+        item.image = NSImage(systemSymbolName: "text.bubble", accessibilityDescription: nil)
+        item.toolTip = "Which model turns recorded speech into text. Every model runs on this Mac."
+        let sub = NSMenu()
+        let current = SpeechModels.picked
+        for m in SpeechModels.all {
+            let size = m.files.isEmpty ? "" : SpeechModels.isDownloaded(m, home: home) ? "  —  downloaded" : "  —  \(SpeechModels.formatSize(m.size)) download"
+            let i = action(m.name + (m.id == SpeechModels.defaultId ? " (Default)" : "") + size, #selector(pickModel(_:)))
+            i.representedObject = m.id
+            i.state = m.id == current ? .on : .off
+            i.toolTip = m.detail
+            sub.addItem(i)
+        }
+        sub.addItem(.separator())
+        for line in transcriptionStatus() {
+            let i = NSMenuItem(title: line, action: nil, keyEquivalent: "")
+            i.isEnabled = false
+            sub.addItem(i)
+        }
+        if engine.transcriber == nil, SpeechModels.byId(current).engine == .whisper {
+            sub.addItem(action("Set Up Whisper…", #selector(openWhisperHelp)))
+        }
+        sub.addItem(.separator())
+        let again = NSMenuItem(title: "Re-transcribe Recent Audio", action: nil, keyEquivalent: "")
+        again.toolTip = "Run audio you already recorded through the model picked now."
+        let am = NSMenu()
+        for (title, hours) in [("Last Hour…", 1), ("Last Day…", 24), ("Last Week…", 24 * 7)] {
+            let i = action(title, #selector(retranscribe(_:)))
+            i.tag = hours
+            i.isEnabled = engine.transcriber != nil
+            am.addItem(i)
+        }
+        am.autoenablesItems = false
+        again.submenu = am
+        again.isEnabled = engine.transcriber != nil
+        sub.addItem(again)
+        sub.addItem(action("About These Models…", #selector(openModelsHelp)))
+        sub.autoenablesItems = false
+        item.submenu = sub
+        return item
+    }
+
+    /// "Using NVIDIA Parakeet v3", "Last clip 14:02: 30 s of audio in 3.1 s", "4 clips waiting".
+    private func transcriptionStatus() -> [String] {
+        guard let tx = engine.transcriber else {
+            return ["Not transcribing: \(engine.transcriberProblem ?? "audio recording is off")"]
+        }
+        var lines = ["Using \(tx.displayName)"]
+        let st = tx.status
+        if let p = st.problem {
+            lines.append("Last try failed: " + (p.count > 70 ? String(p.prefix(70)) + "…" : p))
+        } else if let at = st.lastAt {
+            let f = DateFormatter()
+            f.timeStyle = .short
+            lines.append("Last clip \(f.string(from: at)): \(Int(st.lastAudioSeconds.rounded())) s of audio in \(String(format: "%.1f", st.lastSeconds)) s")
+        } else {
+            lines.append("No clips transcribed since it started")
+        }
+        let pending = engine.db.audioStats().pending
+        if pending > 0 { lines.append(pending == 1 ? "1 clip waiting" : "\(pending) clips waiting") }
+        return lines
+    }
+
+    /// Switch models; one that is not on this Mac yet is downloaded first.
+    @objc private func pickModel(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        let m = SpeechModels.byId(id)
+        if let warn = SpeechModels.languageWarning(m, language: engine.config.whisperLanguage),
+           !confirm(m.name, warn + "\n\nUse it anyway?", button: "Use It", destructive: false) { return }
+        if !m.files.isEmpty, !SpeechModels.isDownloaded(m, home: engine.config.home) {
+            ModelDownload.show(m, home: engine.config.home) { [weak self] in self?.useModel(m) }
+            return
+        }
+        useModel(m)
+    }
+
+    private func useModel(_ m: SpeechModel) {
+        let changed = SpeechModels.picked != m.id
+        SpeechModels.picked = m.id
+        // Same model and it runs: nothing to do. Otherwise start it (again), which also retries a failed load.
+        if !changed, let tx = engine.transcriber, tx.status.problem == nil { return }
+        engine.restartTranscriber(model: m.id)
+        log("transcription model set to \(m.name)")
+        if engine.transcriber == nil, m.engine == .whisper {
+            NSApp.activate(ignoringOtherApps: true)
+            let a = NSAlert()
+            a.messageText = "\(m.name) needs whisper-cli"
+            a.informativeText = "Install it with Homebrew: brew install whisper-cpp. Then pick the model again.\n\nNVIDIA Parakeet v3 needs nothing else."
+            a.runModal()
+        }
+    }
+
+    /// Queue recorded audio again for the model picked now, after saying how long it may take.
+    @objc private func retranscribe(_ sender: NSMenuItem) {
+        guard let tx = engine.transcriber else { return }
+        let what = ["Last Hour…": "the last hour", "Last Day…": "the last day", "Last Week…": "the last week"][sender.title] ?? "that time"
+        let from = Date().addingTimeInterval(-Double(sender.tag) * 3600)
+        let (clips, seconds) = engine.db.retranscribeCount(from: from, clipSeconds: engine.config.audioChunkSeconds)
+        guard clips > 0 else {
+            NSApp.activate(ignoringOtherApps: true)
+            let a = NSAlert()
+            a.messageText = "There is no transcribed audio from \(what)."
+            a.runModal()
+            return
+        }
+        let st = tx.status
+        let busy = st.lastAt != nil && st.lastAudioSeconds > 0
+            ? "for \(SpeechModels.about(seconds * st.lastSeconds / st.lastAudioSeconds))"
+            : "for a while"
+        let length = SpeechModels.about(seconds).replacingOccurrences(of: "about ", with: "")
+        guard confirm("Re-transcribe \(what)?",
+                      "\(clips) clips (up to \(length) of audio) will be transcribed again with \(tx.displayName). This keeps the processor busy \(busy) and uses more battery. New recordings still go first.\n\n"
+                        + "The new text replaces the old for good: the old text stays searchable only until each clip is redone. "
+                        + "Clips with no speech are left as they are, and meeting notes already made are kept (not made or sent again)."
+                        + (SpeechModels.languageWarning(tx.model, language: engine.config.whisperLanguage).map { "\n\n" + $0 } ?? ""),
+                      button: "Re-transcribe", destructive: false) else { return }
+        let db = engine.db, name = tx.displayName
+        DispatchQueue.global(qos: .utility).async {
+            log("re-transcribing \(db.requeueAudio(from: from)) audio clips from \(what) with \(name)")
+        }
+    }
+
+    @objc private func openModelsHelp() { NSWorkspace.shared.open(Self.modelsHelp) }
+
+    @objc private func openWhisperHelp() {
+        NSWorkspace.shared.open(URL(string: "https://github.com/frickgav/openscreen/blob/main/README.md#whisper")!)
     }
 
     // MARK: shortcut
@@ -744,7 +885,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func confirm(_ title: String, _ text: String, button: String) -> Bool {
+    private func confirm(_ title: String, _ text: String, button: String, destructive: Bool = true) -> Bool {
         NSApp.activate(ignoringOtherApps: true)
         let a = NSAlert()
         a.messageText = title
@@ -752,7 +893,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         a.alertStyle = .warning
         a.addButton(withTitle: button)
         a.addButton(withTitle: "Cancel")
-        a.buttons.first?.hasDestructiveAction = true
+        a.buttons.first?.hasDestructiveAction = destructive
         return a.runModal() == .alertFirstButtonReturn
     }
 

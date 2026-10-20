@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Everything that does not touch Windows APIs: database, search, API server, Whisper, timeline math.
+  <!-- Everything that does not touch Windows APIs: database, search, API server, Whisper and Parakeet, timeline math.
        It builds and tests on any OS, so CI and contributors on Mac/Linux can run it. -->
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -11,7 +11,8 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11" />
-    <!-- Search by Meaning: runs the all-MiniLM-L6-v2 sentence model on the CPU, on this computer. -->
+    <!-- ONNX Runtime, the one copy for the whole app: NVIDIA Parakeet v3 (Settings → Transcription Model) and
+         Search by Meaning (all-MiniLM-L6-v2) use it. Keep it at the Mac app's Swift package version (Package.swift). -->
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.2" />
   </ItemGroup>
 

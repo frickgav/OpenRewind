@@ -41,6 +41,8 @@ sealed class Settings
     public DateTime? PausedUntil { get; set; }
     /// Timeline hotkey (see HotkeyShortcut). Null = Ctrl+Alt+T.
     public HotkeyShortcut? TimelineShortcut { get; set; }
+    /// Settings → Transcription Model: an id from SpeechModels ("whisper-auto", "parakeet-v3", …).
+    public string TranscriptionModel { get; set; } = SpeechModels.DefaultId;
     /// Timeline Look: "system", "light" or "dark".
     public string TimelineLook { get; set; } = "system";
 

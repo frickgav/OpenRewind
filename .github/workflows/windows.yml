@@ -2,9 +2,9 @@ name: Windows app
 
 on:
   push:
-    paths: ["windows/**", "Sources/openrewind/WebUI.swift", "scripts/build-windows.ps1", "scripts/launch-check-windows.ps1", "scripts/mcp-check-windows.ps1", ".github/workflows/windows.yml"]
+    paths: ["windows/**", "Sources/openrewind/WebUI.swift", "scripts/build-windows.ps1", "THIRD_PARTY_NOTICES.txt", "scripts/launch-check-windows.ps1", "scripts/mcp-check-windows.ps1", ".github/workflows/windows.yml"]
   pull_request:
-    paths: ["windows/**", "Sources/openrewind/WebUI.swift", "scripts/build-windows.ps1", "scripts/launch-check-windows.ps1", "scripts/mcp-check-windows.ps1", ".github/workflows/windows.yml"]
+    paths: ["windows/**", "Sources/openrewind/WebUI.swift", "scripts/build-windows.ps1", "THIRD_PARTY_NOTICES.txt", "scripts/launch-check-windows.ps1", "scripts/mcp-check-windows.ps1", ".github/workflows/windows.yml"]
   workflow_dispatch:
 
 permissions:
