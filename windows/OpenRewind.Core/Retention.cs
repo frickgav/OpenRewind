@@ -39,6 +39,7 @@ public sealed partial class Database
         var (where, args) = Range("timestamp", from, to);
         var paths = Strings($"SELECT snapshot_path FROM frames {where}", args);
         if (paths.Count == 0) return 0;
+        ForgetScreenMoments(from, to);
         ForgetMeetingWindows(from, to);
         Run($"DELETE FROM frames {where}", args);  // FTS rows go with it (trigger frames_ad)
         RemoveFiles(paths);
@@ -55,6 +56,7 @@ public sealed partial class Database
         var (where, args) = Range("timestamp", from, to);
         var paths = Strings($"SELECT file_path FROM audio_chunks {where}", args);
         if (paths.Count == 0) return 0;
+        ForgetAudioMoments(where, args);
         Run($"DELETE FROM audio_transcriptions WHERE audio_chunk_id IN (SELECT id FROM audio_chunks {where})", args);
         Run($"DELETE FROM audio_chunks {where}", args);
         RemoveFiles(paths);

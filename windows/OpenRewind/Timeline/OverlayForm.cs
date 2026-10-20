@@ -307,7 +307,7 @@ sealed class OverlayForm : Form
                 right -= sz.Width + 6 * k;
                 Draw.Text(g, count, F(12), Ink(0.6), right, mid - sz.Height / 2);
             }
-            else if (model.Hits.Count == 0 && !model.ShowResults && model.Query.Length > 0)
+            else if (model.Hits.Count == 0 && !model.ShowResults && model.Query.Length > 0 && !model.Searching)
             {
                 var sz = Draw.Measure(g, "No matches", F(12));
                 right -= sz.Width + 6 * k;
@@ -318,10 +318,13 @@ sealed class OverlayForm : Form
         var font = F(15);
         if (search.Font.Size != font.Size) search.Font = font;
         search.BackColor = PillColor(focused);
+        var placeholder = model.SearchingByMeaning ? "Describe what you saw or heard" : "Search what you saw or heard";
+        if (search.PlaceholderText != placeholder) search.PlaceholderText = placeholder;
         var box = new Rectangle((int)(searchPill.X + 36 * k), (int)(mid - search.PreferredHeight / 2f), (int)Math.Max(40 * k, right - searchPill.X - 44 * k), search.PreferredHeight);
         if (search.Bounds != box) search.Bounds = box;
 
-        DrawAppFilter(g, new RectangleF(searchPill.Right + 10 * k, searchPill.Y, 0, searchPill.Height));
+        float filterX = DrawSearchMode(g, new RectangleF(searchPill.Right + 10 * k, searchPill.Y, 0, searchPill.Height));
+        DrawAppFilter(g, new RectangleF(filterX, searchPill.Y, 0, searchPill.Height));
 
         // Center: time and how long ago.
         var local = model.Playhead.ToLocalTime();
@@ -364,6 +367,33 @@ sealed class OverlayForm : Form
         p.MoveTo(this, onClose: () => { Controls.Remove(p); LeaveSearch(); });
         p.FocusInput();
         Invalidate();
+    }
+
+    /// "Keyword | Meaning" switch next to search, shown while Search by Meaning is on.
+    /// Returns where the next pill goes.
+    float DrawSearchMode(Graphics g, RectangleF r)
+    {
+        if (!model.MeaningAvailable) return r.X;
+        var f = Semibold(12);
+        var labels = new[] { "Keyword", "Meaning" };
+        float pad = 12 * k, inset = 3 * k;
+        var widths = labels.Select(l => Draw.Measure(g, l, f).Width + 2 * pad).ToArray();
+        r.Width = widths.Sum() + 2 * inset;
+        Draw.Fill(g, r, r.Height / 2, PillColor(false));
+        Draw.Stroke(g, r, r.Height / 2, Ink(0.12));
+        float x = r.X + inset;
+        for (int i = 0; i < labels.Length; i++)
+        {
+            var seg = new RectangleF(x, r.Y + inset, widths[i], r.Height - 2 * inset);
+            bool on = (i == 1) == model.ByMeaning;
+            if (on) Draw.Fill(g, seg, seg.Height / 2, Draw.WithAlpha(Accent, dark ? 0.45 : 0.25));
+            var sz = Draw.Measure(g, labels[i], f);
+            Draw.Text(g, labels[i], f, on ? TextColor : Ink(0.6), seg.X + pad, seg.Y + (seg.Height - sz.Height) / 2);
+            bool meaning = i == 1;
+            hot.Add((seg, () => { model.SetByMeaning(meaning); FocusSearch(); }));
+            x += widths[i];
+        }
+        return r.Right + 10 * k;
     }
 
     /// Pill next to search: "All apps", or the app the timeline is filtered to. Click to choose.
@@ -979,10 +1009,12 @@ sealed class OverlayForm : Form
         hot.Add((box, () => { }));  // clicks on the list do not fall through
         if (hits.Count == 0)
         {
-            Draw.Text(g, $"No matches for “{model.Query}”", F(14), Ink(0.6), box.X + 16 * k, box.Y + 16 * k);
+            var empty = model.Searching ? "Searching by meaning…" : $"No matches for “{model.Query}”";
+            Draw.Text(g, empty, F(14), Ink(0.6), box.X + 16 * k, box.Y + 16 * k);
             return;
         }
-        Draw.Text(g, $"{hits.Count} moment{(hits.Count == 1 ? "" : "s")}", F(11), Ink(0.42), box.X + 14 * k, box.Y + 9 * k);
+        var head = $"{hits.Count} moment{(hits.Count == 1 ? "" : "s")}" + (model.SearchingByMeaning ? " · closest in meaning first" : "");
+        Draw.Text(g, head, F(11), Ink(0.42), box.X + 14 * k, box.Y + 9 * k);
         float hx = box.Right - 14 * k;
         foreach (var part in new[] { "go", "⏎", "choose", "↓", "↑" })
         {
@@ -995,7 +1027,8 @@ sealed class OverlayForm : Form
         if (model.SelectedHit < resultsScroll) resultsScroll = model.SelectedHit;
         if (model.SelectedHit >= resultsScroll + visible) resultsScroll = model.SelectedHit - visible + 1;
         resultsScroll = Math.Clamp(resultsScroll, 0, Math.Max(0, hits.Count - visible));
-        var words = model.Query.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        // A meaning match need not contain the typed words, so none are marked.
+        var words = model.SearchingByMeaning ? Array.Empty<string>() : model.Query.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
         for (int i = resultsScroll; i < Math.Min(hits.Count, resultsScroll + visible); i++)
         {
             var h = hits[i];

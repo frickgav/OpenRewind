@@ -38,6 +38,16 @@ sealed partial class TimelineModel
     public bool ShowResults;
     /// True while the keyboard shortcut card is open.
     public bool ShowHelp;
+    /// Search by Meaning, when the app has it (null otherwise). It can search only once its model is loaded.
+    public MeaningService? Meaning;
+    public bool MeaningAvailable => Meaning?.Embedder != null;
+    /// The user picked Meaning over Keyword in the search box.
+    public bool ByMeaning { get; private set; }
+    /// The search box finds moments by meaning right now.
+    public bool SearchingByMeaning => ByMeaning && MeaningAvailable;
+    /// A meaning search is running in the background.
+    public bool Searching { get; private set; }
+    int searchSeq;
     /// Where the searched words are on the shown screenshot, as fractions of its size.
     public List<RectangleF> Highlights { get; private set; } = new();
 
@@ -310,14 +320,51 @@ sealed partial class TimelineModel
 
     // MARK: search
 
+    /// Keyword (the exact words) or Meaning (moments about the same thing, best first).
+    public void SetByMeaning(bool on)
+    {
+        if (ByMeaning == on) return;
+        ByMeaning = on;
+        if (Query.Trim().Length > 0) RunSearch(); else { RefreshHighlights(); Notify(); }
+    }
+
     public void RunSearch()
     {
         var q = Query.Trim();
+        var seq = ++searchSeq;
+        Searching = false;
         RefreshHighlights();
         if (q.Length == 0) { Hits = new(); ShowResults = false; Notify(); return; }
-        Hits = SearchHits.Find(Db, q, AppFilterName);
+        if (SearchingByMeaning && Meaning is MeaningService m && SynchronizationContext.Current is SynchronizationContext ui)
+        {
+            // Turning the question into a vector and reading every stored one takes a moment: do it off the UI thread.
+            Searching = true;
+            Hits = new();
+            SelectedHit = 0;
+            ShowResults = true;
+            Notify();
+            var app = AppFilterName;
+            Task.Run(() =>
+            {
+                List<SearchHit> hits;
+                try { hits = SearchHits.FromMeaning(m.Search(q, new MeaningQuery { App = app, Limit = 50 })); }
+                catch (Exception e) { Log.Write($"search by meaning: {e.Message}"); hits = new(); }
+                ui.Post(_ =>
+                {
+                    if (seq != searchSeq) return;
+                    Searching = false;
+                    ShowHits(hits);
+                }, null);
+            });
+            return;
+        }
+        ShowHits(SearchHits.Find(Db, q, AppFilterName));
+    }
+
+    void ShowHits(List<SearchHit> hits)
+    {
         // While filtering, speech only counts when it was heard with that app in front.
-        if (AppFilterName != null) Hits = Hits.Where(h => !h.IsAudio || AppFilter.Covers(Frames, h.Time)).ToList();
+        Hits = AppFilterName == null ? hits : hits.Where(h => !h.IsAudio || AppFilter.Covers(Frames, h.Time)).ToList();
         SelectedHit = 0;
         ShowResults = true;
         Notify();
@@ -353,13 +400,16 @@ sealed partial class TimelineModel
         Open(Hits[SelectedHit]);
     }
 
-    public void ClearSearch() { Query = ""; Hits = new(); ShowResults = false; RefreshHighlights(); Notify(); }
+    public void ClearSearch() { Query = ""; Hits = new(); searchSeq++; Searching = false; ShowResults = false; RefreshHighlights(); Notify(); }
+
+    /// Words to mark on the screenshot. None for a meaning search: its matches need not share a word with the question.
+    List<string> HighlightTerms => SearchingByMeaning ? new() : SearchHits.Terms(Query);
 
     /// Mark the searched words on the shown screenshot. Uses what is cached, otherwise reads it shortly.
     void RefreshHighlights()
     {
         highlightTimer.Stop();
-        var terms = SearchHits.Terms(Query);
+        var terms = HighlightTerms;
         if (terms.Count == 0 || Current is not TimelineFrame f || Image == null || !Ocr.Available) { Highlights = new(); return; }
         if (highlightCache.TryGetValue((f.Id, string.Join(" ", terms)), out var cached)) { Highlights = cached; return; }
         Highlights = new();
@@ -368,7 +418,7 @@ sealed partial class TimelineModel
 
     void FindHighlights()
     {
-        var terms = SearchHits.Terms(Query);
+        var terms = HighlightTerms;
         if (terms.Count == 0 || Current is not TimelineFrame f) return;
         var key = (f.Id, string.Join(" ", terms));
         var ui = SynchronizationContext.Current;
@@ -382,7 +432,7 @@ sealed partial class TimelineModel
                 highlightCache[key] = found;
                 highlightOrder.Add(key);
                 if (highlightOrder.Count > 64) { highlightCache.Remove(highlightOrder[0]); highlightOrder.RemoveAt(0); }
-                if (Current?.Id != key.Item1 || string.Join(" ", SearchHits.Terms(Query)) != key.Item2) return;
+                if (Current?.Id != key.Item1 || string.Join(" ", HighlightTerms) != key.Item2) return;
                 Highlights = found;
                 Notify();
             }, null);
