@@ -64,6 +64,28 @@ static class Ocr
         return found;
     }
 
+    /// Every word in the image with where it is (fractions of the image), for selecting text on the timeline.
+    public static FrameText Words(Bitmap image)
+    {
+        if (engine.Value is not OcrEngine e) return new FrameText(Array.Empty<IEnumerable<(string, RectangleF)>>());
+        try
+        {
+            using var sb = ToSoftwareBitmap(image, (int)OcrEngine.MaxImageDimension);
+            float w = sb.PixelWidth, h = sb.PixelHeight;
+            var result = e.RecognizeAsync(sb).AsTask().GetAwaiter().GetResult();
+            return new FrameText(result.Lines.Select(l => l.Words.Select(word =>
+            {
+                var r = word.BoundingRect;
+                return (word.Text, new RectangleF((float)r.X / w, (float)r.Y / h, (float)r.Width / w, (float)r.Height / h));
+            }).ToList()).ToList());
+        }
+        catch (Exception ex)
+        {
+            Log.Write($"ocr failed: {ex.Message}");
+            return new FrameText(Array.Empty<IEnumerable<(string, RectangleF)>>());
+        }
+    }
+
     static SoftwareBitmap ToSoftwareBitmap(Bitmap image, int maxDim)
     {
         Bitmap src = image;
