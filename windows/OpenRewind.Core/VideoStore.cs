@@ -15,10 +15,16 @@ public record FrameSource(string StillPath, string VideoPath = "", int VideoFram
 public record VideoSegment(long Id, string Path, string Display, string StartTime, string EndTime, int Width, int Height,
                            int FrameCount, string Codec, long Bytes, long SourceBytes, bool NeedsRewrite = false);
 
-/// A still frame old enough to go into a video.
-public record CompactCandidate(long Id, DateTime Time, string Display, string StillPath);
+/// A still frame old enough to go into a video. Timestamp is the stored time as it is (the compactor's
+/// place in the table; a DateTime turned back into text could come out a little different).
+public record CompactCandidate(long Id, DateTime Time, string Display, string StillPath, string Timestamp = "")
+{
+    public string Timestamp { get; init; } = Timestamp.Length > 0 ? Timestamp : OpenRewind.Time.Iso(Time);
+}
 
 /// The rows behind Compress Older Recordings. The Mac app has the same schema (VideoStore.swift).
+/// Everything that changes them runs in one transaction and checks what it changes, because other
+/// processes (`OpenRewind delete`, a second copy) write to the same database.
 public sealed partial class Database
 {
     /// Videos are about to be deleted: close anything that has them open (Windows cannot delete an open file).
@@ -48,22 +54,43 @@ public sealed partial class Database
             source_bytes INTEGER NOT NULL DEFAULT 0,
             needs_rewrite INTEGER NOT NULL DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS video_skip (
+            frame_id INTEGER PRIMARY KEY,
+            tries INTEGER NOT NULL DEFAULT 0
+        );
         """);
     }
 
-    /// Still frames taken before `before` and after `after`, oldest first.
+    /// Still frames taken before `before` and after `after` (a stored timestamp), oldest first. Stills that
+    /// failed to go into a video Compaction.MaxTries times are left out.
     public List<CompactCandidate> CompactCandidates(DateTime before, string after, int limit)
     {
         lock (gate)
         {
             using var cmd = Cmd("SELECT id, timestamp, display, snapshot_path FROM frames WHERE video_path = '' AND snapshot_path != '' " +
-                                "AND timestamp < ? AND timestamp > ? ORDER BY timestamp ASC LIMIT ?", Time.Iso(before), after, limit);
+                                "AND timestamp < ? AND timestamp > ? " +
+                                "AND NOT EXISTS (SELECT 1 FROM video_skip s WHERE s.frame_id = frames.id AND s.tries >= ?) " +
+                                "ORDER BY timestamp ASC LIMIT ?", Time.Iso(before), after, Compaction.MaxTries, limit);
             using var r = cmd.ExecuteReader();
             var out_ = new List<CompactCandidate>();
             while (r.Read())
                 if (Time.ParseIso(r.GetString(1)) is DateTime t)
-                    out_.Add(new CompactCandidate(r.GetInt64(0), t, r.GetString(2), r.GetString(3)));
+                    out_.Add(new CompactCandidate(r.GetInt64(0), t, r.GetString(2), r.GetString(3), r.GetString(1)));
             return out_;
+        }
+    }
+
+    /// These stills could not be put into a video (again).
+    public void NoteCompactFailure(IEnumerable<long> ids)
+    {
+        lock (gate)
+        {
+            using var tx = conn.BeginTransaction();
+            foreach (var id in ids)
+                TxRun(tx, "INSERT INTO video_skip (frame_id, tries) VALUES (?, 1) ON CONFLICT(frame_id) DO UPDATE SET tries = tries + 1", id);
+            // Forget frames that are gone.
+            TxRun(tx, "DELETE FROM video_skip WHERE frame_id NOT IN (SELECT id FROM frames)");
+            tx.Commit();
         }
     }
 
@@ -73,6 +100,7 @@ public sealed partial class Database
     {
         lock (gate)
         {
+            // BEGIN IMMEDIATE: no other process can write between these checks and the commit.
             using var tx = conn.BeginTransaction();
             foreach (var id in ids)
                 if (TxScalar(tx, "SELECT COUNT(*) FROM frames WHERE id = ? AND video_path = '' AND snapshot_path != ''", id) != 1)
@@ -84,7 +112,12 @@ public sealed partial class Database
                       "VALUES (?,?,?,?,?,?,?,?,?,?,0)",
                   seg.Path, seg.Display, seg.StartTime, seg.EndTime, seg.Width, seg.Height, seg.FrameCount, seg.Codec, seg.Bytes, seg.SourceBytes);
             for (int i = 0; i < ids.Count; i++)
-                TxRun(tx, "UPDATE frames SET video_path = ?, video_frame = ?, video_time = ? WHERE id = ?", seg.Path, i, i / Compaction.Fps, ids[i]);
+                if (TxRun(tx, "UPDATE frames SET video_path = ?, video_frame = ?, video_time = ? WHERE id = ? AND video_path = ''",
+                          seg.Path, i, i / Compaction.Fps, ids[i]) != 1)
+                {
+                    tx.Rollback();
+                    return false;
+                }
             tx.Commit();
             return true;
         }
@@ -114,6 +147,7 @@ public sealed partial class Database
         }
     }
 
+    /// All videos (or the ones waiting to be written again). Throws when the table can't be read.
     public List<VideoSegment> Segments(bool onlyNeedingRewrite = false)
     {
         lock (gate)
@@ -131,7 +165,36 @@ public sealed partial class Database
 
     public HashSet<string> SegmentPaths() => Segments().Select(s => s.Path).ToHashSet(PathComparer);
 
-    /// Frames still in a video, in video order.
+    /// A video row or a frame points at this file. Throws when that can't be read, so a file is never
+    /// deleted on a guess.
+    public bool IsVideoReferenced(string path)
+    {
+        lock (gate)
+        {
+            using var cmd = Cmd("SELECT EXISTS(SELECT 1 FROM video_segments WHERE path = ?) OR EXISTS(SELECT 1 FROM frames WHERE video_path = ? AND video_path != '')", path, path);
+            return cmd.ExecuteScalar() is long n && n != 0;
+        }
+    }
+
+    /// Mark videos that hold more pictures than frames point at them: their frames were deleted without
+    /// the mark (a delete cut short by a crash, or an older copy of the app). Returns how many.
+    public int MarkShrunkSegments()
+    {
+        lock (gate)
+        {
+            using var cmd = Cmd("UPDATE video_segments SET needs_rewrite = 1 WHERE needs_rewrite = 0 AND " +
+                                "frame_count > (SELECT COUNT(*) FROM frames WHERE frames.video_path = video_segments.path)");
+            return cmd.ExecuteNonQuery();
+        }
+    }
+
+    /// Videos still waiting to lose deleted frames (shown in the menu and by doctor when a pass can't do it).
+    public int StuckRewrites()
+    {
+        lock (gate) return (int)ScalarLong("SELECT COUNT(*) FROM video_segments WHERE needs_rewrite = 1");
+    }
+
+    /// Frames still in a video, in video order. Throws when they can't be read.
     public List<(long Id, FrameSource Source, string Timestamp)> SegmentFrames(string path)
     {
         lock (gate)
@@ -151,26 +214,70 @@ public sealed partial class Database
         lock (gate)
         {
             using var tx = conn.BeginTransaction();
-            var now = new List<long>();
-            using (var cmd = Cmd("SELECT id FROM frames WHERE video_path = ? AND video_path != '' ORDER BY video_frame", old.Path))
-            {
-                cmd.Transaction = tx;
-                using var r = cmd.ExecuteReader();
-                while (r.Read()) now.Add(r.GetInt64(0));
-            }
-            if (!now.SequenceEqual(ids) || TxScalar(tx, "SELECT COUNT(*) FROM video_segments WHERE id = ? AND path = ?", old.Id, old.Path) != 1)
+            if (!SameFrames(tx, old, ids))
             {
                 tx.Rollback();
                 return false;
             }
             for (int i = 0; i < ids.Count; i++)
-                TxRun(tx, "UPDATE frames SET video_path = ?, video_frame = ?, video_time = ? WHERE id = ?", fresh.Path, i, i / Compaction.Fps, ids[i]);
-            TxRun(tx, "UPDATE video_segments SET path = ?, start_time = ?, end_time = ?, width = ?, height = ?, frame_count = ?, codec = ?, " +
-                      "bytes = ?, source_bytes = ?, needs_rewrite = 0 WHERE id = ?",
-                  fresh.Path, fresh.StartTime, fresh.EndTime, fresh.Width, fresh.Height, fresh.FrameCount, fresh.Codec, fresh.Bytes, fresh.SourceBytes, old.Id);
+                if (TxRun(tx, "UPDATE frames SET video_path = ?, video_frame = ?, video_time = ? WHERE id = ? AND video_path = ?",
+                          fresh.Path, i, i / Compaction.Fps, ids[i], old.Path) != 1)
+                {
+                    tx.Rollback();
+                    return false;
+                }
+            if (TxRun(tx, "UPDATE video_segments SET path = ?, start_time = ?, end_time = ?, width = ?, height = ?, frame_count = ?, codec = ?, " +
+                          "bytes = ?, source_bytes = ?, needs_rewrite = 0 WHERE id = ? AND path = ?",
+                      fresh.Path, fresh.StartTime, fresh.EndTime, fresh.Width, fresh.Height, fresh.FrameCount, fresh.Codec, fresh.Bytes, fresh.SourceBytes,
+                      old.Id, old.Path) != 1)
+            {
+                tx.Rollback();
+                return false;
+            }
             tx.Commit();
             return true;
         }
+    }
+
+    /// Point a video's frames at stills saved from it and forget the video, in one transaction.
+    /// False (nothing changed) when its frames changed meanwhile.
+    public bool CommitUnpack(VideoSegment old, IReadOnlyList<long> ids, IReadOnlyList<string> stills)
+    {
+        lock (gate)
+        {
+            using var tx = conn.BeginTransaction();
+            if (ids.Count != stills.Count || !SameFrames(tx, old, ids))
+            {
+                tx.Rollback();
+                return false;
+            }
+            for (int i = 0; i < ids.Count; i++)
+                if (TxRun(tx, "UPDATE frames SET snapshot_path = ?, video_path = '', video_frame = 0, video_time = 0 WHERE id = ? AND video_path = ?",
+                          stills[i], ids[i], old.Path) != 1)
+                {
+                    tx.Rollback();
+                    return false;
+                }
+            TxRun(tx, "DELETE FROM video_segments WHERE id = ?", old.Id);
+            // They were in a video once; don't make a new one from them over and over if this keeps happening.
+            foreach (var id in ids)
+                TxRun(tx, "INSERT INTO video_skip (frame_id, tries) VALUES (?, 1) ON CONFLICT(frame_id) DO UPDATE SET tries = tries + 1", id);
+            tx.Commit();
+            return true;
+        }
+    }
+
+    /// The frames in the video are exactly `ids`, in that order, and its row is still there.
+    bool SameFrames(SqliteTransaction tx, VideoSegment old, IReadOnlyList<long> ids)
+    {
+        var now = new List<long>();
+        using (var cmd = Cmd("SELECT id FROM frames WHERE video_path = ? AND video_path != '' ORDER BY video_frame", old.Path))
+        {
+            cmd.Transaction = tx;
+            using var r = cmd.ExecuteReader();
+            while (r.Read()) now.Add(r.GetInt64(0));
+        }
+        return now.SequenceEqual(ids) && TxScalar(tx, "SELECT COUNT(*) FROM video_segments WHERE id = ? AND path = ?", old.Id, old.Path) == 1;
     }
 
     /// A video none of whose frames are left.
@@ -181,11 +288,15 @@ public sealed partial class Database
     {
         lock (gate)
         {
-            using var cmd = Cmd("SELECT COUNT(*), COALESCE(SUM(bytes), 0), COALESCE(SUM(source_bytes), 0) FROM video_segments");
-            using var r = cmd.ExecuteReader();
-            if (!r.Read()) return (0, 0, 0);
-            long bytes = r.GetInt64(1), source = r.GetInt64(2);
-            return ((int)r.GetInt64(0), bytes, Math.Max(0, source - bytes));
+            try
+            {
+                using var cmd = Cmd("SELECT COUNT(*), COALESCE(SUM(bytes), 0), COALESCE(SUM(source_bytes), 0) FROM video_segments");
+                using var r = cmd.ExecuteReader();
+                if (!r.Read()) return (0, 0, 0);
+                long bytes = r.GetInt64(1), source = r.GetInt64(2);
+                return ((int)r.GetInt64(0), bytes, Math.Max(0, source - bytes));
+            }
+            catch (SqliteException) { return (0, 0, 0); }  // a read-only open of a database without videos yet
         }
     }
 
@@ -198,10 +309,21 @@ public sealed partial class Database
         return cmd.ExecuteScalar() is long n ? n : 0;
     }
 
-    void TxRun(SqliteTransaction tx, string sql, params object?[] args)
+    /// Runs one statement inside `tx`; returns the rows it changed.
+    int TxRun(SqliteTransaction tx, string sql, params object?[] args)
     {
         using var cmd = Cmd(sql, args);
         cmd.Transaction = tx;
-        cmd.ExecuteNonQuery();
+        return cmd.ExecuteNonQuery();
+    }
+
+    List<string> TxStrings(SqliteTransaction tx, string sql, params object?[] args)
+    {
+        using var cmd = Cmd(sql, args);
+        cmd.Transaction = tx;
+        using var r = cmd.ExecuteReader();
+        var out_ = new List<string>();
+        while (r.Read()) out_.Add(r.GetString(0));
+        return out_;
     }
 }

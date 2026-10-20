@@ -256,11 +256,17 @@ sealed class TimelineModel
         Notify();
     }
 
+    /// The frame's picture. The timeline's list can be older than the database: the compactor may have moved
+    /// the frame into a video (and deleted the still) or written its video again under a new name since. When
+    /// the picture isn't where the list says, look the frame up again.
+    Bitmap? Picture(TimelineFrame f) =>
+        FrameImages.Load(f.Source) ?? (Db.FrameById(f.Id) is Frame now && now.Source != f.Source ? FrameImages.Load(now.Source) : null);
+
     /// Still or video frame, read into memory (the file is not kept open: retention may delete it).
     Image? LoadImage(TimelineFrame f)
     {
         if (imageCache.TryGetValue(f.Id, out var img)) return img;
-        if (FrameImages.Load(f.Source) is not Image loaded) return null;
+        if (Picture(f) is not Image loaded) return null;
         imageCache[f.Id] = loaded;
         cacheOrder.Add(f.Id);
         if (cacheOrder.Count > 24) { imageCache.Remove(cacheOrder[0]); cacheOrder.RemoveAt(0); }
@@ -276,7 +282,7 @@ sealed class TimelineModel
         if (date > (f.End != null ? AppFilter.Until(f) : f.Time.AddSeconds(60))) return null;
         if (thumbCache.TryGetValue(f.Id, out var cached)) return (f, cached);
         Image? thumb = null;
-        if (FrameImages.Load(f.Source) is Image full)
+        if (Picture(f) is Image full)
         {
             using (full)
             {
@@ -368,7 +374,7 @@ sealed class TimelineModel
         Task.Run(() =>
         {
             // Its own copy of the picture: GDI+ images can't be shared across threads.
-            using var bmp = FrameImages.Load(f.Source);
+            using var bmp = Picture(f);
             var found = bmp == null ? new List<RectangleF>() : Ocr.Find(bmp, terms);
             ui?.Post(_ =>
             {

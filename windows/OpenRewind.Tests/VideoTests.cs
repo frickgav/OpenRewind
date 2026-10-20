@@ -81,9 +81,70 @@ public class VideoTests : IDisposable
         var dir = Path.Combine(home, "video");
         var start = new DateTime(2026, 10, 19, 14, 5, 0, DateTimeKind.Utc);
         var p = Compaction.SegmentPath(dir, start, @"\\.\DISPLAY1", _ => false);
-        Assert.Equal(Path.Combine(dir, "2026-10-19", "2026-10-19T14-05-00Z-DISPLAY1.mp4"), p);
-        Assert.EndsWith("-2.mp4", Compaction.SegmentPath(dir, start, @"\\.\DISPLAY1", x => x == p));
-        Assert.EndsWith("DISPLAY1.tmp.mp4", Compaction.TempPath(p));
+        Assert.Equal(Path.Combine(dir, "2026-10-19"), Path.GetDirectoryName(p));
+        Assert.Matches(@"^2026-10-19T14-05-00Z-DISPLAY1-[0-9a-f]{8}\.mp4$", Path.GetFileName(p));
+        // Never the same name twice, even for the same window and screen.
+        Assert.NotEqual(p, Compaction.SegmentPath(dir, start, @"\\.\DISPLAY1", _ => false));
+        // A name that is taken (a file, a temp file, or a path the database still points at) is skipped.
+        int asked = 0;
+        Compaction.SegmentPath(dir, start, "x", _ => asked++ == 0);
+        Assert.Equal(2, asked);
+        Assert.EndsWith(".tmp.mp4", Compaction.TempPath(p));
+        Assert.NotEqual(p, Compaction.TempPath(p));
+    }
+
+    [Fact]
+    public void CheckingANewVideoLooksAtFramesInTheMiddleToo()
+    {
+        Assert.Equal(new[] { 0, 3, 6, 9 }, Compaction.CheckedFrames(10));
+        Assert.Equal(new[] { 0, 1 }, Compaction.CheckedFrames(2));
+        Assert.Equal(new[] { 0 }, Compaction.CheckedFrames(1));
+        Assert.Empty(Compaction.CheckedFrames(0));
+    }
+
+    [Fact]
+    public void VeryWideCapturesAreScaledDownToWhatEncodersTake()
+    {
+        Assert.Equal((964, 542), Compaction.Fit(965, 543));
+        Assert.Equal((4096, 2304), Compaction.Fit(4096, 2304));
+        Assert.Equal((4096, 1152), Compaction.Fit(5120, 1440));
+        Assert.Equal((4096, 2304), Compaction.Fit(7680, 4320));
+        Assert.Equal((2048, 2304), Compaction.Fit(4000, 4500));
+
+        var id = AddStill(now.AddHours(-2), "wide", w: 5120, h: 1440);
+        Assert.Equal(1, Compactor().RunOnce(compress: true, now).Frames);
+        var v = FakeCodec.Read(db.FrameById(id)!.VideoPath);
+        Assert.Equal((4096, 1152), (v.Width, v.Height));
+        Assert.Equal((4096, 1152), (db.Segments().Single().Width, db.Segments().Single().Height));
+        Assert.Equal("wide", Picture(id));
+    }
+
+    [Fact]
+    public void AStillThatKeepsFailingIsNotTriedForever()
+    {
+        var id = AddStill(now.AddHours(-2), "a");
+        codec.FailWrite = true;
+        for (int i = 0; i < Compaction.MaxTries; i++) Assert.Equal(1, Compactor().RunOnce(compress: true, now).Failed);
+        Assert.Equal(0, Compactor().RunOnce(compress: true, now).Failed);
+        codec.FailWrite = false;
+        Assert.Equal(0, Compactor().RunOnce(compress: true, now).Frames);
+        Assert.Equal("a", Picture(id));
+        // Other stills still go into videos.
+        var other = AddStill(now.AddHours(-2).AddSeconds(5), "b");
+        Assert.Equal(1, Compactor().RunOnce(compress: true, now).Frames);
+        Assert.NotEqual("", db.FrameById(other)!.VideoPath);
+    }
+
+    [Fact]
+    public void ManyBatchesAreReadInOnePass()
+    {
+        // Each still in its own window; two per read, and the last window of a full read waits for the next.
+        var ids = Enumerable.Range(0, 5).Select(i => AddStill(now.AddHours(-3).AddSeconds(i * 301), $"p{i}")).ToList();
+        var c = Compactor();
+        c.BatchSize = 2;
+        var r = c.RunOnce(compress: true, now);
+        Assert.Equal(5, r.Frames);
+        Assert.All(ids, id => Assert.NotEqual("", db.FrameById(id)!.VideoPath));
     }
 
     [Fact]
@@ -303,6 +364,133 @@ public class VideoTests : IDisposable
     }
 
     [Fact]
+    public void CleanUpKeepsAVideoAFramePointsAt()
+    {
+        var ids = Enumerable.Range(0, 3).Select(i => AddStill(now.AddHours(-2).AddSeconds(i * 2), $"p{i}")).ToList();
+        Compactor().RunOnce(compress: true, now);
+        var video = db.FrameById(ids[0])!.VideoPath;
+        // Its row is gone (say, a delete cut short), but frames still point at it: not an orphan.
+        db.Exec("DELETE FROM video_segments");
+        Compactor().RunOnce(compress: false, now);
+        Assert.True(File.Exists(video));
+        Assert.Equal(new[] { "p0", "p1", "p2" }, ids.Select(Picture));
+    }
+
+    [Fact]
+    public void CleanUpDeletesNothingWhenTheDatabaseCantBeRead()
+    {
+        var id = AddStill(now.AddHours(-2), "a");
+        Compactor().RunOnce(compress: true, now);
+        var video = db.FrameById(id)!.VideoPath;
+        db.Exec("ALTER TABLE video_segments RENAME TO video_segments_gone");
+        Assert.ThrowsAny<Exception>(() => Compactor().RunOnce(compress: false, now));
+        Assert.True(File.Exists(video));
+        db.Exec("ALTER TABLE video_segments_gone RENAME TO video_segments");
+        Assert.Equal("a", Picture(id));
+    }
+
+    [Fact]
+    public void AVideoThatLostFramesWithoutTheMarkIsWrittenAgain()
+    {
+        var ids = Enumerable.Range(0, 4).Select(i => AddStill(now.AddHours(-2).AddSeconds(i * 2), $"p{i}")).ToList();
+        Compactor().RunOnce(compress: true, now);
+        // Another process (or an older copy of the app) deletes a row and nothing else.
+        using (var c = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={config.DbPath};Pooling=False"))
+        {
+            c.Open();
+            using var cmd = c.CreateCommand();
+            cmd.CommandText = $"DELETE FROM frames WHERE id = {ids[1]}";
+            cmd.ExecuteNonQuery();
+        }
+        var r = Compactor().RunOnce(compress: false, now);
+        Assert.Equal(1, r.Rewritten);
+        Assert.Equal(new[] { "p0", "p2", "p3" }, AllVideoPictures().OrderBy(p => p));
+        Assert.Equal(new[] { "p0", "p2", "p3" }, new[] { ids[0], ids[2], ids[3] }.Select(Picture));
+    }
+
+    [Fact]
+    public void ADeleteFromAnotherProcessDuringARewriteIsNotLost()
+    {
+        var t = now.AddHours(-2);
+        var ids = Enumerable.Range(0, 6).Select(i => AddStill(t.AddSeconds(i * 10), $"p{i}")).ToList();
+        Compactor().RunOnce(compress: true, now);
+        db.DeleteFrames(t.AddSeconds(15), t.AddSeconds(25));   // p2
+        using var other = new Database(config.DbPath);
+        bool once = false;
+        codec.AfterVerify = () => { if (!once) { once = true; other.DeleteFrames(t.AddSeconds(35), t.AddSeconds(45)); } };   // p4
+        var r = Compactor().RunOnce(compress: false, now);
+        // The rewrite would have kept p4: it is dropped, and the video stays marked.
+        Assert.Equal(0, r.Rewritten);
+        Assert.Equal(0, r.Unpacked);
+        Assert.True(db.Segments().Single().NeedsRewrite);
+        Assert.Equal(1, Compactor().RunOnce(compress: false, now).Rewritten);
+        Assert.Equal(new[] { "p0", "p1", "p3", "p5" }, AllVideoPictures().OrderBy(p => p));
+        Assert.Equal(0, db.StuckRewrites());
+    }
+
+    [Fact]
+    public void AVideoThatCantBeWrittenAgainBecomesPictures()
+    {
+        var t = now.AddHours(-2);
+        var ids = Enumerable.Range(0, 4).Select(i => AddStill(t.AddSeconds(i * 10), $"p{i}")).ToList();
+        Compactor().RunOnce(compress: true, now);
+        var video = db.FrameById(ids[0])!.VideoPath;
+        db.DeleteFrames(t.AddSeconds(5), t.AddSeconds(15));   // p1
+        Assert.Equal(1, db.StuckRewrites());
+        codec.FailWrite = true;   // say, the encoder is gone
+        var r = Compactor().RunOnce(compress: false, now);
+        Assert.Equal((0, 1, 0), (r.Rewritten, r.Unpacked, r.Failed));
+        // The deleted picture is in no file; the others are stills again.
+        Assert.False(File.Exists(video));
+        Assert.Empty(AllVideoPictures());
+        Assert.Empty(db.Segments());
+        Assert.Equal(0, db.StuckRewrites());
+        foreach (var (id, p) in new[] { (ids[0], "p0"), (ids[2], "p2"), (ids[3], "p3") })
+        {
+            var f = db.FrameById(id)!;
+            Assert.Equal("", f.VideoPath);
+            Assert.True(File.Exists(f.SnapshotPath));
+            Assert.Equal(p, Picture(id));
+        }
+    }
+
+    [Fact]
+    public void ReferencedPathsAreTaken()
+    {
+        var id = db.Insert(new Frame(0, Time.Now(), "A", "", true, "", "t", "ocr", 0));
+        db.Exec($"UPDATE frames SET video_path = 'a.mp4' WHERE id = {id}");
+        db.Exec("INSERT INTO video_segments (path, start_time, end_time, width, height, frame_count) VALUES ('b.mp4', '', '', 2, 2, 1)");
+        Assert.True(db.IsVideoReferenced("a.mp4"));
+        Assert.True(db.IsVideoReferenced("b.mp4"));
+        Assert.False(db.IsVideoReferenced("c.mp4"));
+    }
+
+    [Fact]
+    public void ReadOnlyOpenOfADatabaseWithoutVideoColumnsReadsStills()
+    {
+        // A database the recording app has not migrated yet (the MCP server may start first).
+        var path = Path.Combine(home, "unmigrated", "db.sqlite");
+        long id;
+        using (var fresh = new Database(path))
+            id = fresh.Insert(new Frame(0, Time.Iso(now), "Code", "main.cs", true, "x.jpg", "hello unmigrated", "ocr", 0));
+        using (var c = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path};Pooling=False"))
+        {
+            c.Open();
+            using var cmd = c.CreateCommand();
+            cmd.CommandText = """
+                DROP INDEX idx_frames_video; DROP TABLE video_segments; DROP TABLE video_skip;
+                ALTER TABLE frames DROP COLUMN display; ALTER TABLE frames DROP COLUMN video_path;
+                ALTER TABLE frames DROP COLUMN video_frame; ALTER TABLE frames DROP COLUMN video_time;
+                """;
+            cmd.ExecuteNonQuery();
+        }
+        using var ro = Database.OpenReadOnly(path);
+        Assert.Equal(new FrameSource("x.jpg"), ro.FrameById(id)!.Source);
+        Assert.Equal((0, 0L, 0L), ro.VideoStats());
+        Assert.Contains("main.cs", new AiTools(ro).Run(new AiToolCall("1", "search_screen", new System.Text.Json.Nodes.JsonObject { ["query"] = "unmigrated" })));
+    }
+
+    [Fact]
     public void LruDropsTheLeastRecentlyUsed()
     {
         var dropped = new List<int>();
@@ -316,6 +504,24 @@ public class VideoTests : IDisposable
         lru.RemoveWhere(k => k == "a");
         Assert.Equal(new[] { 2, 1 }, dropped);
         Assert.Equal(1, lru.Count);
+    }
+
+    [Fact]
+    public void LruKeepsItsTotalWeightUnderTheCap()
+    {
+        var dropped = new List<int>();
+        var lru = new Lru<string, int>(10, dropped.Add, v => v, maxWeight: 10);
+        lru.Set("a", 4);
+        lru.Set("b", 5);
+        lru.Set("c", 3);   // 12: "a" goes
+        Assert.Equal(new[] { 4 }, dropped);
+        Assert.Equal(8, lru.Weight);
+        lru.Set("d", 11);  // bigger than the whole cache: not kept
+        Assert.Equal(new[] { 4, 11 }, dropped);
+        Assert.Equal(2, lru.Count);
+        Assert.Equal(8, lru.Weight);
+        lru.RemoveWhere(_ => true);
+        Assert.Equal(0, lru.Weight);
     }
 
     [Fact]
@@ -372,13 +578,21 @@ sealed class FakeCodec : IVideoCodec
         return "h264";
     }
 
-    public bool Verify(string path, IReadOnlyList<FrameSource> frames)
+    public bool Verify(string path, IReadOnlyList<FrameSource> frames, int width, int height)
     {
         if (FailVerify) return false;
         var v = Read(path);
-        var ok = v.Pictures.Count == frames.Count && v.Pictures[0] == Load(frames[0]) && v.Pictures[^1] == Load(frames[^1]);
+        var ok = v.Width == width && v.Height == height && v.Pictures.Count == frames.Count &&
+                 Compaction.CheckedFrames(frames.Count).All(i => v.Pictures[i] == Load(frames[i]));
         AfterVerify?.Invoke();
         return ok;
+    }
+
+    public void WriteStill(FrameSource frame, string path)
+    {
+        var size = Measure(frame) ?? throw new IOException("unreadable frame");
+        var pic = Load(frame) ?? throw new IOException("unreadable frame");
+        File.WriteAllText(path, $"{size.Width}x{size.Height}:{pic}:" + new string('.', 2000));
     }
 
     public void Release(string path) { }

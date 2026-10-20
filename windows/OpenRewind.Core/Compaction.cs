@@ -6,11 +6,15 @@ public interface IVideoCodec
     /// Pixel size of a frame's picture, or null when it cannot be read.
     (int Width, int Height)? Measure(FrameSource frame);
     /// Write these frames, in order, as a new video at `path`: frame i at i / Compaction.Fps seconds,
-    /// width x height pixels (pictures that are a pixel bigger are cut to fit). Returns the codec used
-    /// ("hevc" or "h264"). Throws when it can't.
+    /// width x height pixels (pictures a pixel bigger are cut to fit; bigger ones are scaled down, see
+    /// Compaction.Fit). Returns the codec used ("hevc" or "h264"). Throws when it can't.
     string Write(IReadOnlyList<FrameSource> frames, int width, int height, string path);
-    /// True when the video at `path` opens and its first and last frames look like those pictures.
-    bool Verify(string path, IReadOnlyList<FrameSource> frames);
+    /// True when the video at `path` opens, is width x height and long enough, and a few of its frames
+    /// (Compaction.CheckedFrames: first, last and two in between) look like those pictures.
+    bool Verify(string path, IReadOnlyList<FrameSource> frames, int width, int height);
+    /// Save one frame's picture as a JPEG still (a video that can't be written again is turned back
+    /// into stills, see VideoCompactor.Unpack). Throws when it can't.
+    void WriteStill(FrameSource frame, string path);
     /// Close anything that still has this video open, so it can be deleted.
     void Release(string path);
 }
@@ -36,6 +40,11 @@ public static class Compaction
     public const int MaxFrames = 600;
     /// Keyframe every this many frames: scrubbing decodes at most this many to show one.
     public const int KeyframeInterval = 20;
+    /// Largest video every H.264 encoder takes (level 5.1). Bigger screenshots are scaled down to fit.
+    public const int MaxWidth = 4096, MaxHeight = 2304;
+    /// A still that failed to go into a video this many times stays a still (a picture or size the
+    /// encoder can't take would otherwise be tried again on every launch).
+    public const int MaxTries = 3;
 
     public static DateTime WindowStart(DateTime t, TimeSpan window) =>
         new(t.ToUniversalTime().Ticks - t.ToUniversalTime().Ticks % window.Ticks, DateTimeKind.Utc);
@@ -86,15 +95,23 @@ public static class Compaction
     /// Encoders want even sizes: an odd last row or column is cut off.
     public static int Even(int n) => Math.Max(2, n & ~1);
 
-    /// data/video/2026-10-19/2026-10-19T14-05-00Z-<screen>.mp4 (with -2, -3 ... when taken).
+    /// The video size for pictures of w x h: the same cut to even, or scaled down to fit MaxWidth x MaxHeight.
+    public static (int Width, int Height) Fit(int w, int h)
+    {
+        var scale = Math.Min(1, Math.Min(MaxWidth / (double)w, MaxHeight / (double)h));
+        return scale >= 1 ? (Even(w), Even(h)) : (Even((int)(w * scale)), Even((int)(h * scale)));
+    }
+
+    /// data/video/2026-10-19/2026-10-19T14-05-00Z-<screen>-<random>.mp4. The random part means a name is
+    /// never used twice, so a timeline still holding an old frame's place can't show another video's picture.
     public static string SegmentPath(string videoDir, DateTime windowStart, string display, Func<string, bool> taken)
     {
         var iso = Time.Iso(windowStart);
         var dir = Path.Combine(videoDir, iso[..10]);
         var name = iso[..19].Replace(':', '-') + "Z" + (SafeName(display) is { Length: > 0 } d ? "-" + d : "");
-        for (int n = 1; ; n++)
+        while (true)
         {
-            var p = Path.Combine(dir, name + (n > 1 ? $"-{n}" : "") + ".mp4");
+            var p = Path.Combine(dir, name + "-" + Guid.NewGuid().ToString("N")[..8] + ".mp4");
             if (!taken(p)) return p;
         }
     }
@@ -115,17 +132,23 @@ public static class Compaction
         for (int i = 0; i < a.Length; i++) sum += Math.Abs(a[i] - b[i]);
         return sum / (double)a.Length <= tolerance;
     }
+
+    /// Which frames of a new video are checked against their pictures: the first, the last, and two in between.
+    public static int[] CheckedFrames(int count) =>
+        new[] { 0, count / 3, 2 * count / 3, count - 1 }.Where(i => i >= 0 && i < count).Distinct().ToArray();
 }
 
 /// Compress Older Recordings: turns stills older than an hour into short videos, crash-safely.
 /// Each video is written to a temp file, read back and checked, renamed, then the frames are pointed
 /// at it in one transaction, and only then are the stills deleted. Stopping at any point loses nothing:
 /// the next pass deletes temp and unreferenced videos and finishes deleting stills already in a video.
-/// It also rewrites videos that lost some of their frames to a delete, even while compression is off.
+/// It also rewrites videos that lost some of their frames to a delete, even while compression is off;
+/// a video that can't be written again is turned back into stills, so deleted pictures never stay in one.
 public sealed class VideoCompactor
 {
     readonly Database db;
     readonly IVideoCodec codec;
+    readonly string dataDir;
     public readonly string VideoDir;
     public TimeSpan MinAge = Compaction.MinAge;
     public TimeSpan Window = Compaction.Window;
@@ -134,15 +157,16 @@ public sealed class VideoCompactor
     public TimeSpan OrphanAge = TimeSpan.FromMinutes(10);
     /// Called after "written" (video renamed into place) and "committed" (rows point at it). For tests.
     public Action<string>? AfterStep;
-    /// Frames up to this time were tried since the app started; ones that failed are tried again next launch.
+    /// Frames up to this time (the stored timestamp, as it is) were tried since the app started.
     string cursor = "";
 
-    public record Result(int Frames, int Videos, int Rewritten, int Failed);
+    public record Result(int Frames, int Videos, int Rewritten, int Failed, int Unpacked = 0);
 
     public VideoCompactor(Database db, IVideoCodec codec, string dataDir)
     {
         this.db = db;
         this.codec = codec;
+        this.dataDir = dataDir;
         VideoDir = Path.Combine(dataDir, "video");
     }
 
@@ -155,13 +179,20 @@ public sealed class VideoCompactor
         var compressing = keepCompressing ?? (() => true);
         keepGoing = () => go() && compressing();
         CleanUp();
-        int rewritten = 0, failed = 0, frames = 0, videos = 0;
+        int rewritten = 0, unpacked = 0, failed = 0, frames = 0, videos = 0;
         foreach (var seg in db.Segments(onlyNeedingRewrite: true))
         {
             if (!go()) break;
-            if (Rewrite(seg)) rewritten++; else failed++;
+            switch (Rewrite(seg))
+            {
+                case true: rewritten++; break;
+                // Its frames changed while it was written (another delete): it stays marked, the next pass does it.
+                case null: break;
+                // It could not be written again: keep its frames as stills rather than deleted ones in a video.
+                case false: if (Unpack(seg)) unpacked++; else failed++; break;
+            }
         }
-        if (!compress) return new(0, 0, rewritten, failed);
+        if (!compress) return new(0, 0, rewritten, failed, unpacked);
 
         var cutoff = now - MinAge;
         while (keepGoing())
@@ -169,38 +200,48 @@ public sealed class VideoCompactor
             var batch = db.CompactCandidates(cutoff, cursor, BatchSize);
             var plans = Compaction.Plan(batch, cutoff, Window, batch.Count == BatchSize);
             if (plans.Count == 0) break;
+            var before = cursor;
             foreach (var plan in plans)
             {
-                if (!keepGoing()) return new(frames, videos, rewritten, failed);
+                if (!keepGoing()) return new(frames, videos, rewritten, failed, unpacked);
                 var (n, v, f) = Compact(plan);
                 frames += n; videos += v; failed += f;
-                var last = Time.Iso(plan.Frames[^1].Time);
+                var last = plan.Frames[^1].Timestamp;
                 if (string.CompareOrdinal(last, cursor) > 0) cursor = last;
             }
+            if (cursor == before) break;  // never read the same batch twice
         }
-        return new(frames, videos, rewritten, failed);
+        return new(frames, videos, rewritten, failed, unpacked);
     }
 
-    /// Finish what a stopped pass left: temp files, videos no row points at, stills already in a video.
+    /// Finish what a stopped pass left: temp files, videos no row points at, stills already in a video,
+    /// and videos that lost frames without being marked (a delete cut short, or one by another process).
     void CleanUp()
     {
         if (Directory.Exists(VideoDir))
         {
+            // A failed read throws here, so nothing is deleted on a guess.
             var known = db.SegmentPaths();
             foreach (var f in Directory.EnumerateFiles(VideoDir, "*.mp4", SearchOption.AllDirectories).ToList())
             {
                 var temp = f.EndsWith(Compaction.TempSuffix, StringComparison.OrdinalIgnoreCase);
                 if (!temp && known.Contains(f)) continue;
                 if (!temp && DateTime.UtcNow - File.GetLastWriteTimeUtc(f) < OrphanAge) continue;
+                // Asked again for this one file: delete only what no video row and no frame points at.
+                if (!temp && db.IsVideoReferenced(f)) continue;
                 Delete(f);
             }
             foreach (var d in Directory.EnumerateDirectories(VideoDir))
                 try { if (!Directory.EnumerateFileSystemEntries(d).Any()) Directory.Delete(d); } catch { }
         }
         var left = db.LeftoverStills();
-        if (left.Count == 0) return;
-        foreach (var (_, p) in left) Delete(p);
-        db.ClearStills(left.Select(l => l.Id));
+        if (left.Count > 0)
+        {
+            foreach (var (_, p) in left) Delete(p);
+            db.ClearStills(left.Select(l => l.Id));
+        }
+        var marked = db.MarkShrunkSegments();
+        if (marked > 0) Log.Write($"compress older recordings: {marked} videos lost frames without being marked; writing them again");
     }
 
     (int Frames, int Videos, int Failed) Compact(SegmentPlan plan)
@@ -209,14 +250,19 @@ public sealed class VideoCompactor
         int frames = 0, videos = 0, failed = 0;
         foreach (var (w, h, run) in runs)
         {
-            var path = Compaction.SegmentPath(VideoDir, plan.WindowStart, plan.Display, p => File.Exists(p) || File.Exists(Compaction.TempPath(p)));
+            var path = NewPath(plan.WindowStart, plan.Display);
             var sources = run.Select(c => new FrameSource(c.StillPath)).ToList();
             var ids = run.Select(c => c.Id).ToList();
             long sourceBytes = run.Sum(c => Size(c.StillPath));
-            var seg = Write(path, sources, Compaction.Even(w), Compaction.Even(h), (name, bytes) =>
-                new VideoSegment(0, path, plan.Display, Time.Iso(run[0].Time), Time.Iso(run[^1].Time), Compaction.Even(w), Compaction.Even(h),
-                                 run.Count, name, bytes, sourceBytes));
-            if (seg == null) { failed++; continue; }
+            var (vw, vh) = Compaction.Fit(w, h);
+            var seg = Write(path, sources, vw, vh, (name, bytes) =>
+                new VideoSegment(0, path, plan.Display, run[0].Timestamp, run[^1].Timestamp, vw, vh, run.Count, name, bytes, sourceBytes));
+            if (seg == null)
+            {
+                db.NoteCompactFailure(ids);
+                failed++;
+                continue;
+            }
             if (!db.CommitSegment(seg, ids))
             {
                 // A frame was deleted while this was written: drop the video, the rest goes next launch.
@@ -233,7 +279,9 @@ public sealed class VideoCompactor
     }
 
     /// Write the frames of a video that lost some to a delete into a new video, then swap it in.
-    bool Rewrite(VideoSegment old)
+    /// Decoding and encoding again loses a little quality; that happens about once per video.
+    /// True when done, false when the video could not be written, null when its frames changed meanwhile.
+    bool? Rewrite(VideoSegment old)
     {
         var rows = db.SegmentFrames(old.Path);
         if (rows.Count == 0)
@@ -242,8 +290,7 @@ public sealed class VideoCompactor
             Delete(old.Path);
             return true;
         }
-        var path = Compaction.SegmentPath(VideoDir, Time.ParseIso(old.StartTime) ?? DateTime.UtcNow,
-                                          old.Display, p => File.Exists(p) || File.Exists(Compaction.TempPath(p)) || Database.PathComparer.Equals(p, old.Path));
+        var path = NewPath(Time.ParseIso(old.StartTime) ?? DateTime.UtcNow, old.Display);
         // The stills it replaced took about this much (scaled to the frames left).
         long sourceBytes = old.FrameCount > 0 ? old.SourceBytes * rows.Count / old.FrameCount : 0;
         var fresh = Write(path, rows.Select(r => r.Source).ToList(), old.Width, old.Height, (name, bytes) =>
@@ -252,12 +299,46 @@ public sealed class VideoCompactor
         if (!db.CommitRewrite(old, fresh, rows.Select(r => r.Id).ToList()))
         {
             Delete(path);
-            return false;
+            return null;
         }
         AfterStep?.Invoke("committed");
         Delete(old.Path);
         return true;
     }
+
+    /// A video that must lose frames but can't be written again (no encoder any more, a size it won't
+    /// take): save the frames it keeps as stills, point their rows at them, and delete the video.
+    bool Unpack(VideoSegment old)
+    {
+        var rows = db.SegmentFrames(old.Path);
+        var written = new List<string>();
+        try
+        {
+            foreach (var r in rows)
+            {
+                var ts = r.Timestamp;
+                var dir = Path.Combine(dataDir, ts.Length >= 10 ? ts[..10] : "unpacked");
+                Directory.CreateDirectory(dir);
+                var file = Path.Combine(dir, ts.Replace(':', '-') + "-" + r.Id + ".jpg");
+                codec.WriteStill(r.Source, file);
+                written.Add(file);
+            }
+            if (!db.CommitUnpack(old, rows.Select(r => r.Id).ToList(), written))
+                throw new IOException("its frames changed meanwhile");
+        }
+        catch (Exception e) when (e is not CompactionInterrupted)
+        {
+            Log.Write($"compress older recordings: cannot turn {Path.GetFileName(old.Path)} back into pictures: {e.Message}");
+            foreach (var f in written) Delete(f);
+            return false;
+        }
+        Delete(old.Path);
+        Log.Write($"compress older recordings: {Path.GetFileName(old.Path)} could not be written again, so its {rows.Count} frames are pictures again");
+        return true;
+    }
+
+    string NewPath(DateTime windowStart, string display) =>
+        Compaction.SegmentPath(VideoDir, windowStart, display, p => File.Exists(p) || File.Exists(Compaction.TempPath(p)) || db.IsVideoReferenced(p));
 
     /// Encode to a temp file, check it reads back, move it into place. Null when any of that failed
     /// (nothing is left behind and the stills are untouched).
@@ -268,7 +349,7 @@ public sealed class VideoCompactor
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             var name = codec.Write(sources, w, h, tmp);
-            if (!codec.Verify(tmp, sources)) throw new IOException("the new video did not read back like the pictures");
+            if (!codec.Verify(tmp, sources, w, h)) throw new IOException("the new video did not read back like the pictures");
             codec.Release(tmp);
             File.Move(tmp, path);
             AfterStep?.Invoke("written");
@@ -296,13 +377,17 @@ public sealed class VideoCompactor
     }
 }
 
-/// Least recently used cache: decoded frames and open video readers.
-public sealed class Lru<TKey, TValue>(int capacity, Action<TValue>? evicted = null) where TKey : notnull
+/// Least recently used cache: decoded frames and open video readers. At most `capacity` entries and,
+/// when `weight` is given, at most `maxWeight` in total (decoded screenshots are big: cap them by bytes).
+public sealed class Lru<TKey, TValue>(int capacity, Action<TValue>? evicted = null, Func<TValue, long>? weight = null, long maxWeight = long.MaxValue)
+    where TKey : notnull
 {
     readonly Dictionary<TKey, LinkedListNode<(TKey Key, TValue Value)>> map = new();
     readonly LinkedList<(TKey Key, TValue Value)> order = new();
 
     public int Count => map.Count;
+    /// Total weight of what is cached.
+    public long Weight { get; private set; }
 
     public bool TryGet(TKey key, out TValue value)
     {
@@ -322,14 +407,20 @@ public sealed class Lru<TKey, TValue>(int capacity, Action<TValue>? evicted = nu
         if (map.TryGetValue(key, out var old))
         {
             order.Remove(old);
+            map.Remove(key);
+            Weight -= Of(old.Value.Value);
             if (!ReferenceEquals(old.Value.Value, value)) evicted?.Invoke(old.Value.Value);
         }
+        var w = Of(value);
+        if (w > maxWeight) { evicted?.Invoke(value); return; }  // bigger than the whole cache: don't keep it
         map[key] = order.AddFirst((key, value));
-        while (map.Count > capacity)
+        Weight += w;
+        while (map.Count > capacity || Weight > maxWeight)
         {
             var last = order.Last!;
             order.RemoveLast();
             map.Remove(last.Value.Key);
+            Weight -= Of(last.Value.Value);
             evicted?.Invoke(last.Value.Value);
         }
     }
@@ -341,7 +432,10 @@ public sealed class Lru<TKey, TValue>(int capacity, Action<TValue>? evicted = nu
         {
             order.Remove(node);
             map.Remove(node.Value.Key);
+            Weight -= Of(node.Value.Value);
             evicted?.Invoke(node.Value.Value);
         }
     }
+
+    long Of(TValue v) => weight?.Invoke(v) ?? 0;
 }

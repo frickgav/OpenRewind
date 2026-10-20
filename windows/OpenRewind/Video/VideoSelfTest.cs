@@ -6,7 +6,8 @@ namespace OpenRewind;
 
 /// `OpenRewind video-check`: runs Compress Older Recordings for real on made-up screenshots in a temp
 /// folder (encode, check, commit, delete stills), reads every frame back in a jumbled order, deletes part
-/// of the video and checks the rewrite. CI runs it; it is also a quick check on a new PC.
+/// of the video and checks the rewrite, runs doctor's check that videos open, and compresses a capture
+/// wider than encoders take. CI runs it; it is also a quick check on a new PC.
 static class VideoSelfTest
 {
     public static bool Run(TextWriter log)
@@ -55,6 +56,32 @@ static class VideoSelfTest
             log.WriteLine($"deleted {deleted} frames, rewrote {r2.Rewritten} video(s), {r2.Failed} failed");
             if (r2.Rewritten != 1 || r2.Failed != 0 || thumbs.Count != n - deleted) return false;
             if (!CheckAll(db, thumbs, w, h, log)) return false;
+
+            var (seen, bad) = MfCodec.CheckVideos(db);
+            log.WriteLine($"doctor's check: {seen} video(s), {bad} do not open");
+            if (seen != 1 || bad != 0) return false;
+
+            // A capture wider than every encoder takes is scaled down to fit.
+            const int ww = 5000, wh = 1000;
+            var wideStart = Compaction.WindowStart(now.AddHours(-3), Compaction.Window);
+            var wide = new Dictionary<long, byte[]>();
+            for (int i = 0; i < 3; i++)
+            {
+                using var pic = Screen(i, ww, wh);
+                var t = wideStart.AddSeconds(i * 2);
+                var dir = Path.Combine(config.DataDir, Time.Iso(t)[..10]);
+                Directory.CreateDirectory(dir);
+                var file = Path.Combine(dir, Time.Iso(t).Replace(':', '-') + ".jpg");
+                ImageTools.WriteJpeg(pic, file);
+                var id = db.Insert(new Frame(0, Time.Iso(t), "Test", $"Wide {i}", true, file, $"wide {i}", "ocr", 0, Display: "wide"));
+                using var still = FrameImages.Load(new FrameSource(file))!;
+                wide[id] = FrameImages.Comparable(still);
+            }
+            var r3 = compactor.RunOnce(compress: true, now);
+            var (fw, fh) = Compaction.Fit(ww, wh);
+            log.WriteLine($"wide capture: {r3.Frames} frames of {ww}x{wh} into {r3.Videos} video(s) of {fw}x{fh}, {r3.Failed} failed");
+            if (r3.Frames != 3 || r3.Failed != 0) return false;
+            if (!CheckAll(db, wide, fw, fh, log)) return false;
 
             // Delete the rest: the video goes too.
             db.DeleteFrames(null, now);

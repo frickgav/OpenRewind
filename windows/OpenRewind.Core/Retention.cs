@@ -36,6 +36,8 @@ public sealed partial class Database
     /// Delete frames with `from <= timestamp < to`. null = open end. Returns frames deleted.
     /// A video left with no frames is deleted; one that still has frames outside the range is marked
     /// for the compactor to write again without the deleted ones (see VideoCompactor.RunOnce).
+    /// The rows and the marks change in one transaction, so a crash can't leave deleted pictures in a
+    /// video nobody will rewrite; files are deleted only after it commits.
     public int DeleteFrames(DateTime? from, DateTime? to)
     {
         var (where, args) = Range("timestamp", from, to);
@@ -43,27 +45,28 @@ public sealed partial class Database
         List<string> stills, emptied = new();
         bool partial = false;
         int n;
-        // All in one go under the lock, so a compaction cannot commit a new video for these frames halfway through.
         lock (gate)
         {
-            n = (int)ScalarLong($"SELECT COUNT(*) FROM frames {where}", args);
-            if (n == 0) return 0;
-            stills = Strings($"SELECT snapshot_path FROM frames {where}", args);
-            var videos = Strings($"SELECT DISTINCT video_path FROM frames {and} video_path != ''", args);
-            Run($"DELETE FROM frames {where}", args);  // FTS rows go with it (trigger frames_ad)
+            using var tx = conn.BeginTransaction();
+            n = (int)TxScalar(tx, $"SELECT COUNT(*) FROM frames {where}", args);
+            if (n == 0) { tx.Rollback(); return 0; }
+            stills = TxStrings(tx, $"SELECT snapshot_path FROM frames {where}", args);
+            var videos = TxStrings(tx, $"SELECT DISTINCT video_path FROM frames {and} video_path != ''", args);
+            TxRun(tx, $"DELETE FROM frames {where}", args);  // FTS rows go with it (trigger frames_ad)
             foreach (var v in videos)
             {
-                if (ScalarLong("SELECT COUNT(*) FROM frames WHERE video_path = ? AND video_path != ''", v) == 0)
+                if (TxScalar(tx, "SELECT COUNT(*) FROM frames WHERE video_path = ? AND video_path != ''", v) == 0)
                 {
-                    Run("DELETE FROM video_segments WHERE path = ?", v);
+                    TxRun(tx, "DELETE FROM video_segments WHERE path = ?", v);
                     emptied.Add(v);
                 }
                 else
                 {
-                    Run("UPDATE video_segments SET needs_rewrite = 1 WHERE path = ?", v);
+                    TxRun(tx, "UPDATE video_segments SET needs_rewrite = 1 WHERE path = ?", v);
                     partial = true;
                 }
             }
+            tx.Commit();
         }
         if (emptied.Count > 0) ReleasingVideos?.Invoke(emptied);
         RemoveFiles(stills.Concat(emptied).ToList());

@@ -26,6 +26,10 @@ static class ImageTools
     /// a new line of text, so this keeps enough detail (192x120) to notice it.
     public static byte[] Thumbnail(Bitmap image) => Gray(image, 192, 120, InterpolationMode.Low);
 
+    /// Like Thumbnail, but averaged smoothly, so two copies of a picture that differ only by video coding (or
+    /// by a pixel cut off an odd edge) give nearly the same thumbnail. Used to check compacted videos.
+    public static byte[] SmoothThumbnail(Bitmap image) => Gray(image, 192, 120, InterpolationMode.HighQualityBilinear);
+
     /// Number of thumbnail pixels that changed by more than `tolerance` gray levels.
     public static int ChangedPixels(byte[] a, byte[] b, int tolerance = 8)
     {

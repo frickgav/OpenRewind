@@ -4,8 +4,10 @@ using System.Runtime.InteropServices;
 
 namespace OpenRewind;
 
-/// Writes pictures into an MP4 with the Media Foundation sink writer: HEVC (H.265) when this PC has an
-/// encoder for it, otherwise H.264, which every Windows 10/11 desktop has. Frame i is at i / Compaction.Fps s.
+/// Writes pictures into an MP4 with the Media Foundation sink writer, as H.264. Every Windows 10/11 desktop
+/// can encode and decode H.264; HEVC decoding needs the paid "HEVC Video Extensions" on many PCs, so a video
+/// written where an HEVC encoder happens to exist could stop opening after a reinstall or on another PC.
+/// Frame i is at i / Compaction.Fps s.
 /// The pictures are turned into NV12 here, so the encoder gets the format it wants and no converter is needed.
 sealed class Mp4Writer : IDisposable
 {
@@ -20,7 +22,7 @@ sealed class Mp4Writer : IDisposable
     }
 
     /// `width` and `height` must be even.
-    public static Mp4Writer Create(string path, int width, int height, bool hevc)
+    public static Mp4Writer Create(string path, int width, int height)
     {
         MF.Start();
         var attrs = MF.Attributes();
@@ -35,7 +37,7 @@ sealed class Mp4Writer : IDisposable
 
             output = MF.MediaType();
             output.SetGUID(ref MF.MT_MAJOR_TYPE, ref MF.MediaType_Video);
-            var codec = hevc ? MF.VideoFormat_HEVC : MF.VideoFormat_H264;
+            var codec = MF.VideoFormat_H264;
             output.SetGUID(ref MF.MT_SUBTYPE, ref codec);
             // A ceiling for encoders that ignore the quality setting: about 0.3 bits per pixel per frame.
             output.SetUINT32(ref MF.MT_AVG_BITRATE, (uint)Math.Clamp(width * (long)height * 3 / 10 * (long)Compaction.Fps, 100_000, 20_000_000));
@@ -69,7 +71,7 @@ sealed class Mp4Writer : IDisposable
                 MF.Release(p);
                 if (hr >= 0) break;
             }
-            MF.Check(hr, hevc ? "starting the HEVC encoder" : "starting the H.264 encoder");
+            MF.Check(hr, "starting the H.264 encoder");
             MF.Check(w.BeginWriting(), "starting to write the video");
             var made = new Mp4Writer(w, stream, width, height);
             w = null;
@@ -138,6 +140,8 @@ sealed class Mp4Reader : IDisposable
     IMFSourceReader? reader;
     /// Size of the picture (the decoder may pad to a multiple of 16) and of the decoded planes.
     int width, height, codedWidth, codedHeight;
+    /// Bytes per row of the decoded planes, from the decoder's MT_DEFAULT_STRIDE; 0 when it doesn't say.
+    int typeStride;
     /// Time of the last frame read, or -1 when the next read must seek.
     long last = -1;
 
@@ -180,6 +184,7 @@ sealed class Mp4Reader : IDisposable
             MF.Check(t.GetUINT64(ref MF.MT_FRAME_SIZE, out var size), "reading the frame size");
             codedWidth = (int)(size >> 32); codedHeight = (int)(size & 0xFFFFFFFF);
             (width, height) = (codedWidth, codedHeight);
+            typeStride = t.GetUINT32(ref MF.MT_DEFAULT_STRIDE, out var st) >= 0 ? (int)st : 0;  // negative (bottom-up) reads as huge: ignored below
             // The picture inside the padded planes.
             var area = new byte[16];
             if (t.GetBlob(ref MF.MT_MINIMUM_DISPLAY_APERTURE, area, 16, out var n) >= 0 && n == 16
@@ -256,10 +261,14 @@ sealed class Mp4Reader : IDisposable
                 Marshal.Copy(ptr, data, 0, (int)length);
             }
             finally { buffer.Unlock(); }
-            // NV12: a full-size Y plane, then half-size interleaved U/V. The row stride may be wider than the picture.
-            int stride = (int)(length * 2 / (3L * codedHeight));
-            if (stride < width || (long)stride * codedHeight * 3 / 2 > length) return null;
-            return Nv12.ToBitmap(data, stride, codedHeight, width, height);
+            // NV12: a full-size Y plane, then half-size interleaved U/V. The row stride may be wider than the picture:
+            // the decoder's stated stride when it is plausible, else worked out from the buffer length.
+            int rows = codedHeight;
+            int stride = typeStride;
+            if (stride < width || (long)stride * rows * 3 / 2 > length)
+                stride = (int)(length * 2 / (3L * rows));
+            if (stride < width || rows < height || (long)stride * rows * 3 / 2 > length) return null;
+            return Nv12.ToBitmap(data, stride, rows, width, height);
         }
         finally { MF.Release(buffer); }
     }
@@ -274,14 +283,25 @@ sealed class Mp4Reader : IDisposable
 /// BGRA pictures to and from NV12 (BT.709, video range), the format the encoders and decoders use.
 static class Nv12
 {
-    /// The picture as NV12 of exactly width x height (even): cut off or padded at the right and bottom.
+    /// The picture as NV12 of exactly width x height (even). A picture within a pixel of that size (odd sizes are
+    /// rounded down to even) is cut off or padded at the right and bottom; any other is scaled to fit (very wide
+    /// captures are made smaller to stay within what encoders take, see Compaction.Fit).
     public static byte[] From(Bitmap picture, int width, int height)
     {
         using var bmp = new Bitmap(width, height, PixelFormat.Format32bppRgb);
         using (var g = Graphics.FromImage(bmp))
         {
             g.Clear(Color.Black);
-            g.DrawImage(picture, new Rectangle(0, 0, picture.Width, picture.Height));  // pixels, whatever the DPI says
+            if (Math.Abs(picture.Width - width) <= 1 && Math.Abs(picture.Height - height) <= 1)
+                g.DrawImage(picture, new Rectangle(0, 0, picture.Width, picture.Height));  // pixels, whatever the DPI says
+            else
+            {
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+                using var edges = new ImageAttributes();
+                edges.SetWrapMode(System.Drawing.Drawing2D.WrapMode.TileFlipXY);  // no dark fringe at the edges
+                g.DrawImage(picture, new Rectangle(0, 0, width, height), 0, 0, picture.Width, picture.Height, GraphicsUnit.Pixel, edges);
+            }
         }
         var bits = bmp.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.ReadOnly, PixelFormat.Format32bppRgb);
         var px = new byte[bits.Stride * height];

@@ -202,6 +202,15 @@ static class Program
                 Console.WriteLine($"video storage:   {VideoCheck()}");
                 var v = db.VideoStats();
                 Console.WriteLine($"videos:          {v.Segments} ({v.Bytes / (1 << 20)} MB, saving {v.Saved / (1 << 20)} MB)");
+                if (v.Segments > 0)
+                {
+                    var (seen, bad) = MfCodec.CheckVideos(db);
+                    Console.WriteLine(bad == 0
+                        ? $"videos play:     ok ({seen} checked)"
+                        : $"videos play:     {bad} of {seen} checked DO NOT OPEN on this PC (a missing video codec?)");
+                }
+                int stuck = db.StuckRewrites();
+                if (stuck > 0) Console.WriteLine($"videos to redo:  {stuck} still hold deleted frames (rewritten in the background; turned back into pictures if that keeps failing)");
                 return 0;
             }
 
@@ -223,8 +232,7 @@ static class Program
         var codec = new MfCodec();
         return codec.Usable switch
         {
-            "hevc" => "HEVC (H.265)",
-            "h264" => "H.264 (no working HEVC encoder)",
+            "h264" => "H.264",
             _ => $"not available ({codec.ProbeError})",
         };
     }

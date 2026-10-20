@@ -501,6 +501,9 @@ sealed class TrayApp : ApplicationContext
             lines.Add($"Goes back to {local:g} ({Ago(oldest)})");
         }
         else lines.Add("No recordings yet");
+        // Deleted frames that are still inside a video until it is written again (or turned back into pictures).
+        if (engine.Db.StuckRewrites() is int stuck and > 0)
+            lines.Add($"{stuck} video{(stuck == 1 ? "" : "s")} still hold{(stuck == 1 ? "s" : "")} deleted frames · being redone");
         return lines;
     }
 
