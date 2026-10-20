@@ -3,7 +3,8 @@ import SwiftUI
 /// Settings → Transcription Model, for a model that is not on this Mac yet: says how big it is and
 /// where it comes from, downloads it with a progress bar, and checks it before it is used.
 /// Closing the window stops the download; the next try carries on where it stopped.
-final class ModelDownload: ObservableObject {
+/// Its state is only read and changed on the main thread; the download task hops there to report.
+final class ModelDownload: ObservableObject, @unchecked Sendable {
     let model: SpeechModel
     let home: URL
     /// Runs on the main thread once the model is downloaded and checked.
