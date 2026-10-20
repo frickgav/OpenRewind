@@ -25,6 +25,44 @@ public sealed class MeaningQuery
     public int Limit = 40;
 }
 
+/// A moment could not be stored, or a cursor not moved (the inner exception says why). The cursor stays
+/// put. `CursorKey` and `Cursor`: where it would have moved to.
+public sealed class MeaningSaveFailed(string cursorKey, long cursor, Exception inner)
+    : Exception($"a moment could not be saved: {inner.Message}", inner)
+{
+    public string CursorKey { get; } = cursorKey;
+    public long Cursor { get; } = cursor;
+}
+
+/// The indexer's errors in a row. Each one doubles the wait (1 minute up to 1 hour), so a write that keeps
+/// failing is tried, and logged, a few times an hour instead of over and over. The same moment failing
+/// `TriesPerMoment` times in a row is skipped, so one that can never be saved does not hold up the rest.
+public sealed class MeaningRetry
+{
+    /// With the waits below that is about 15 minutes.
+    public const int TriesPerMoment = 5;
+    public int Failures { get; private set; }
+    (string Key, long Cursor)? stuck;
+    int tries;
+
+    public static TimeSpan Backoff(int failures) =>
+        TimeSpan.FromSeconds(Math.Min(3600, 60 * Math.Pow(2, Math.Max(0, Math.Min(failures, 7) - 1))));
+
+    public void Succeeded() { Failures = 0; stuck = null; tries = 0; }
+
+    /// How long to wait, and the moment to skip (null for none).
+    public (TimeSpan Wait, MeaningSaveFailed? Skip) Failed(Exception e)
+    {
+        Failures++;
+        var wait = Backoff(Failures);
+        if (e is not MeaningSaveFailed f) { stuck = null; tries = 0; return (wait, null); }
+        if (stuck == (f.CursorKey, f.Cursor)) tries++; else { stuck = (f.CursorKey, f.Cursor); tries = 1; }
+        if (tries < TriesPerMoment) return (wait, null);
+        stuck = null; tries = 0;
+        return (wait, f);
+    }
+}
+
 /// Search by Meaning: a background indexer that gives each moment (see MomentChunker) a vector,
 /// catching up on old recordings and keeping up with new ones, and a search that ranks moments by
 /// how close they are to the question. Everything runs on this computer. Moments of blocked apps,
@@ -43,6 +81,10 @@ public sealed class MeaningService : IDisposable
     /// Bumped by Stop. A step still running from before writes nothing (see `keep` in SaveMoment),
     /// even if it outlives Stop's wait.
     int generation;
+    volatile bool paused;
+
+    /// True while saves keep failing (the indexer waits and tries again); the tray says so.
+    public bool Paused => paused;
 
     /// Screenshots newer than this are left for the next round: the window may still be changing.
     public static readonly TimeSpan Settle = TimeSpan.FromMinutes(2);
@@ -58,6 +100,7 @@ public sealed class MeaningService : IDisposable
     public void Start()
     {
         if (thread != null) return;
+        paused = false;
         cts = new CancellationTokenSource();
         var ct = cts.Token;
         var gen = Volatile.Read(ref generation);
@@ -82,14 +125,47 @@ public sealed class MeaningService : IDisposable
 
     void Loop(CancellationToken ct, int gen)
     {
+        var retry = new MeaningRetry();
+        Func<bool> keep = () => Volatile.Read(ref generation) == gen && !ct.IsCancellationRequested;
         while (!ct.IsCancellationRequested)
         {
             TimeSpan wait;
-            try { wait = Embedder == null ? TimeSpan.FromSeconds(5) : Step(ct, gen: gen) ? TimeSpan.Zero : TimeSpan.FromSeconds(30); }
+            try
+            {
+                if (Embedder == null) wait = TimeSpan.FromSeconds(5);
+                else
+                {
+                    wait = Step(ct, gen: gen) ? TimeSpan.Zero : TimeSpan.FromSeconds(30);
+                    retry.Succeeded();
+                    paused = false;
+                }
+            }
             catch (OperationCanceledException) { return; }
-            catch (Exception e) { Log.Write($"search by meaning: {e.Message}"); wait = TimeSpan.FromMinutes(1); }
+            catch (Exception e)
+            {
+                paused = true;
+                var (w, skip) = retry.Failed(e);
+                wait = w;
+                Log.Write($"search by meaning: {e.Message}; trying again in {(int)wait.TotalMinutes} min");
+                if (skip != null)
+                {
+                    try
+                    {
+                        db.SetMeaningState(skip.CursorKey, skip.Cursor.ToString(), keep);
+                        Log.Write($"search by meaning: skipped a moment that could not be saved {MeaningRetry.TriesPerMoment} times");
+                    }
+                    catch (Exception x) { Log.Write($"search by meaning: {x.Message}"); }
+                }
+            }
             if (wait > TimeSpan.Zero) ct.WaitHandle.WaitOne(wait);
         }
+    }
+
+    /// Moves a cursor; a failure is a MeaningSaveFailed, so the indexer waits longer each time.
+    void SetCursor(string key, long cursor, Func<bool> keep)
+    {
+        try { db.SetMeaningState(key, cursor.ToString(), keep); }
+        catch (Exception x) when (x is not OperationCanceledException) { throw new MeaningSaveFailed(key, cursor, x); }
     }
 
     /// Index one batch of screenshots and one of audio. False when there was nothing to do.
@@ -109,13 +185,13 @@ public sealed class MeaningService : IDisposable
             var (moments, done) = MomentChunker.Screen(frames, frames.Count < FrameBatch,
                                                        fr => Hides(list, fr.AppName, fr.WindowName, fr.Url));
             foreach (var m in moments) { Save(e, m, Database.FrameCursor, m.LastId, keep, ct); worked = true; }
-            if (done > fc) { db.SetMeaningState(Database.FrameCursor, done.ToString(), keep); worked = true; }
+            if (done > fc) { SetCursor(Database.FrameCursor, done, keep); worked = true; }
         }
 
         long cc = long.TryParse(db.MeaningState(Database.ChunkCursor), out var c) ? c : 0;
         var (segments, doneChunks) = db.MeaningAudio(cc, ChunkBatch);
         foreach (var m in MomentChunker.Audio(segments)) { Save(e, m, Database.ChunkCursor, m.LastId, keep, ct); worked = true; }
-        if (doneChunks > cc) { db.SetMeaningState(Database.ChunkCursor, doneChunks.ToString(), keep); worked = true; }
+        if (doneChunks > cc) { SetCursor(Database.ChunkCursor, doneChunks, keep); worked = true; }
         return worked;
     }
 
@@ -124,8 +200,15 @@ public sealed class MeaningService : IDisposable
     {
         ct.ThrowIfCancellationRequested();
         var sw = Stopwatch.StartNew();
-        var v = e.Embed(MomentChunker.EmbedText(m));
-        db.SaveMoment(m, e.ModelId, Vectors.Quantize(v), cursorKey, cursor, keep);
+        var v = Vectors.Quantize(e.Embed(MomentChunker.EmbedText(m)));
+        // A failed write ends the round: the rest of the batch would fail the same way, and the cursor
+        // must not move past moments that were never stored. An empty vector is never stored: move on.
+        if (v.Length == 0) SetCursor(cursorKey, cursor, keep);
+        else
+        {
+            try { db.SaveMoment(m, e.ModelId, v, cursorKey, cursor, keep); }
+            catch (Exception x) when (x is not OperationCanceledException) { throw new MeaningSaveFailed(cursorKey, cursor, x); }
+        }
         if (!keep()) throw new OperationCanceledException();
         var rest = sw.Elapsed * (Pace() switch { MeaningPace.Idle => 1, MeaningPace.Battery => 9, _ => 4 });
         if (rest > TimeSpan.Zero && ct.WaitHandle.WaitOne(rest + TimeSpan.FromMilliseconds(20))) ct.ThrowIfCancellationRequested();

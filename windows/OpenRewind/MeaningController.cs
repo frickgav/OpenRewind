@@ -186,7 +186,8 @@ sealed class MeaningController : IDisposable
             try
             {
                 var p = Service.Progress();
-                var line = p.UpToDate ? $"Up to date · {p.Moments:N0} moments" : $"Indexing in the background… {p.Percent}% · {p.Moments:N0} moments";
+                var line = Service.Paused ? $"Paused: could not save, will retry (see openrewind.log) · {p.Moments:N0} moments"
+                    : p.UpToDate ? $"Up to date · {p.Moments:N0} moments" : $"Indexing in the background… {p.Percent}% · {p.Moments:N0} moments";
                 bool changed;
                 lock (sync)
                 {

@@ -38,10 +38,8 @@ extension Database {
         let (whereSQL, args) = Self.range("timestamp", from, to)
         let and = whereSQL.isEmpty ? "WHERE" : whereSQL + " AND"
         var n = 0, stills: [String] = [], emptied: [String] = [], partial = false
-        // Search by Meaning vectors and meeting titles taken from these frames go first (their own statements:
-        // they take the lock).
+        // Meeting titles taken from these frames go first (their own statement: it takes the lock).
         if scalarInt("SELECT COUNT(*) FROM frames \(whereSQL)", args) > 0 {
-            forgetScreenMoments(from: from, to: to)
             forgetMeetingWindows(from: from, to: to)
         }
         // Held throughout, so a compaction cannot commit a new video for these frames halfway through.
@@ -53,7 +51,10 @@ extension Database {
             guard n > 0,
                   let s = stringsLocked("SELECT snapshot_path FROM frames \(whereSQL)", args),
                   let videos = stringsLocked("SELECT DISTINCT video_path FROM frames \(and) video_path != ''", args),
-                  runLocked("DELETE FROM frames \(whereSQL)", args) != nil  // FTS rows go with it (trigger frames_ad)
+                  runLocked("DELETE FROM frames \(whereSQL)", args) != nil,  // FTS rows go with it (trigger frames_ad)
+                  // Search by Meaning moments of these frames, in this transaction: the indexer (which waits
+                  // for the lock) can't store one in between that would then outlive its frames.
+                  forgetScreenMomentsLocked(from: from, to: to)
             else { return false }
             stills = s
             for v in videos {
