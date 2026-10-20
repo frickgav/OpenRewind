@@ -140,9 +140,13 @@ public static class Wav
     }
 
     /// Read a PCM WAV (8/16/24/32-bit int or 32-bit float, any rate and channel count) as 16 kHz mono.
-    public static float[] Load16k(string path)
+    /// Decrypted first when it is an encrypted recording.
+    public static float[] Load16k(string path) => Load16k(RecordingFile.Read(path));
+
+    /// The same, from the bytes of a WAV file.
+    public static float[] Load16k(byte[] wav)
     {
-        using var r = new BinaryReader(new MemoryStream(RecordingFile.Read(path)));
+        using var r = new BinaryReader(new MemoryStream(wav));
         if (new string(r.ReadChars(4)) != "RIFF") throw new InvalidDataException("not a WAV file");
         r.ReadInt32();
         if (new string(r.ReadChars(4)) != "WAVE") throw new InvalidDataException("not a WAV file");

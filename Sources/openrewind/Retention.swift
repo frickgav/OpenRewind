@@ -29,25 +29,72 @@ enum KeepFor: String, CaseIterable {
 /// Deletes screen and audio recordings (files + rows) inside a time range.
 extension Database {
     /// Delete frames with `from <= timestamp < to`. nil = open end. Returns frames deleted.
+    /// A video left with no frames is deleted; one that still has frames outside the range is marked
+    /// for the compactor to write again without the deleted ones (see VideoCompactor.runOnce).
+    /// The rows and the marks change in one transaction, so a crash can't leave deleted pictures in a
+    /// video nobody will rewrite; files are deleted only after it commits.
     @discardableResult
     func deleteFrames(from: Date?, to: Date?) -> Int {
         let (whereSQL, args) = Self.range("timestamp", from, to)
-        let paths = strings("SELECT snapshot_path FROM frames \(whereSQL)", args)
-        guard !paths.isEmpty else { return 0 }
-        run("DELETE FROM frames \(whereSQL)", args)  // FTS rows go with it (trigger frames_ad)
-        Self.removeFiles(paths)
-        return paths.count
+        let and = whereSQL.isEmpty ? "WHERE" : whereSQL + " AND"
+        var n = 0, stills: [String] = [], emptied: [String] = [], partial = false
+        // Search by Meaning vectors and meeting titles taken from these frames go first (their own statements:
+        // they take the lock).
+        if scalarInt("SELECT COUNT(*) FROM frames \(whereSQL)", args) > 0 {
+            forgetScreenMoments(from: from, to: to)
+            forgetMeetingWindows(from: from, to: to)
+        }
+        // Held throughout, so a compaction cannot commit a new video for these frames halfway through.
+        videoGate.lock()
+        lock.lock()
+        let ok = inTransaction {
+            guard let count = scalarLocked("SELECT COUNT(*) FROM frames \(whereSQL)", args) else { return false }
+            n = count
+            guard n > 0,
+                  let s = stringsLocked("SELECT snapshot_path FROM frames \(whereSQL)", args),
+                  let videos = stringsLocked("SELECT DISTINCT video_path FROM frames \(and) video_path != ''", args),
+                  runLocked("DELETE FROM frames \(whereSQL)", args) != nil  // FTS rows go with it (trigger frames_ad)
+            else { return false }
+            stills = s
+            for v in videos {
+                guard let left = scalarLocked("SELECT COUNT(*) FROM frames WHERE video_path = ? AND video_path != ''", [.text(v)]) else { return false }
+                if left == 0 {
+                    guard runLocked("DELETE FROM video_segments WHERE path = ?", [.text(v)]) != nil else { return false }
+                    emptied.append(v)
+                } else {
+                    guard runLocked("UPDATE video_segments SET needs_rewrite = 1 WHERE path = ?", [.text(v)]) != nil else { return false }
+                    partial = true
+                }
+            }
+            return true
+        }
+        lock.unlock()
+        videoGate.unlock()
+        guard ok else {
+            if n > 0 { log("delete failed: nothing was deleted") }
+            return 0
+        }
+        if !emptied.isEmpty { releasingVideos?(emptied) }
+        Self.removeFiles(stills + emptied)
+        if partial { videosNeedRewrite?() }
+        // A recap is made from its day's recordings, so it goes with them.
+        deleteRecapsWith(from: from, to: to)
+        return n
     }
 
-    /// Delete audio chunks with `from <= timestamp < to`, their transcripts and WAV files.
+    /// Delete audio chunks with `from <= timestamp < to`, their transcripts and WAV files, and the
+    /// meeting notes made from them.
     @discardableResult
     func deleteAudio(from: Date?, to: Date?) -> Int {
+        deleteMeetings(from: from, to: to)
         let (whereSQL, args) = Self.range("timestamp", from, to)
         let paths = strings("SELECT file_path FROM audio_chunks \(whereSQL)", args)
         guard !paths.isEmpty else { return 0 }
+        forgetAudioMoments(chunkWhere: whereSQL, args)
         run("DELETE FROM audio_transcriptions WHERE audio_chunk_id IN (SELECT id FROM audio_chunks \(whereSQL))", args)
         run("DELETE FROM audio_chunks \(whereSQL)", args)
         Self.removeFiles(paths)
+        deleteRecapsWith(from: from, to: to)
         return paths.count
     }
 
@@ -63,7 +110,7 @@ extension Database {
         return (parts.isEmpty ? "" : "WHERE " + parts.joined(separator: " AND "), args)
     }
 
-    private func strings(_ sql: String, _ args: [Arg]) -> [String] {
+    func strings(_ sql: String, _ args: [Arg]) -> [String] {
         lock.lock(); defer { lock.unlock() }
         var st: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); return [] }

@@ -15,8 +15,12 @@ sealed class Settings
     public int TypingFrameGap { get; set; } = 2;
     /// Saved screenshot size as a percent of the screen (see ScreenshotSizes.Choices).
     public int ScreenshotPercent { get; set; } = ScreenshotSizes.Default;
+    /// Compress Older Recordings: keep frames older than an hour as video. Off until it has been tested on more PCs.
+    public bool CompressOlderRecordings { get; set; } = false;
     /// The local HTTP API + browser search page. Off unless the user turns it on.
     public bool LocalSearchServer { get; set; } = false;
+    /// Search by Meaning: index moments in the background to find them by meaning. Off unless the user turns it on.
+    public bool SearchByMeaning { get; set; } = false;
     /// Let AI apps (Claude, Cursor, …) read the history through `OpenRewind.exe mcp`. Off unless the user turns it on.
     public bool McpEnabled { get; set; } = false;
     /// Apps that are blurred in screenshots and never have their text stored.
@@ -39,6 +43,8 @@ sealed class Settings
     public DateTime? PausedUntil { get; set; }
     /// Timeline hotkey (see HotkeyShortcut). Null = Ctrl+Alt+T.
     public HotkeyShortcut? TimelineShortcut { get; set; }
+    /// Settings → Transcription Model: an id from SpeechModels ("whisper-auto", "parakeet-v3", …).
+    public string TranscriptionModel { get; set; } = SpeechModels.DefaultId;
     /// Timeline Look: "system", "light" or "dark".
     public string TimelineLook { get; set; } = "system";
     /// Encrypt Recordings (see Encryption). The key is in encryption-key.dpapi, never here.
@@ -66,6 +72,31 @@ sealed class Settings
     public Dictionary<string, double[]> AiListedPrices { get; set; } = new();
     /// Everything used per provider (by AiProviders.Id) since the user last reset it.
     public Dictionary<string, AiTotal> AiTotals { get; set; } = new();
+    /// Journal: write each day's AI recap by itself. Off by default because it spends tokens.
+    public bool JournalAutoRecap { get; set; }
+    /// The day (yyyy-MM-dd) the automatic recap last ran for, so each day is written once.
+    public string? JournalLastAutoDay { get; set; }
+    /// The AI provider it was turned on for (Journal.ProviderKey); it only runs while that is still the one in AI Settings.
+    public string? JournalAutoProvider { get; set; }
+    /// Failed automatic tries for JournalAutoAttemptDay (at most Journal.AutoAttempts).
+    public string? JournalAutoAttemptDay { get; set; }
+    public int JournalAutoAttempts { get; set; }
+
+    /// "Write Each Day's Recap Automatically" is on, for the AI provider set up now.
+    public bool JournalAutoRecapOn(AiSettings ai) => JournalAutoRecap && JournalAutoProvider == Journal.ProviderKey(ai);
+
+    /// Send each meeting's transcript to the AI provider when it ends, for a summary and action items.
+    /// Off unless the user turns it on: it spends their tokens and sends what was said.
+    public bool SummarizeMeetings { get; set; }
+    /// When it was turned on (UTC). Only meetings that end after this are summarized by themselves.
+    public DateTime? SummarizeMeetingsSince { get; set; }
+    /// The provider and server the user agreed to send transcripts to (MeetingNotes.ConsentKey).
+    /// Summaries pause, and the user is asked again, when AI Settings point somewhere else.
+    public string? SummarizeMeetingsProvider { get; set; }
+    /// Show "Meeting detected. Take notes?" when a call starts. On by default.
+    public bool AskBeforeMeetingNotes { get; set; } = true;
+    /// Answers remembered per meeting app ("Zoom" → "always" or "never"), from the popup.
+    public Dictionary<string, string> MeetingChoices { get; set; } = new();
 
     string path = "";
 
@@ -129,6 +160,20 @@ sealed class Settings
         t.Cost += cost ?? 0;
         if (cost == null) t.Unpriced = true;
         AiTotals[k.Id()] = t;
+        Save();
+    }
+
+    /// Turns it on for the AI provider set up now, or off. Turning it on starts with today: the days
+    /// before were not asked for.
+    public void SetJournalAutoRecap(bool on)
+    {
+        var ai = Ai();
+        if (on == JournalAutoRecapOn(ai)) return;
+        JournalAutoRecap = on;
+        JournalAutoProvider = on ? Journal.ProviderKey(ai) : null;
+        if (on) JournalLastAutoDay = Journal.Key(DateTime.Today.AddDays(-1));
+        JournalAutoAttemptDay = null;
+        JournalAutoAttempts = 0;
         Save();
     }
 

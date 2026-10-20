@@ -252,6 +252,8 @@ public static class VaultMigration
         // Older than a minute: a write that is still going on is left alone.
         foreach (var t in all.Where(IsTemp))
             try { if (File.GetLastWriteTimeUtc(t) < DateTime.UtcNow.AddMinutes(-1)) File.Delete(t); } catch { }
-        return all.Where(f => !IsTemp(f)).OrderBy(f => f, StringComparer.Ordinal).ToList();
+        // A video the compactor is still writing: it checks it and moves it into place (or deletes it) itself.
+        return all.Where(f => !IsTemp(f) && !f.EndsWith(Compaction.TempSuffix, StringComparison.OrdinalIgnoreCase))
+                  .OrderBy(f => f, StringComparer.Ordinal).ToList();
     }
 }

@@ -39,8 +39,23 @@ public sealed class AiTools
     /// "Let AI look at screenshots"; null means view_screenshot is not offered at all.
     public Func<Frame, byte[]?>? Screenshots;
 
+    /// Search by Meaning, when the user turned it on and its model is ready; null means search_by_meaning is not offered.
+    public MeaningService? Meaning;
+
     /// The tools to send with a request.
-    public IReadOnlyList<AiToolSpec> Offered => Screenshots == null ? Specs : Specs.Append(ScreenshotSpec).ToArray();
+    public IReadOnlyList<AiToolSpec> Offered =>
+        Specs.Concat(Meaning?.Embedder != null ? new[] { MeaningSpec } : Array.Empty<AiToolSpec>())
+             .Concat(Screenshots != null ? new[] { ScreenshotSpec } : Array.Empty<AiToolSpec>()).ToArray();
+
+    public static readonly AiToolSpec MeaningSpec = new("search_by_meaning",
+        "Search screen text and transcripts by meaning instead of exact words, with a model on the user's computer. Use it when you don't know the words that were on screen or said, e.g. 'the article about sleep and memory' or 'when we talked about hiring'. Returns the closest moments, best first; the last ones may not be related.",
+        Schema(new()
+        {
+            ["query"] = Str("What to look for, in plain words."),
+            ["start"] = TimeArg("Only after this time (optional)."),
+            ["end"] = TimeArg("Only before this time (optional)."),
+            ["limit"] = Int("Results to return, up to 20. Default 10."),
+        }, "query"));
 
     public static readonly AiToolSpec ScreenshotSpec = new("view_screenshot",
         "The screenshot saved closest to a moment, as an image. Use only when the screen text is not enough (charts, pictures, layout, what something looked like). Each image costs far more than text, so look at few.",
@@ -76,6 +91,9 @@ public sealed class AiTools
         new("get_screen_text",
             "The text that was on screen during a short time range (best under 30 minutes), sampled evenly and trimmed. Use to read details after a summary or search.",
             Schema(new() { ["start"] = TimeArg("Start time."), ["end"] = TimeArg("End time."), ["app"] = Str("Only this app (optional).") }, "start", "end")),
+        new("list_meetings",
+            "Meetings and calls found on this computer (Zoom, Teams, Google Meet, Webex, FaceTime, Slack huddles) between two times, with their summary, decisions and action items when they have notes. Use first for questions about meetings or calls, like 'what did we decide in my 2pm call'. For exactly what was said, use search_audio over the meeting's time range.",
+            Schema(new() { ["start"] = TimeArg("Start time. Default: 7 days ago."), ["end"] = TimeArg("End time. Default: now.") })),
     };
 
     static JsonObject Schema(Dictionary<string, JsonNode> props, params string[] required)
@@ -89,6 +107,10 @@ public sealed class AiTools
     static JsonObject Int(string d) => new() { ["type"] = "integer", ["description"] = d };
     static JsonObject TimeArg(string d) => Str(d + " Local time like '2026-10-18 14:30', or 'today', 'yesterday', '2h ago'.");
 
+    /// Whether web addresses in this lookup's answer may open from Ask AI's reply. Not for meeting
+    /// notes: a model wrote them from what other people said on a call.
+    public static bool SuppliesLinks(string tool) => tool != "list_meetings";
+
     /// A short line for the chat window: what was looked up.
     public static string Describe(AiToolCall call)
     {
@@ -101,7 +123,9 @@ public sealed class AiTools
             "activity_summary" => "Summarized activity" + (range.Length == 0 ? " today" : when),
             "search_screen" => $"Searched screen for “{q}”{when}",
             "search_audio" => (q.Length == 0 ? "Read transcripts" : $"Searched audio for “{q}”") + when,
+            "search_by_meaning" => $"Searched by meaning for “{q}”{when}",
             "get_screen_text" => "Read screen text" + when,
+            "list_meetings" => "Listed meetings" + (range.Length == 0 ? " from the last 7 days" : when),
             "view_screenshot" => $"Looked at the screenshot from {S(a, "time")}",
             _ => call.Name,
         };
@@ -152,6 +176,8 @@ public sealed class AiTools
                 break;
             case "search_screen": out_ = SearchScreen(a); break;
             case "search_audio": out_ = SearchAudio(a); break;
+            case "search_by_meaning": out_ = SearchByMeaning(a); break;
+            case "list_meetings": out_ = ListMeetings(a); break;
             case "get_screen_text":
                 if (AiTime.Parse(a["start"]) is not DateTime s || AiTime.Parse(a["end"]) is not DateTime e)
                     return "Error: start and end are required, e.g. '2026-10-18 14:00'.";
@@ -201,6 +227,60 @@ public sealed class AiTools
         var lines = Enumerable.Reverse(rows).Select(t =>
             $"- {AiTime.Label(t.Timestamp)} {(t.IsInput ? "Microphone (the user)" : "System audio")} (link: {AiTime.Link(t.Timestamp)}): {t.Text.Trim()}");
         return $"{total} transcript segments, showing {rows.Count} (oldest first):\n" + string.Join("\n", lines);
+    }
+
+    string SearchByMeaning(JsonObject a)
+    {
+        var q = S(a, "query").Trim();
+        if (q.Length == 0) return "Error: query is required.";
+        if (Meaning?.Embedder == null) return "Error: Search by Meaning is off. Use search_screen or search_audio.";
+        var limit = Math.Clamp(I(a, "limit") ?? 10, 1, 20);
+        List<MeaningHit> hits;
+        try { hits = Meaning.Search(q, new MeaningQuery { Start = IsoArg(a, "start"), End = IsoArg(a, "end"), Limit = limit }, Blocked ?? Blocklist.Current); }
+        catch (ObjectDisposedException) { return "Error: Search by Meaning was just turned off. Use search_screen or search_audio."; }
+        if (hits.Count == 0) return "Nothing is indexed for Search by Meaning in that range yet.";
+        var lines = hits.Select(h =>
+        {
+            var line = new StringBuilder($"- {AiTime.Label(h.Timestamp)} ");
+            if (h.IsAudio) line.Append(h.AppName == "Microphone" ? "Microphone (the user)" : "System audio");
+            else
+            {
+                line.Append(h.AppName);
+                if (h.WindowName.Length > 0) line.Append($" — “{h.WindowName}”");
+                if (h.Url.Length > 0) line.Append($" <{h.Url}>");
+            }
+            var text = Squash(h.Text);
+            return line.Append($" (link: {AiTime.Link(h.Timestamp)})\n  {(text.Length > 300 ? text[..300] + "…" : text)}").ToString();
+        });
+        return $"{hits.Count} closest moments, best first:\n" + string.Join("\n", lines);
+    }
+
+    string ListMeetings(JsonObject a)
+    {
+        var start = AiTime.Parse(a["start"]) ?? DateTime.UtcNow.AddDays(-7);
+        var end = AiTime.Parse(a["end"]) ?? DateTime.UtcNow;
+        var list = Blocked ?? Blocklist.Current;
+        // Calls the user said Not This Time to are not offered.
+        var rows = db.MeetingsBetween(start, end).Where(m => !m.Skipped && !MeetingDetector.Hides(list, m)).ToList();
+        if (rows.Count == 0) return $"No meetings were found between {AiTime.Label(start)} and {AiTime.Label(end)}.";
+        var shown = rows.Skip(Math.Max(0, rows.Count - 30)).ToList();
+        var out_ = new StringBuilder($"{rows.Count} meetings, showing {shown.Count} (oldest first, local time):\n");
+        foreach (var m in shown)
+        {
+            out_.Append($"\n- {AiTime.Label(m.Start)}–{m.End.ToLocalTime():HH:mm} {m.App} — “{m.Name}” (link: {AiTime.Link(m.Start)})");
+            if (m.IsLive) out_.Append(" — still going on");
+            out_.Append('\n');
+            if (m.HasSummary)
+            {
+                out_.Append(Section("Summary", m.Summary)).Append(Section("Decisions", m.Decisions)).Append(Section("Action items", m.ActionItems));
+            }
+            else
+                out_.Append($"  No notes yet. To read what was said, call search_audio with start '{AiTime.Label(m.Start)}' and end '{AiTime.Label(m.End.AddMinutes(1))}'.\n");
+        }
+        return out_.ToString();
+
+        static string Section(string title, string text) =>
+            $"  {title}: " + (text.Length == 0 ? "none" : "\n" + string.Join("\n", text.Split('\n').Select(l => "    " + l.Trim()))) + "\n";
     }
 
     string ScreenText(DateTime start, DateTime end, string app)
@@ -375,8 +455,8 @@ public sealed partial class Database
     public Frame? FrameNear(DateTime t)
     {
         var iso = Time.Iso(t);
-        var before = Frames($"SELECT {Cols} FROM frames f WHERE f.timestamp <= ? ORDER BY f.timestamp DESC LIMIT 1", iso).FirstOrDefault();
-        var after = Frames($"SELECT {Cols} FROM frames f WHERE f.timestamp > ? ORDER BY f.timestamp ASC LIMIT 1", iso).FirstOrDefault();
+        var before = Frames($"SELECT {cols} FROM frames f WHERE f.timestamp <= ? ORDER BY f.timestamp DESC LIMIT 1", iso).FirstOrDefault();
+        var after = Frames($"SELECT {cols} FROM frames f WHERE f.timestamp > ? ORDER BY f.timestamp ASC LIMIT 1", iso).FirstOrDefault();
         double Gap(Frame? f) => f != null && Time.ParseIso(f.Timestamp) is DateTime d ? Math.Abs((d - t).TotalSeconds) : double.MaxValue;
         var best = Gap(before) <= Gap(after) ? before : after;
         return Gap(best) <= 600 ? best : null;

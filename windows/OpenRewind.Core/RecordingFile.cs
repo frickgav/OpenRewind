@@ -24,7 +24,7 @@ public static class RecordingFile
     public const int Overhead = HeaderSize + TagSize;
     /// Half-written files (a conversion or a write that was cut short) end in this.
     public const string TempSuffix = ".orenc-tmp";
-    /// Decrypted copies for whisper-cli in the temp folder start with this (see PlainCopy, CleanTempCopies).
+    /// Decrypted copies in the temp folder (whisper-cli's audio, videos being shown) start with this (see PlainCopy, CleanTempCopies).
     public const string TempCopyPrefix = "openrewind-";
 
     static readonly byte[] Salt = "OpenRewind"u8.ToArray();
@@ -41,6 +41,9 @@ public static class RecordingFile
 
     /// Held while a file is converted or deleted, so retention never races a conversion.
     public static readonly object FileGate = new();
+    /// Called before a file is converted (Encrypt Recordings switched): the app closes a video it has
+    /// open, since Windows can't replace a file that is open.
+    public static Action<string>? BeforeConvert;
 
     // MARK: the loader
 
@@ -104,8 +107,9 @@ public static class RecordingFile
         }
     }
 
-    /// A plain copy for tools that need a file path (whisper-cli). For a plain file it is the file
-    /// itself; an encrypted one is decrypted into the user's temp folder and deleted on Dispose.
+    /// A plain copy for tools that need a file path (Media Foundation reading a video). For a plain file
+    /// it is the file itself; an encrypted one is decrypted into the user's temp folder (only this
+    /// Windows account can read it) and deleted on Dispose.
     public static PlainFile PlainCopy(string path)
     {
         if (!IsEncrypted(path)) return new PlainFile(path, temporary: false);
@@ -122,6 +126,10 @@ public static class RecordingFile
         public void Dispose() { if (temporary) try { File.Delete(Path); } catch { } }
     }
 
+    /// What CleanTempCopies removes: audio for whisper-cli and its transcript, and videos (decrypted
+    /// copies FrameImages reads, and new videos the compactor makes before saving them encrypted).
+    static readonly string[] TempCopyKinds = { ".wav", ".json", ".mp4", ".mov" };
+
     /// At launch: remove decrypted copies a crash or kill left in the temp folder. Copies made in the
     /// last 10 minutes are left alone, in case another OpenRewind process is using them right now.
     public static int CleanTempCopies(string? dir = null)
@@ -133,7 +141,7 @@ public static class RecordingFile
             foreach (var f in Directory.EnumerateFiles(dir, TempCopyPrefix + "*"))
             {
                 var name = Path.GetFileName(f);
-                if (!(name.EndsWith(".wav", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".json", StringComparison.OrdinalIgnoreCase))) continue;
+                if (!TempCopyKinds.Any(x => name.EndsWith(x, StringComparison.OrdinalIgnoreCase))) continue;
                 try
                 {
                     if (File.GetLastWriteTimeUtc(f) > DateTime.UtcNow.AddMinutes(-10)) continue;
@@ -144,7 +152,7 @@ public static class RecordingFile
             }
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
-        if (removed > 0) Log.Write($"removed {removed} leftover temporary audio files");
+        if (removed > 0) Log.Write($"removed {removed} leftover temporary audio and video files");
         return removed;
     }
 
@@ -238,6 +246,7 @@ public static class RecordingFile
     /// Safe to stop at any point: the file is either the old or the new version, never half of one.
     public static bool Convert(string path, byte[] key, bool encrypt)
     {
+        BeforeConvert?.Invoke(path);
         lock (FileGate)
         {
             if (!File.Exists(path)) return false;  // deleted meanwhile (retention)

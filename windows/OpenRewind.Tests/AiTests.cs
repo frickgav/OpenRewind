@@ -44,7 +44,7 @@ public class AiTests : IDisposable
         var results = (JsonArray)msgs[2]!["content"]!;
         Assert.Equal(2, results.Count);
         Assert.Equal("c2", (string?)results[1]!["tool_use_id"]);
-        Assert.Equal(4, ((JsonArray)body["tools"]!).Count);
+        Assert.Equal(AiTools.Specs.Length, ((JsonArray)body["tools"]!).Count);
         Assert.Equal("sys", (string?)body["system"]);
     }
 
@@ -283,9 +283,11 @@ public class AiTests : IDisposable
         Assert.DoesNotContain("Chat with Sam", text);
         Assert.DoesNotContain("chase.com", text);
 
-        // Time in a blocked app still shows, without its window titles or addresses.
+        // Time in a blocked app still shows, without its name, window titles or addresses.
         var summary = tools.Run(new AiToolCall("3", "activity_summary", new JsonObject { ["start"] = "1h ago" }));
         Assert.DoesNotContain("Chat with Sam", summary);
+        Assert.DoesNotContain("Signal", summary);
+        Assert.Contains(AiTools.BlockedAppLabel, summary);
         Assert.DoesNotContain("chase", summary, StringComparison.OrdinalIgnoreCase);
 
         tools.Screenshots = f => new byte[] { 9 };

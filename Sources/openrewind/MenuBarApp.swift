@@ -16,7 +16,12 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let typingGapKey = "typingFrameGap"
     /// The local HTTP API + browser search page. Off unless the user turns it on in Settings.
     private let serverKey = "localSearchServer"
+    /// Search by Meaning: index moments in the background to find them by meaning. Off unless the user turns it on.
+    private let meaningKey = MeaningService.settingKey
     private var retention: RetentionJob!
+    /// Compress Older Recordings: keep screenshots older than an hour as video. Off unless turned on.
+    private let compressKey = "compressOlderRecordings"
+    private var video: VideoJob!
     /// Last measured size of the data folder; measured in the background when the menu opens.
     private var dataSize: Int64?
     private var measuring = false
@@ -34,7 +39,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var encryption: Encryption!
     /// The AI chat keeps its conversation while its window is closed.
     private lazy var aiChat: AIChatModel = {
-        let m = AIChatModel(db: engine.db)
+        let m = AIChatModel(db: engine.db, meaning: engine.meaning)
         // A moment link goes through App Lock too: the chat window may have been left open.
         m.openMoment = { [weak self] d in self?.appLock.run("see your timeline") { self?.overlay.show(at: d) } }
         // AI Settings is a normal window, which would sit under the overlay.
@@ -44,15 +49,29 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         return m
     }()
+    /// The journal keeps the day it shows while its window is closed.
+    private lazy var journal: JournalModel = {
+        let m = JournalModel(db: engine.db)
+        m.openMoment = { [weak self] d in self?.appLock.run("see your timeline") { self?.overlay.show(at: d) } }
+        m.openSettings = { [weak self] in self?.showAISettings() }
+        return m
+    }()
+    /// Checks every few minutes whether yesterday's recap is due (Write Each Day's Recap Automatically).
+    private var recapTimer: Timer?
+    private var writingRecap = false
+
+    /// Finds meetings (and asks about notes) within seconds of a call; the Meetings window and the AI notes read what it stores.
+    private lazy var meetings = MeetingCenter(db: engine.db, chunkSeconds: engine.config.audioChunkSeconds,
+                                              transcribing: { [weak self] in self?.engine.transcriber != nil })
 
     init(engine: Engine) {
         self.engine = engine
         super.init()
         copyOldSettings()
         clearOldPermissions()
-        defaults.register(defaults: [screenKey: true, audioKey: true, serverKey: false,
+        defaults.register(defaults: [screenKey: true, audioKey: true, serverKey: false, meaningKey: false,
                                      keepScreenKey: KeepFor.forever.rawValue, keepAudioKey: KeepFor.forever.rawValue,
-                                     typingGapKey: 2])
+                                     typingGapKey: 2, compressKey: false])
     }
 
     /// The app used to be OpenScreen (bundle id ai.agilityresources.openscreen). Bring its menu
@@ -94,7 +113,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let t = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
             guard let self else { return }
             // In use: OpenRewind is in front with a window that shows history.
-            let open = self.overlay.isVisible || SetupWindows.shared.isOpen("ai") || InsightsWindow.shared.isOpen
+            let open = self.overlay.isVisible || InsightsWindow.shared.isOpen
+                || ["ai", "journal", "meetings"].contains { SetupWindows.shared.isOpen($0) }
             self.appLock.tick(historyInUse: NSApp.isActive && open)
         }
         RunLoop.main.add(t, forMode: .common)
@@ -102,6 +122,9 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         engine.serverLocked = { [appLock] in !appLock.isUnlocked }
         encryption = Encryption(engine: engine)
         encryption.resume()
+        overlay.model.meaning = engine.meaning
+        engine.meaning.pace = { MeaningPace.now() }
+        if defaults.bool(forKey: meaningKey) { startMeaning() }
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
         menu.delegate = self
@@ -113,6 +136,9 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let until = pausedUntil { schedulePause(until) } else { applyRecordingPrefs() }
         retention = RetentionJob(db: engine.db, screen: keep(keepScreenKey), audio: keep(keepAudioKey))
         retention.start()
+        video = VideoJob(db: engine.db, dataDir: engine.config.dataDir, enabled: defaults.bool(forKey: compressKey))
+        video.start()
+        meetings.start()
         Database.buildSlowIndexesInBackground(path: engine.config.dbPath)
 
         // ⌥⌘T (or the shortcut picked in Settings) opens the timeline from anywhere.
@@ -120,6 +146,59 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Updater.shared.start()
         updateIcon()
         if !BlocklistStore.shared.onboardingDone { showSetup() }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in self?.writeDueRecap() }
+        recapTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in self?.writeDueRecap() }
+    }
+
+    /// The journal is history too: behind App Lock.
+    @objc private func showJournal() {
+        appLock.run("see your journal") { [weak self] in
+            guard let self else { return }
+            let j = self.journal
+            j.reload()
+            SetupWindows.shared.show("journal", title: "Journal", size: NSSize(width: 620, height: 800), resizable: true) {
+                JournalView(model: j)
+            }
+        }
+    }
+
+    /// Write Each Day's Recap Automatically: yesterday's recap, the first time the app runs after
+    /// the day ended, for the AI provider it was turned on for. A failed try is retried on the next
+    /// check, up to `Journal.autoAttempts` times. Days with nothing recorded, or with a recap of the
+    /// whole day already, are skipped; a recap written by hand partway through the day is replaced.
+    private func writeDueRecap() {
+        let s = AISettings.load()
+        guard !writingRecap, s.isReady, JournalSettings.isOn(for: s),
+              let key = Journal.autoRecapDue(now: Date(), lastDone: JournalSettings.lastAutoDay,
+                                             attemptDay: JournalSettings.attemptDay, attempts: JournalSettings.attempts),
+              let day = Journal.date(fromKey: key) else { return }
+        let db = engine.db, j = journal
+        guard !j.writing.contains(key) else { return }
+        if let r = db.recap(day: key), !r.partial { JournalSettings.lastAutoDay = key; return }
+        writingRecap = true
+        let tools = JournalModel.tools(db), price = AISettings.price(for: s.model)
+        Task { @MainActor [weak self] in
+            defer { self?.writingRecap = false }
+            let stats = await Task.detached { db.journalStats(day: day, tools: tools) }.value
+            guard !stats.isEmpty else { JournalSettings.lastAutoDay = key; return }
+            // Counted before the request, so one that never comes back still counts.
+            JournalSettings.attempts = JournalSettings.attemptDay == key ? JournalSettings.attempts + 1 : 1
+            JournalSettings.attemptDay = key
+            guard let r = await j.writeRecap(for: day, auto: true) else { return }
+            if let e = r.error {
+                log("automatic journal recap for \(key) failed (try \(JournalSettings.attempts) of \(Journal.autoAttempts)): \(e)")
+                return
+            }
+            JournalSettings.lastAutoDay = key
+            log("wrote the journal recap for \(key) (\(r.usage.describe(price)))")
+        }
+    }
+
+    @objc private func toggleAutoRecap() {
+        let s = AISettings.load()
+        JournalSettings.set(!JournalSettings.isOn(for: s), for: s)
+        journal.autoRecap = JournalSettings.isOn(for: s)
     }
 
     /// The first-run setup; ends in the guided tour if the user asks for it.
@@ -154,6 +233,86 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Meeting transcripts and notes are history too: behind App Lock, and so are its moment links.
+    @objc private func showMeetings() {
+        appLock.run("see your meetings") { [weak self] in
+            guard let self else { return }
+            let model = MeetingsModel(db: self.engine.db)
+            model.openMoment = { [weak self] d in self?.appLock.run("see your timeline") { self?.overlay.show(at: d) } }
+            model.openSettings = { [weak self] in self?.showAISettings() }
+            let center = self.meetings
+            SetupWindows.shared.show("meetings", title: "Meetings", size: NSSize(width: 1000, height: 700), resizable: true) {
+                MeetingsView(model: model, center: center)
+            }
+        }
+    }
+
+    @objc private func toggleAskBeforeMeetingNotes() {
+        MeetingCenter.askFirst.toggle()
+    }
+
+    @objc private func forgetMeetingChoices() {
+        MeetingCenter.choices = [:]
+    }
+
+    /// Turning it on says plainly what it sends and that it costs tokens.
+    @objc private func toggleMeetingSummaries() {
+        if MeetingCenter.autoSummarize {
+            MeetingCenter.autoSummarize = false
+            return
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        let ai = AISettings.load()
+        guard ai.isReady else {
+            let a = NSAlert()
+            a.messageText = "Summarize Meetings with AI"
+            a.informativeText = "Meeting summaries use your own AI key. Set up a provider in AI Settings first, then turn this on."
+            a.addButton(withTitle: "Open AI Settings…")
+            a.addButton(withTitle: "Cancel")
+            if a.runModal() == .alertFirstButtonReturn { showAISettings() }
+            return
+        }
+        let a = NSAlert()
+        a.messageText = "Summarize meetings with AI?"
+        a.informativeText = Self.meetingConsentText(ai.kind.title)
+        a.addButton(withTitle: "Turn On")
+        a.addButton(withTitle: "Cancel")
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        MeetingCenter.autoSummarize = true
+        log("meeting summaries with AI on")
+    }
+
+    /// What turning on meeting summaries sends, and where. Same words as the Windows app.
+    static func meetingConsentText(_ provider: String) -> String {
+        "After each call you take notes for ends, OpenRewind sends its whole transcript (what was said and heard during the call) to \(provider) "
+            + "using your key, to write a summary, decisions and action items.\n\n"
+            + "This costs tokens on your account, and \(provider)'s privacy terms apply. Calls in blocked apps and sites never become "
+            + "meetings, but the transcript is not filtered by app: anything said or played during a call is sent, even while a blocked "
+            + "app or site was in front.\n\nOnly meetings from now on are summarized, and only to \(provider): if you switch providers "
+            + "in AI Settings, OpenRewind asks again. You can still summarize any meeting yourself in the Meetings window."
+    }
+
+    /// After AI Settings change: summaries were agreed to for another provider, so ask before sending
+    /// transcripts to this one.
+    private func recheckMeetingConsent() {
+        guard MeetingCenter.needsNewConsent else { return }
+        let ai = AISettings.load()
+        let a = NSAlert()
+        a.messageText = "Summarize meetings with the new provider?"
+        a.informativeText = "Meeting summaries were turned on for \(MeetingCenter.consentTitle). AI Settings now use \(ai.kind.title)"
+            + (ai.kind == .custom ? " (\(ai.baseURL))" : "") + ".\n\nSend each meeting's transcript to \(ai.kind.title) from now on? "
+            + "It uses your key and costs tokens. If you choose Turn Off, meeting summaries are turned off."
+        a.addButton(withTitle: "Turn Off")
+        a.addButton(withTitle: "Use \(ai.kind.title)")
+        if a.runModal() == .alertSecondButtonReturn {
+            MeetingCenter.consent = MeetingNotes.consentKey(ai)
+            log("meeting summaries moved to the new provider")
+        } else {
+            MeetingCenter.autoSummarize = false
+            log("meeting summaries off (provider changed)")
+        }
+    }
+
     /// Where the time went (app names and hours, so it is history too); a click opens the timeline.
     @objc private func showInsights() {
         appLock.run("see your insights") { [weak self] in
@@ -172,14 +331,17 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The app locked (screen locked, Mac asleep): close everything that shows history. Recording goes on.
     private func hideHistory() {
         if overlay.isVisible { overlay.hide(restoreFocus: false) }
-        SetupWindows.shared.close("ai")
-        SetupWindows.shared.close("blocked")
+        for w in ["ai", "blocked", "journal", "meetings"] { SetupWindows.shared.close(w) }
         InsightsWindow.shared.close()
     }
 
     @objc private func showAISettings() {
         SetupWindows.shared.show("aiSettings", title: "AI Settings", size: NSSize(width: 560, height: 840)) {
-            AISettingsView { [weak self] in self?.aiChat.reloadSettings() }
+            AISettingsView { [weak self] in
+                self?.aiChat.reloadSettings()
+                self?.journal.reload()
+                self?.recheckMeetingConsent()
+            }
         }
     }
 
@@ -224,9 +386,14 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(toggleItem("Record Audio", on: audioWanted, action: #selector(toggleAudio), symbol: "waveform"))
         if engine.audioOn, engine.transcriber == nil {
-            let warn = NSMenuItem(title: "  Transcription off: install whisper-cpp", action: nil, keyEquivalent: "")
-            warn.isEnabled = false
-            menu.addItem(warn)
+            let picked = SpeechModels.byId(SpeechModels.picked)
+            if picked.engine == .parakeet {
+                let fix = action("  Transcription off: download \(picked.name)…", #selector(pickModel(_:)))
+                fix.representedObject = picked.id
+                menu.addItem(fix)
+            } else {
+                menu.addItem(action("  Transcription off: install whisper-cpp…", #selector(openWhisperHelp)))
+            }
         }
         menu.addItem(.separator())
 
@@ -239,6 +406,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(tl)
         menu.addItem(action("Search…", #selector(openSearch)))
         menu.addItem(action("Ask AI…", #selector(showAIChat)))
+        menu.addItem(action("Journal…", #selector(showJournal)))
+        menu.addItem(action("Meetings…", #selector(showMeetings)))
         menu.addItem(action("Insights…", #selector(showInsights)))
         menu.addItem(action("Show Data Folder", #selector(openData)))
         for line in storageLines() {
@@ -326,6 +495,27 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         m.addItem(action("Blocked Apps & Sites…", #selector(showBlockedApps)))
         m.addItem(action("AI Settings…", #selector(showAISettings)))
         m.addItem(encryptionMenu())
+        let autoRecap = action("Write Each Day's Recap Automatically", #selector(toggleAutoRecap))
+        let ai = AISettings.load()
+        autoRecap.state = JournalSettings.isOn(for: ai) ? .on : .off
+        autoRecap.toolTip = Journal.autoRecapInfo(ai.kind.title)
+        m.addItem(autoRecap)
+        let ask = action("Ask Before Taking Meeting Notes", #selector(toggleAskBeforeMeetingNotes))
+        ask.state = MeetingCenter.askFirst ? .on : .off
+        ask.toolTip = "When a call starts, ask whether to take notes for it. Off: notes are taken for every call (except apps you said Never for)."
+        m.addItem(ask)
+        let summaries = action("Summarize Meetings with AI", #selector(toggleMeetingSummaries))
+        summaries.state = MeetingCenter.autoSummarize ? .on : .off
+        summaries.toolTip = "Off by default. When on, the transcript of each call you take notes for is sent to your AI provider after it ends, for a summary and action items. This uses your key and costs tokens."
+        m.addItem(summaries)
+        let remembered = MeetingCenter.choices
+        if !remembered.isEmpty {
+            let forget = action("Forget Remembered Meeting Choices", #selector(forgetMeetingChoices))
+            forget.toolTip = "Ask again for every app. Remembered now: "
+                + remembered.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value == MeetingPrompt.always ? "always" : "never")" }
+                    .joined(separator: ", ") + "."
+            m.addItem(forget)
+        }
         m.addItem(.separator())
         let sc = Shortcut.load(defaults)
         let shortcut = NSMenuItem(title: "Timeline Shortcut: \(sc.label)", action: nil, keyEquivalent: "")
@@ -343,6 +533,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         m.addItem(keepMenu("Keep Screen Recordings For", key: keepScreenKey))
         m.addItem(keepMenu("Keep Audio Recordings For", key: keepAudioKey))
         m.addItem(typingGapMenu())
+        m.addItem(compressItem())
+        m.addItem(transcriptionMenu())
         m.addItem(.separator())
 
         let del = NSMenuItem(title: "Delete Recordings", action: nil, keyEquivalent: "")
@@ -358,13 +550,25 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         m.addItem(del)
         m.addItem(.separator())
 
+        let meaning = action("Search by Meaning", #selector(toggleMeaning))
+        meaning.state = defaults.bool(forKey: meaningKey) ? .on : .off
+        meaning.toolTip = "Find moments by what they were about, not only the exact words. Works on this Mac; nothing is sent anywhere."
+        m.addItem(meaning)
+        if defaults.bool(forKey: meaningKey) {
+            let line = NSMenuItem(title: "  " + meaningStatus(), action: nil, keyEquivalent: "")
+            line.isEnabled = false
+            meaningLine = line
+            m.addItem(line)
+        }
+        m.addItem(.separator())
+
         let server = action("Local Search Server (127.0.0.1:\(engine.config.port))", #selector(toggleServer))
         server.state = engine.serverOn ? .on : .off
         server.toolTip = "Search in the browser and let local scripts read your history through the API. Only this Mac can connect."
         m.addItem(server)
         let mcp = action("Allow AI Apps to Read My History (MCP)", #selector(toggleMCP))
         mcp.state = MCPSetup.enabled ? .on : .off
-        mcp.toolTip = "Let Claude, Cursor and other AI apps search your history on this Mac. Blocked apps and sites are left out of screen text; audio transcripts are not filtered by app. See Connect AI Apps for details."
+        mcp.toolTip = "Let Claude, ChatGPT, Cursor and other AI apps search your history on this Mac. Blocked apps and sites are left out of screen text; audio transcripts are not filtered by app. See Connect AI Apps for details."
         m.addItem(mcp)
         m.addItem(action("Connect AI Apps…", #selector(showConnectAIApps)))
         m.addItem(.separator())
@@ -404,9 +608,167 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return item
     }
 
+    /// Keep screenshots older than an hour as video. Turning it off stops making videos; old ones still play.
+    private func compressItem() -> NSMenuItem {
+        let on = defaults.bool(forKey: compressKey)
+        let item = action("Compress Older Recordings", #selector(toggleCompress))
+        item.state = on ? .on : .off
+        item.toolTip = "Keep screenshots older than an hour as video instead of one picture each: about 5 to 10 times less disk space. "
+            + "New, and not yet tested on many Macs, so it is off unless you turn it on. Videos already made keep playing when it is off."
+        if let why = video.unavailable {
+            item.title += " (not available on this Mac)"
+            item.toolTip = "This Mac has no working video encoder: \(why)"
+            if !on { item.action = nil }  // can still be turned off
+        }
+        return item
+    }
+
+    @objc private func toggleCompress() {
+        let on = !defaults.bool(forKey: compressKey)
+        defaults.set(on, forKey: compressKey)
+        video.enabled = on
+        log("compress older recordings \(on ? "on" : "off")")
+        if on { video.kick() }
+    }
+
     @objc private func setTypingGap(_ sender: NSMenuItem) {
         defaults.set(sender.tag, forKey: typingGapKey)
         engine.recorder.minorChangeGap = TimeInterval(sender.tag)
+    }
+
+    // MARK: transcription model
+
+    private static let modelsHelp = URL(string: "https://github.com/frickgav/openscreen/blob/main/README.md#choosing-a-transcription-model")!
+
+    /// Which model turns speech into text, what it did last, and Re-transcribe.
+    private func transcriptionMenu() -> NSMenuItem {
+        let home = engine.config.home
+        let item = NSMenuItem(title: "Transcription Model", action: nil, keyEquivalent: "")
+        item.image = NSImage(systemSymbolName: "text.bubble", accessibilityDescription: nil)
+        item.toolTip = "Which model turns recorded speech into text. Every model runs on this Mac."
+        let sub = NSMenu()
+        let current = SpeechModels.picked
+        for m in SpeechModels.all {
+            let size = m.files.isEmpty ? "" : SpeechModels.isDownloaded(m, home: home) ? "  —  downloaded" : "  —  \(SpeechModels.formatSize(m.size)) download"
+            let i = action(m.name + (m.id == SpeechModels.defaultId ? " (Default)" : "") + size, #selector(pickModel(_:)))
+            i.representedObject = m.id
+            i.state = m.id == current ? .on : .off
+            i.toolTip = m.detail
+            sub.addItem(i)
+        }
+        sub.addItem(.separator())
+        for line in transcriptionStatus() {
+            let i = NSMenuItem(title: line, action: nil, keyEquivalent: "")
+            i.isEnabled = false
+            sub.addItem(i)
+        }
+        if engine.transcriber == nil, SpeechModels.byId(current).engine == .whisper {
+            sub.addItem(action("Set Up Whisper…", #selector(openWhisperHelp)))
+        }
+        sub.addItem(.separator())
+        let again = NSMenuItem(title: "Re-transcribe Recent Audio", action: nil, keyEquivalent: "")
+        again.toolTip = "Run audio you already recorded through the model picked now."
+        let am = NSMenu()
+        for (title, hours) in [("Last Hour…", 1), ("Last Day…", 24), ("Last Week…", 24 * 7)] {
+            let i = action(title, #selector(retranscribe(_:)))
+            i.tag = hours
+            i.isEnabled = engine.transcriber != nil
+            am.addItem(i)
+        }
+        am.autoenablesItems = false
+        again.submenu = am
+        again.isEnabled = engine.transcriber != nil
+        sub.addItem(again)
+        sub.addItem(action("About These Models…", #selector(openModelsHelp)))
+        sub.autoenablesItems = false
+        item.submenu = sub
+        return item
+    }
+
+    /// "Using NVIDIA Parakeet v3", "Last clip 14:02: 30 s of audio in 3.1 s", "4 clips waiting".
+    private func transcriptionStatus() -> [String] {
+        guard let tx = engine.transcriber else {
+            return ["Not transcribing: \(engine.transcriberProblem ?? "audio recording is off")"]
+        }
+        var lines = ["Using \(tx.displayName)"]
+        let st = tx.status
+        if let p = st.problem {
+            lines.append("Last try failed: " + (p.count > 70 ? String(p.prefix(70)) + "…" : p))
+        } else if let at = st.lastAt {
+            let f = DateFormatter()
+            f.timeStyle = .short
+            lines.append("Last clip \(f.string(from: at)): \(Int(st.lastAudioSeconds.rounded())) s of audio in \(String(format: "%.1f", st.lastSeconds)) s")
+        } else {
+            lines.append("No clips transcribed since it started")
+        }
+        let pending = engine.db.audioStats().pending
+        if pending > 0 { lines.append(pending == 1 ? "1 clip waiting" : "\(pending) clips waiting") }
+        return lines
+    }
+
+    /// Switch models; one that is not on this Mac yet is downloaded first.
+    @objc private func pickModel(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        let m = SpeechModels.byId(id)
+        if let warn = SpeechModels.languageWarning(m, language: engine.config.whisperLanguage),
+           !confirm(m.name, warn + "\n\nUse it anyway?", button: "Use It", destructive: false) { return }
+        if !m.files.isEmpty, !SpeechModels.isDownloaded(m, home: engine.config.home) {
+            ModelDownload.show(m, home: engine.config.home) { [weak self] in self?.useModel(m) }
+            return
+        }
+        useModel(m)
+    }
+
+    private func useModel(_ m: SpeechModel) {
+        let changed = SpeechModels.picked != m.id
+        SpeechModels.picked = m.id
+        // Same model and it runs: nothing to do. Otherwise start it (again), which also retries a failed load.
+        if !changed, let tx = engine.transcriber, tx.status.problem == nil { return }
+        engine.restartTranscriber(model: m.id)
+        log("transcription model set to \(m.name)")
+        if engine.transcriber == nil, m.engine == .whisper {
+            NSApp.activate(ignoringOtherApps: true)
+            let a = NSAlert()
+            a.messageText = "\(m.name) needs whisper-cli"
+            a.informativeText = "Install it with Homebrew: brew install whisper-cpp. Then pick the model again.\n\nNVIDIA Parakeet v3 needs nothing else."
+            a.runModal()
+        }
+    }
+
+    /// Queue recorded audio again for the model picked now, after saying how long it may take.
+    @objc private func retranscribe(_ sender: NSMenuItem) {
+        guard let tx = engine.transcriber else { return }
+        let what = ["Last Hour…": "the last hour", "Last Day…": "the last day", "Last Week…": "the last week"][sender.title] ?? "that time"
+        let from = Date().addingTimeInterval(-Double(sender.tag) * 3600)
+        let (clips, seconds) = engine.db.retranscribeCount(from: from, clipSeconds: engine.config.audioChunkSeconds)
+        guard clips > 0 else {
+            NSApp.activate(ignoringOtherApps: true)
+            let a = NSAlert()
+            a.messageText = "There is no transcribed audio from \(what)."
+            a.runModal()
+            return
+        }
+        let st = tx.status
+        let busy = st.lastAt != nil && st.lastAudioSeconds > 0
+            ? "for \(SpeechModels.about(seconds * st.lastSeconds / st.lastAudioSeconds))"
+            : "for a while"
+        let length = SpeechModels.about(seconds).replacingOccurrences(of: "about ", with: "")
+        guard confirm("Re-transcribe \(what)?",
+                      "\(clips) clips (up to \(length) of audio) will be transcribed again with \(tx.displayName). This keeps the processor busy \(busy) and uses more battery. New recordings still go first.\n\n"
+                        + "The new text replaces the old for good: the old text stays searchable only until each clip is redone. "
+                        + "Clips with no speech are left as they are, and meeting notes already made are kept (not made or sent again)."
+                        + (SpeechModels.languageWarning(tx.model, language: engine.config.whisperLanguage).map { "\n\n" + $0 } ?? ""),
+                      button: "Re-transcribe", destructive: false) else { return }
+        let db = engine.db, name = tx.displayName
+        DispatchQueue.global(qos: .utility).async {
+            log("re-transcribing \(db.requeueAudio(from: from)) audio clips from \(what) with \(name)")
+        }
+    }
+
+    @objc private func openModelsHelp() { NSWorkspace.shared.open(Self.modelsHelp) }
+
+    @objc private func openWhisperHelp() {
+        NSWorkspace.shared.open(URL(string: "https://github.com/frickgav/openscreen/blob/main/README.md#whisper")!)
     }
 
     // MARK: shortcut
@@ -690,18 +1052,19 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func deleteAllNow(_ sender: NSMenuItem) {
         let screen = sender.tag != 2, audio = sender.tag != 1
         let what = screen && audio ? "all screenshots and audio" : (screen ? "all screenshots" : "all audio recordings")
-        guard confirm("Delete \(what)?", "This removes \(what) from this Mac. This cannot be undone.",
+        guard confirm("Delete \(what)?", "This removes \(what) from this Mac, and every journal recap. This cannot be undone.",
                       button: "Delete Everything") else { return }
         let db = engine.db, now = Date()
         DispatchQueue.global(qos: .userInitiated).async {
             let f = screen ? db.deleteFrames(from: nil, to: now) : 0
             let a = audio ? db.deleteAudio(from: nil, to: now) : 0
+            db.deleteRecaps(from: nil, to: nil)  // each one was written from both
             db.compact()
             log("deleted \(f) screenshots, \(a) audio clips (all)")
         }
     }
 
-    private func confirm(_ title: String, _ text: String, button: String) -> Bool {
+    private func confirm(_ title: String, _ text: String, button: String, destructive: Bool = true) -> Bool {
         NSApp.activate(ignoringOtherApps: true)
         let a = NSAlert()
         a.messageText = title
@@ -709,7 +1072,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         a.alertStyle = .warning
         a.addButton(withTitle: button)
         a.addButton(withTitle: "Cancel")
-        a.buttons.first?.hasDestructiveAction = true
+        a.buttons.first?.hasDestructiveAction = destructive
         return a.runModal() == .alertFirstButtonReturn
     }
 
@@ -770,9 +1133,13 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func storageLines() -> [String] {
         let size = dataSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "measuring…"
-        var lines = ["Using \(size)"]
+        // Compressed recordings: how much less the videos take than the screenshots they replaced.
         // While the database is being converted every query waits for it; don't hang the menu.
-        if engine.db.isConverting {
+        let converting = engine.db.isConverting
+        let v = converting ? (segments: 0, bytes: Int64(0), saved: Int64(0)) : engine.db.videoStats()
+        let saved = v.segments > 0 ? " · video saves " + ByteCountFormatter.string(fromByteCount: v.saved, countStyle: .file) : ""
+        var lines = ["Using \(size)" + saved]
+        if converting {
             lines.append("Encrypting or decrypting the database…")
         } else if let oldest = engine.db.oldestRecording() {
             let f = DateFormatter()
@@ -783,6 +1150,9 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             lines.append("No recordings yet")
         }
+        // Deleted frames that are still inside a video until it is written again (or turned back into pictures).
+        let stuck = engine.db.stuckRewrites()
+        if stuck > 0 { lines.append("\(stuck) video\(stuck == 1 ? "" : "s") still hold\(stuck == 1 ? "s" : "") deleted frames · being redone") }
         return lines
     }
 
@@ -897,6 +1267,82 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    // MARK: search by meaning
+
+    /// Load Apple's sentence model (it comes with macOS) and start indexing in the background.
+    private func startMeaning() {
+        if engine.meaning.embedder == nil {
+            engine.meaning.embedder = AppleEmbedder.make()
+            if let e = engine.meaning.embedder { log("search by meaning: using \(e.modelId)") }
+            else { log("search by meaning: macOS has no sentence model for this language") }
+        }
+        engine.meaning.start()
+    }
+
+    // The index counts run several COUNT(*) queries, so they are worked out in the background and
+    // the menu shows the last answer, updating the line when a new one is ready.
+    private weak var meaningLine: NSMenuItem?
+    private var meaningCache: String?
+    private var meaningCacheAt = Date.distantPast
+    private var meaningRefreshing = false
+
+    /// The line under the switch. Never touches the database on the main thread.
+    private func meaningStatus() -> String {
+        guard engine.meaning.embedder != nil else { return "⚠︎ Not available: macOS has no sentence model for your language" }
+        if meaningCache == nil || Date().timeIntervalSince(meaningCacheAt) > 5 { refreshMeaningStatus() }
+        return meaningCache ?? "Checking the index…"
+    }
+
+    private func refreshMeaningStatus() {
+        guard !meaningRefreshing else { return }
+        meaningRefreshing = true
+        let service = engine.meaning
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let p = service.progress()
+            let n = NumberFormatter.localizedString(from: NSNumber(value: p.moments), number: .decimal)
+            let text = p.upToDate ? "Up to date · \(n) moments" : "Indexing in the background… \(p.percent)% · \(n) moments"
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.meaningRefreshing = false
+                guard self.defaults.bool(forKey: self.meaningKey) else { return }
+                self.meaningCache = text
+                self.meaningCacheAt = Date()
+                self.meaningLine?.title = "  " + text
+            }
+        }
+    }
+
+    @objc private func toggleMeaning() {
+        if !defaults.bool(forKey: meaningKey) {
+            NSApp.activate(ignoringOtherApps: true)
+            let a = NSAlert()
+            a.messageText = "Turn on Search by Meaning?"
+            a.informativeText = "Search by Meaning finds moments by what they were about, even when you don't remember the exact words. "
+                + "For example, “the flight I was booking” finds the airline page.\n\n"
+                + "OpenRewind will read your screen text and transcripts in the background to build an index on this Mac, "
+                + "using the language model that comes with macOS. Nothing is downloaded and nothing leaves this Mac. "
+                + "It works slowly while you use the Mac and on battery, and faster when you are away. "
+                + "Blocked apps and sites are never indexed."
+            a.addButton(withTitle: "Turn On")
+            a.addButton(withTitle: "Cancel")
+            guard a.runModal() == .alertFirstButtonReturn else { return }
+            defaults.set(true, forKey: meaningKey)
+            startMeaning()
+            log("search by meaning on")
+        } else {
+            guard confirm("Turn off Search by Meaning?",
+                          "The meaning index is deleted. Keyword search keeps working. Turning it back on builds the index again.",
+                          button: "Turn Off") else { return }
+            defaults.set(false, forKey: meaningKey)
+            engine.meaning.stop()
+            engine.meaning.embedder = nil
+            engine.db.clearMeaning()
+            meaningCache = nil
+            overlay.model.setByMeaning(false)
+            log("search by meaning off")
+        }
+    }
+
     @objc private func toggleLogin() {
         do {
             if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister() }
@@ -908,6 +1354,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func quit() {
         encryption.stop()
+        video?.stop()
         NSApp.terminate(nil)
     }
 }

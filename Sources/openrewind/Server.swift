@@ -110,6 +110,8 @@ struct API {
     /// True while the app is locked (AppLock): search, screenshots and audio answer 423 until the user unlocks.
     var locked: () -> Bool = { false }
     static let lockedMessage = "OpenRewind is locked. Open the timeline to unlock it, then try again."
+    /// Search by Meaning (mode=meaning on /search); it answers only while it is on.
+    var meaning: MeaningService? = nil
 
     func handle(_ req: HTTPRequest) -> HTTPResponse {
         guard req.method == "GET" else { return .error("method not allowed", status: 405) }
@@ -132,6 +134,7 @@ struct API {
                 "screen_permission": Capture.hasScreenPermission,
                 "accessibility_permission": Accessibility.isTrusted,
                 "data_dir": config.home.path,
+                "search_by_meaning": meaning?.embedder != nil,
             ])
         default:
             break
@@ -154,10 +157,14 @@ struct API {
         }
     }
 
+    /// The largest `offset` the search accepts.
+    static let maxOffset = 1_000_000
+
     private func search(_ q: [String: String]) -> HTTPResponse {
         let type = (q["content_type"] ?? "all").lowercased()
         let limit = min(max(Int(q["limit"] ?? "") ?? 20, 1), 100)
-        let offset = max(Int(q["offset"] ?? "") ?? 0, 0)
+        // Clamped so offset + limit can never overflow (an overflow traps and would end the app).
+        let offset = min(max(Int(q["offset"] ?? "") ?? 0, 0), Self.maxOffset)
         let empty: [String: Any] = ["data": [], "pagination": ["limit": limit, "offset": offset, "total": 0]]
         if type == "input" || type == "memory" || type == "parsed" { return .json(empty) }  // not captured by openrewind
 
@@ -173,7 +180,7 @@ struct API {
             guard let t = Time.parse(raw) else { return .error("bad end_time: \(raw)", status: 400) }
             s.endTime = t
         }
-        let maxLen = Int(q["max_content_length"] ?? "")
+        let maxLen = Int(q["max_content_length"] ?? "").map { max($0, 0) }  // prefix(-1) traps
         func clip(_ t: String) -> String {
             guard let maxLen, t.count > maxLen else { return t }
             return String(t.prefix(maxLen)) + "…"
@@ -182,6 +189,9 @@ struct API {
         let wantScreen = type != "audio"
         // Audio has no app/window, so those filters mean "screen only".
         let wantAudio = (type == "audio" || type == "all") && (s.appName ?? "").isEmpty && (s.windowName ?? "").isEmpty
+        if q["mode"]?.lowercased() == "meaning" {
+            return searchByMeaning(s, screen: wantScreen, audio: wantAudio, offset: offset, limit: limit, clip: clip)
+        }
         // To page through a merged list: take the top (offset + limit) of each source, merge by time, then slice.
         let fetch = offset + limit
         var items: [(ts: String, item: [String: Any])] = []
@@ -195,7 +205,8 @@ struct API {
             items += rows.map { f in (f.timestamp, ["type": "OCR", "content": [
                 "frame_id": f.id, "text": clip(f.text), "timestamp": f.timestamp,
                 "app_name": f.appName, "window_name": f.windowName, "focused": f.focused,
-                "file_path": f.snapshotPath, "text_source": f.textSource, "offset_index": 0, "tags": [],
+                "file_path": f.videoPath.isEmpty ? f.snapshotPath : f.videoPath, "text_source": f.textSource,
+                "offset_index": f.videoFrame, "tags": [],
             ] as [String: Any]]) }
         }
         if wantAudio {
@@ -213,10 +224,52 @@ struct API {
         return .json(["data": Array(page), "pagination": ["limit": limit, "offset": offset, "total": total]])
     }
 
+    /// Inside our own data dir (with the trailing slash, so a sibling folder like data-x/ is not).
+    private func isInDataDir(_ path: String) -> Bool {
+        let dir = config.dataDir.standardizedFileURL.path
+        return path.hasPrefix(dir.hasSuffix("/") ? dir : dir + "/")
+    }
+
+    /// mode=meaning: the moments closest in meaning to q, best first, in the same shape as the word search
+    /// plus a "score". Blocked apps and sites are left out.
+    private func searchByMeaning(_ s: SearchQuery, screen: Bool, audio: Bool, offset: Int, limit: Int, clip: (String) -> String) -> HTTPResponse {
+        guard let m = meaning, m.embedder != nil else { return .error("Search by Meaning is off", status: 400) }
+        let text = (s.q ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return .json(["data": [], "pagination": ["limit": limit, "offset": offset, "total": 0]]) }
+        func has(_ have: String, _ want: String?) -> Bool { (want ?? "").isEmpty || have.localizedCaseInsensitiveContains(want!) }
+        var mq = MeaningQuery()
+        mq.start = s.startTime; mq.end = s.endTime
+        mq.screen = screen; mq.audio = audio
+        mq.limit = min(200, offset + limit)
+        mq.match = { app, window in has(app, s.appName) && has(window, s.windowName) }
+        let hits = m.search(text, mq)
+        let page: [[String: Any]] = hits.dropFirst(offset).prefix(limit).map { h -> [String: Any] in
+            if h.isAudio {
+                let c = db.chunk(id: h.firstId)
+                var start = 0.0
+                if let c, let cs = Time.iso.date(from: c.timestamp), let hs = Time.iso.date(from: h.timestamp) { start = hs.timeIntervalSince(cs) }
+                return ["type": "Audio", "content": [
+                    "chunk_id": h.firstId, "transcription_id": h.id, "transcription": clip(h.text),
+                    "timestamp": h.timestamp, "start_time": start, "end_time": start,
+                    "device_name": c?.device ?? "", "device_type": c?.isInput == false ? "Output" : "Input",
+                    "file_path": c?.filePath ?? "", "speaker": NSNull(), "tags": [], "score": h.score,
+                ] as [String: Any]]
+            }
+            let f = db.frame(id: h.firstId)
+            return ["type": "OCR", "content": [
+                "frame_id": h.firstId, "text": clip(h.text), "timestamp": h.timestamp,
+                "app_name": h.appName, "window_name": h.windowName, "focused": f?.focused ?? true,
+                "file_path": f.map { $0.videoPath.isEmpty ? $0.snapshotPath : $0.videoPath } ?? "", "text_source": f?.textSource ?? "ocr", "offset_index": 0, "tags": [],
+                "score": h.score,
+            ] as [String: Any]]
+        }
+        return .json(["data": page, "pagination": ["limit": limit, "offset": offset, "total": hits.count]])
+    }
+
     private func audioFile(_ idStr: String) -> HTTPResponse {
         guard let id = Int64(idStr), let c = db.chunk(id: id) else { return .error("audio not found", status: 404) }
         let path = URL(fileURLWithPath: c.filePath).standardizedFileURL.path
-        guard path.hasPrefix(config.dataDir.standardizedFileURL.path), FileManager.default.fileExists(atPath: path) else {
+        guard isInDataDir(path), FileManager.default.fileExists(atPath: path) else {
             return .error("audio file missing", status: 404)
         }
         guard let data = RecordingFile.data(path) else { return .error("cannot read audio", status: 500) }
@@ -225,19 +278,20 @@ struct API {
 
     private func frameImage(_ idStr: String) -> HTTPResponse {
         guard let id = Int64(idStr), let f = db.frame(id: id) else { return .error("frame not found", status: 404) }
-        // Only serve files inside our own data dir.
-        let path = URL(fileURLWithPath: f.snapshotPath).standardizedFileURL.path
-        guard path.hasPrefix(config.dataDir.standardizedFileURL.path), FileManager.default.fileExists(atPath: path) else {
+        // Only serve files inside our own data dir. The picture is a still, or a frame of a video
+        // (Compress Older Recordings).
+        let file = f.videoPath.isEmpty ? f.snapshotPath : f.videoPath
+        let path = URL(fileURLWithPath: file).standardizedFileURL.path
+        guard !file.isEmpty, isInDataDir(path), FileManager.default.fileExists(atPath: path) else {
             return .error("snapshot missing", status: 404)
         }
-        guard let data = RecordingFile.data(path) else { return .error("cannot read snapshot", status: 500) }
-        // Chrome and Firefox cannot show HEIC: send JPEG.
-        if path.hasSuffix(".heic") {
-            guard let img = ImageTools.image(from: data), let jpg = ImageTools.jpegData(img) else {
-                return .error("cannot decode snapshot", status: 500)
-            }
-            return HTTPResponse(contentType: "image/jpeg", body: jpg)
+        // A JPEG still goes out as it is (decrypted when Encrypt Recordings is on). Chrome and Firefox
+        // cannot show HEIC, and a video frame is no file: send JPEG.
+        if f.videoPath.isEmpty, !path.hasSuffix(".heic") {
+            guard let data = RecordingFile.data(path) else { return .error("cannot read snapshot", status: 500) }
+            return HTTPResponse(contentType: "image/jpeg", body: data)
         }
-        return HTTPResponse(contentType: "image/jpeg", body: data)
+        guard let jpg = FrameImages.shared.jpeg(f.source) else { return .error("cannot decode snapshot", status: 500) }
+        return HTTPResponse(contentType: "image/jpeg", body: jpg)
     }
 }

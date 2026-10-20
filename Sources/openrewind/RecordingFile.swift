@@ -157,14 +157,14 @@ enum RecordingFile {
         return try body(tmp.path)
     }
 
-    /// At launch: remove decrypted audio and whisper transcripts a crash or kill left in the temp
+    /// At launch: remove decrypted audio and videos and whisper transcripts a crash or kill left in the temp
     /// folder. Files from the last 10 minutes are left alone (another OpenRewind may be using them).
     @discardableResult
     static func cleanTempCopies(in dir: URL = FileManager.default.temporaryDirectory) -> Int {
         let fm = FileManager.default
         guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return 0 }
         var removed = 0
-        for name in names where name.hasPrefix(tempCopyPrefix) && (name.hasSuffix(".wav") || name.hasSuffix(".json")) {
+        for name in names where name.hasPrefix(tempCopyPrefix) && [".wav", ".json", ".mp4", ".mov"].contains(where: { name.hasSuffix($0) }) {
             let p = dir.appendingPathComponent(name).path
             guard let m = (try? fm.attributesOfItem(atPath: p))?[.modificationDate] as? Date, m < Date().addingTimeInterval(-600) else { continue }
             if (try? fm.removeItem(atPath: p)) != nil { removed += 1 }
@@ -538,6 +538,8 @@ enum VaultMigration {
         for case let u as URL in e {
             let v = try? u.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey])
             guard v?.isRegularFile == true else { continue }
+            // A video the compactor is still writing: it is checked and moved into place (or deleted) by it.
+            if u.path.hasSuffix(Compaction.tempSuffix) { continue }
             if u.path.hasSuffix(RecordingFile.tempSuffix) {
                 // Older than a minute: a write that is still going on is left alone.
                 if let m = v?.contentModificationDate, m < Date().addingTimeInterval(-60) { try? fm.removeItem(at: u) }

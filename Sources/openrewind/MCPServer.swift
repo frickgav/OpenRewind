@@ -6,6 +6,8 @@ struct MCPState {
     var enabled: Bool
     var tools: AITools?
     var problem: String?
+    /// Why search_by_meaning is not offered, for an app that calls it anyway.
+    var meaningMissing: String?
 }
 
 /// A Model Context Protocol server, so Claude, Cursor and other AI apps can look things up in the
@@ -19,12 +21,18 @@ struct MCPServer {
 
     static let offMessage = "OpenRewind is not sharing your history with AI apps. To allow it, click the OpenRewind icon in the menu bar, open Settings and turn on \"Allow AI Apps to Read My History (MCP)\". Then ask again."
 
+    static func meaningOffMessage(_ why: String?) -> String {
+        "Search by Meaning is not available. \(why ?? "Turn on Search by Meaning in OpenRewind's Settings.") Use search_screen or search_audio instead."
+    }
+
     static let screenshotsOffMessage = "Screenshots are off. To let AI apps see them, turn on \"Let AI look at screenshots\" in OpenRewind's AI Settings. Use the text tools instead."
 
     static let instructions = """
     OpenRewind records this user's computer: text read from screenshots, app names, window titles, browser addresses, \
     and transcripts of the microphone and system audio. It all stays on their computer; you can read it only through these tools.
     - For "what did I do / work on" questions, call activity_summary first, then search_screen or get_screen_text for details.
+    - When it is offered, search_by_meaning finds moments by topic when you don't know the exact words.
+    - For meetings and calls, call list_meetings first. Meeting notes were written by an AI from the call's transcript.
     - Times in answers are the user's local time. Each moment carries an exact time like (at 2026-10-18T14:30:05-07:00); \
     pass it back as start, end or time to look closer.
     - Screen text comes from OCR and can have errors. Apps and sites the user blocked are left out.
@@ -120,7 +128,7 @@ struct MCPServer {
         ]
     }
 
-    /// Always the text tools; view_screenshot only while the user allows screenshots.
+    /// Always the text tools; search_by_meaning only while it is on and ready; view_screenshot only while the user allows screenshots.
     private func listTools() -> [String: Any] {
         let specs = state().tools?.offered ?? AITools.specs
         let tools: [[String: Any]] = specs.map {
@@ -132,7 +140,7 @@ struct MCPServer {
 
     private func callTool(_ id: Any?, _ p: [String: Any]) -> [String: Any] {
         guard let name = p["name"] as? String else { return Self.error(id, -32602, "Invalid params: name is required") }
-        guard AITools.specs.contains(where: { $0.name == name }) || name == AITools.screenshotSpec.name else {
+        guard AITools.specs.contains(where: { $0.name == name }) || name == AITools.screenshotSpec.name || name == AITools.meaningSpec.name else {
             return Self.error(id, -32602, "Unknown tool: \(name)")
         }
         let args = p["arguments"] as? [String: Any] ?? [:]
@@ -143,6 +151,9 @@ struct MCPServer {
         }
         if name == AITools.screenshotSpec.name && tools.screenshots == nil {
             return Self.result(id, Self.toolResult(Self.screenshotsOffMessage, image: nil, isError: true))
+        }
+        if name == AITools.meaningSpec.name && tools.meaning?.embedder == nil {
+            return Self.result(id, Self.toolResult(Self.meaningOffMessage(s.meaningMissing), image: nil, isError: true))
         }
         var lookup = tools
         if lookup.maxSummaryDays == nil { lookup.maxSummaryDays = Self.summaryDays }
@@ -214,6 +225,9 @@ struct MCPServer {
     static func serveStdio(config: Config) -> Never {
         var db: Database?
         RecordingFile.keyLoader = { DataKeyStore.load() }
+        var meaning: MeaningService?
+        // The sentence model is loaded once; the service around it is made again with each database open.
+        var embedder: AppleEmbedder?
         let state: () -> MCPState = {
             guard MCPSetup.enabled else { return MCPState(enabled: false) }
             if db == nil {
@@ -233,12 +247,31 @@ struct MCPServer {
             guard let history = db else { return MCPState(enabled: true, problem: "OpenRewind cannot read its history.") }
             var tools = AITools(db: history)
             tools.blocklist = BlocklistStore.shared.reload()
-            tools.screenshots = AISettings.screenshotsAllowed ? { AITools.jpegForAI($0.snapshotPath) } : nil
-            return MCPState(enabled: true, tools: tools)
+            tools.screenshots = AISettings.screenshotsAllowed ? { AITools.jpegForAI($0) } : nil
+            // Search by Meaning uses macOS's own sentence model, so this process can load it too.
+            var missing: String?
+            if !UserDefaults.standard.bool(forKey: MeaningService.settingKey) {
+                meaning = nil
+                missing = "Search by Meaning is off in OpenRewind's Settings."
+            } else if meaning == nil {
+                if !history.hasMeaningIndex {
+                    missing = "OpenRewind has not built the Search by Meaning index yet. Open OpenRewind and let it run."
+                } else if let e = embedder ?? AppleEmbedder.make() {
+                    if embedder == nil { log("mcp: search by meaning ready") }
+                    embedder = e
+                    let m = MeaningService(db: history)
+                    m.embedder = e
+                    meaning = m
+                } else {
+                    missing = "This Mac has no sentence model for Search by Meaning."
+                }
+            }
+            tools.meaning = meaning
+            return MCPState(enabled: true, tools: tools, meaningMissing: missing)
         }
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
         log("mcp: OpenRewind \(version) serving \(config.home.path)")
-        MCPServer(version: version, state: state, afterMessage: { db = nil }).run()
+        MCPServer(version: version, state: state, afterMessage: { db = nil; meaning = nil }).run()
         exit(0)
     }
 }

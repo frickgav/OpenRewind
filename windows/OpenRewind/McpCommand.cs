@@ -15,6 +15,7 @@ static class McpCommand
         // Encrypt Recordings: the key comes from DPAPI, the same as in the app (this is the same
         // Windows user). Screenshots are read through RecordingFile, which decrypts them.
         RecordingFile.KeyLoader = () => DataKeyStore.Load(config.Home);
+        McpMeaning? meaning = null;
 
         McpState State()
         {
@@ -38,8 +39,11 @@ static class McpCommand
                 }
             }
             var tools = new AiTools(db) { Blocked = settings.ToBlocklist() };
-            if (settings.AiScreenshots) tools.Screenshots = f => ImageTools.ForAi(f.SnapshotPath);
-            return new McpState(true, tools);
+            if (settings.AiScreenshots) tools.Screenshots = f => ImageTools.ForAi(f.Source);  // stills and frames kept in a video
+            // The model runs in this process too (on the CPU, on this PC); it is loaded on first use.
+            meaning ??= new McpMeaning(MiniLm.Dir(config.Home));
+            tools.Meaning = meaning.Get(db, settings.SearchByMeaning);
+            return new McpState(true, tools, MeaningMissing: meaning.Missing);
         }
 
         // A WinExe still gets the pipes the AI app passed in. UTF-8 without a byte order mark, "\n" between messages.
@@ -49,7 +53,9 @@ static class McpCommand
         Log.Write($"mcp: OpenRewind {Updater.Current} serving {config.Home}");
         // Open the database for each message and close it after, so the app can convert it (Encrypt
         // Recordings) while the AI app keeps this process running: Windows can't rename an open file.
+        // The Search by Meaning model stays loaded; it is bound to each new open (McpMeaning).
         new McpServer(Updater.Current, State) { AfterMessage = () => { db?.Dispose(); db = null; } }.Run(input, output);
+        meaning?.Dispose();
         db?.Dispose();
         return 0;
     }

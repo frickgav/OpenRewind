@@ -243,7 +243,7 @@ sealed class AiChatPanel : Panel
         send.Text = "Stop";
         input.Enabled = false;
         AddRow(thinking);
-        tools.Screenshots = settings.AiScreenshots ? f => ImageTools.ForAi(f.SnapshotPath) : null;
+        tools.Screenshots = settings.AiScreenshots ? f => ImageTools.ForAi(f.Source) : null;
         try { await convo.Ask(q, new AiClient(ai), tools, AddItem, settings.AiPriceFor(ai.Model), cts.Token); }
         finally
         {
@@ -573,8 +573,10 @@ sealed class AiSettingsForm : Form
         settings.AiScreenshots = screenshots.Checked;
         settings.Save();
         status.Text = "Saved.";
+        MeetingWatcher.RecheckConsent(settings, this);
         _ = RefreshModels(quiet: true);
         AiChatForm.SettingsChanged();
+        JournalForm.Reload();
     }
 
     /// Fills the model list from the provider. Quiet: in the background, saying nothing if it fails.

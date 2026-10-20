@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Combine
 import ImageIO
+import VisionKit
 
 /// State behind the timeline overlay: which moment is shown, its screenshot, and audio at that moment.
 final class TimelineModel: ObservableObject {
@@ -33,6 +34,14 @@ final class TimelineModel: ObservableObject {
     /// Bumped to ask the view to focus the search box.
     @Published var focusSearchToken = 0
     var searchWork: DispatchWorkItem?
+    /// Search by Meaning, when the app has it. It can search only once its model is loaded.
+    var meaning: MeaningService?
+    /// The user picked Meaning over Keyword in the search box.
+    @Published var byMeaning = false
+    /// A meaning search is running in the background.
+    @Published var searching = false
+    /// Bumped by each search, so an older meaning search that finishes late is dropped.
+    var searchSeq = 0
     /// Set by the overlay: gives the keyboard back to the timeline (so space plays audio again).
     var leaveSearchBox: (() -> Void)?
     /// Set by the overlay: closes it without giving focus back to the app that was in front.
@@ -51,6 +60,12 @@ final class TimelineModel: ObservableObject {
     var highlightWork: DispatchWorkItem?
     var highlightCache: [String: [CGRect]] = [:]
     var highlightOrder: [String] = []
+    /// Clip start and end marked with [ and ], and the Export Clip card while it is open (see ClipExport.swift).
+    @Published var clipStart: Date?
+    @Published var clipEnd: Date?
+    @Published var exportClip: ClipRange?
+    /// Live Text on the shown screenshot, for copying what is selected (see LiveText.swift).
+    weak var liveText: ImageAnalysisOverlayView?
     private var thumbCache: [Int64: NSImage] = [:]
     private var thumbOrder: [Int64] = []
 
@@ -76,10 +91,8 @@ final class TimelineModel: ObservableObject {
         let f = frames[frameIndex(at: date)]
         guard date <= (f.end == nil ? f.time.addingTimeInterval(60) : AppFilter.until(f)) else { return nil }
         if let img = thumbCache[f.id] { return (f, img) }
-        let opts = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 480,
-                     kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary
-        guard let data = RecordingFile.data(f.path), let src = CGImageSourceCreateWithData(data as CFData, nil),
-              let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts) else { return (f, nil) }
+        guard let cg = FrameImages.shared.thumbnail(f.source, maxPixels: 480)
+                ?? currentSource(f).flatMap({ FrameImages.shared.thumbnail($0, maxPixels: 480) }) else { return (f, nil) }
         let img = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
         thumbCache[f.id] = img
         thumbOrder.append(f.id)
@@ -312,13 +325,26 @@ final class TimelineModel: ObservableObject {
         image = loadImage(f)
         refreshHighlights()
         updateCaption()
-        // Warm the cache for the next scroll step either way.
-        for j in [index - 1, index + 1] where frames.indices.contains(j) { _ = loadImage(frames[j]) }
+        // Warm the cache for the next scroll step either way. Video frames are decoded off the main thread
+        // (a seek can decode up to Compaction.keyframeInterval frames); the next step finds them in FrameImages.
+        let near = [index - 1, index + 1].filter { frames.indices.contains($0) }.map { frames[$0] }
+        for n in near where !n.source.isVideo { _ = loadImage(n) }
+        let videos = near.map(\.source).filter(\.isVideo)
+        if !videos.isEmpty {
+            DispatchQueue.global(qos: .userInitiated).async { for v in videos { _ = FrameImages.shared.image(v) } }
+        }
+    }
+
+    /// Where the frame's picture is now, when that is not where the timeline's list says: the compactor may
+    /// have moved it into a video (and deleted the still) or written its video again since the list was read.
+    private func currentSource(_ f: TimelineFrame) -> FrameSource? {
+        guard let now = db.frame(id: f.id)?.source, now != f.source else { return nil }
+        return now
     }
 
     private func loadImage(_ f: TimelineFrame) -> NSImage? {
         if let img = imageCache[f.id] { return img }
-        guard let data = RecordingFile.data(f.path), let img = NSImage(data: data) else { return nil }
+        guard let img = FrameImages.shared.nsImage(f.source) ?? currentSource(f).flatMap({ FrameImages.shared.nsImage($0) }) else { return nil }
         imageCache[f.id] = img
         cacheOrder.append(f.id)
         if cacheOrder.count > 24 { imageCache.removeValue(forKey: cacheOrder.removeFirst()) }

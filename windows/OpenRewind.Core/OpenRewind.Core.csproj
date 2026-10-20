@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Everything that does not touch Windows APIs: database, search, API server, Whisper, timeline math.
+  <!-- Everything that does not touch Windows APIs: database, search, API server, Whisper and Parakeet, timeline math.
        It builds and tests on any OS, so CI and contributors on Mac/Linux can run it. -->
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -13,6 +13,9 @@
     <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="8.0.11" />
     <!-- SQLCipher build of SQLite (FTS5 included): the database can be encrypted (see Vault). -->
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.10" />
+    <!-- ONNX Runtime, the one copy for the whole app: NVIDIA Parakeet v3 (Settings → Transcription Model) and
+         Search by Meaning (all-MiniLM-L6-v2) use it. Keep it at the Mac app's Swift package version (Package.swift). -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.2" />
   </ItemGroup>
 
   <!-- The search page is shared with the Mac app: read it straight out of the Swift source. -->

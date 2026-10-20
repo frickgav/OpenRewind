@@ -117,11 +117,20 @@ public sealed class Api
     public Func<bool>? Locked { get; set; }
 
     public const string LockedMessage = "OpenRewind is locked. Open the timeline to unlock it, then try again.";
+    /// A frame's picture as JPEG (the app's FrameImages: stills and frames inside videos). Without it only
+    /// JPEG stills can be served.
+    readonly Func<Frame, byte[]?>? frameJpeg;
 
-    public Api(Database db, Config config, Func<Dictionary<string, object?>>? healthExtras = null)
+    /// Search by Meaning, while it is on (mode=meaning on /search).
+    readonly Func<MeaningService?> meaning;
+
+    public Api(Database db, Config config, Func<Dictionary<string, object?>>? healthExtras = null, Func<Frame, byte[]?>? frameJpeg = null,
+               Func<MeaningService?>? meaning = null)
     {
         this.db = db; this.config = config;
         this.healthExtras = healthExtras ?? (() => new());
+        this.frameJpeg = frameJpeg;
+        this.meaning = meaning ?? (() => null);
     }
 
     public HttpResponse Handle(HttpRequest req)
@@ -147,6 +156,7 @@ public sealed class Api
                     ["frames_total"] = s.Count,
                     ["last_frame_at"] = s.Last,
                     ["data_dir"] = config.Home,
+                    ["search_by_meaning"] = meaning()?.Embedder != null,
                 };
                 foreach (var kv in healthExtras()) h[kv.Key] = kv.Value;
                 return HttpResponse.Json(h);
@@ -165,12 +175,16 @@ public sealed class Api
         return HttpResponse.Error("not found", 404);
     }
 
+    /// The largest `offset` the search accepts.
+    public const int MaxOffset = 1_000_000;
+
     HttpResponse Search(Dictionary<string, string> q)
     {
         string? Get(string k) => q.TryGetValue(k, out var v) ? v : null;
         var type = (Get("content_type") ?? "all").ToLowerInvariant();
         var limit = Math.Clamp(int.TryParse(Get("limit"), out var l) ? l : 20, 1, 100);
-        var offset = Math.Max(int.TryParse(Get("offset"), out var o) ? o : 0, 0);
+        // Clamped so offset + limit can never overflow.
+        var offset = Math.Clamp(int.TryParse(Get("offset"), out var o) ? o : 0, 0, MaxOffset);
         if (type is "input" or "memory" or "parsed")  // not captured by OpenRewind
             return HttpResponse.Json(new { data = Array.Empty<object>(), pagination = new { limit, offset, total = 0 } });
 
@@ -185,7 +199,7 @@ public sealed class Api
             if (Time.Parse(re) is not string t) return HttpResponse.Error($"bad end_time: {re}", 400);
             s.EndTime = t;
         }
-        int? maxLen = int.TryParse(Get("max_content_length"), out var ml) ? ml : null;
+        int? maxLen = int.TryParse(Get("max_content_length"), out var ml) ? Math.Max(ml, 0) : null;
         string Clip(string t) => maxLen is int m && t.Length > m ? t[..m] + "…" : t;
 
         var wantScreen = type != "audio";
@@ -193,6 +207,7 @@ public sealed class Api
         var wantAudio = (type == "audio" || type == "all") && string.IsNullOrEmpty(s.AppName) && string.IsNullOrEmpty(s.WindowName);
         // To page through a merged list: take the top (offset + limit) of each source, merge by time, then slice.
         var fetch = offset + limit;
+        if (Get("mode")?.ToLowerInvariant() == "meaning") return SearchByMeaning(s, wantScreen, wantAudio, offset, limit, Clip);
         var items = new List<(string Ts, object Item)>();
         int total = 0;
         if (wantScreen)
@@ -206,7 +221,8 @@ public sealed class Api
                 content = new
                 {
                     frame_id = f.Id, text = Clip(f.Text), timestamp = f.Timestamp, app_name = f.AppName, window_name = f.WindowName,
-                    focused = f.Focused, file_path = f.SnapshotPath, text_source = f.TextSource, offset_index = 0, tags = Array.Empty<string>(),
+                    focused = f.Focused, file_path = f.VideoPath.Length > 0 ? f.VideoPath : f.SnapshotPath, text_source = f.TextSource,
+                    offset_index = f.VideoFrame, tags = Array.Empty<string>(),
                 },
             })));
         }
@@ -229,6 +245,50 @@ public sealed class Api
         return HttpResponse.Json(new { data = page, pagination = new { limit, offset, total } });
     }
 
+    /// mode=meaning: the moments closest in meaning to q, best first, in the same shape as the word search
+    /// plus a "score". Blocked apps and sites are left out.
+    HttpResponse SearchByMeaning(SearchQuery s, bool screen, bool audio, int offset, int limit, Func<string, string> clip)
+    {
+        if (meaning() is not MeaningService m || m.Embedder == null) return HttpResponse.Error("Search by Meaning is off", 400);
+        if (string.IsNullOrWhiteSpace(s.Q)) return HttpResponse.Json(new { data = Array.Empty<object>(), pagination = new { limit, offset, total = 0 } });
+        bool Has(string have, string? want) => string.IsNullOrEmpty(want) || have.Contains(want, StringComparison.OrdinalIgnoreCase);
+        var hits = m.Search(s.Q, new MeaningQuery
+        {
+            Start = s.StartTime, End = s.EndTime, Screen = screen, Audio = audio, Limit = Math.Min(200, offset + limit),
+            Match = (app, window) => Has(app, s.AppName) && Has(window, s.WindowName),
+        });
+        var page = hits.Skip(offset).Take(limit).Select(h =>
+        {
+            if (h.IsAudio)
+            {
+                var c = db.ChunkById(h.FirstId);
+                var start = c != null && Time.ParseIso(c.Timestamp) is DateTime cs && Time.ParseIso(h.Timestamp) is DateTime hs ? (hs - cs).TotalSeconds : 0;
+                return (object)new
+                {
+                    type = "Audio",
+                    content = new
+                    {
+                        chunk_id = h.FirstId, transcription_id = h.Id, transcription = clip(h.Text), timestamp = h.Timestamp,
+                        start_time = start, end_time = start, device_name = c?.Device ?? "", device_type = c?.IsInput == false ? "Output" : "Input",
+                        file_path = c?.FilePath ?? "", speaker = (object?)null, tags = Array.Empty<string>(), score = h.Score,
+                    },
+                };
+            }
+            var f = db.FrameById(h.FirstId);
+            return new
+            {
+                type = "OCR",
+                content = new
+                {
+                    frame_id = h.FirstId, text = clip(h.Text), timestamp = h.Timestamp, app_name = h.AppName, window_name = h.WindowName,
+                    focused = f?.Focused ?? true, file_path = f == null ? "" : f.VideoPath.Length > 0 ? f.VideoPath : f.SnapshotPath, text_source = f?.TextSource ?? "ocr", offset_index = 0,
+                    tags = Array.Empty<string>(), score = h.Score,
+                },
+            };
+        });
+        return HttpResponse.Json(new { data = page, pagination = new { limit, offset, total = hits.Count } });
+    }
+
     HttpResponse AudioFile(string idStr)
     {
         if (!long.TryParse(idStr, out var id) || db.ChunkById(id) is not AudioChunk c) return HttpResponse.Error("audio not found", 404);
@@ -238,18 +298,28 @@ public sealed class Api
     HttpResponse FrameImage(string idStr)
     {
         if (!long.TryParse(idStr, out var id) || db.FrameById(id) is not Frame f) return HttpResponse.Error("frame not found", 404);
-        return Serve(f.SnapshotPath, "image/jpeg", "snapshot missing");
+        // Only frames of our own data dir, whichever way the picture is stored.
+        if (!InDataDir(f.VideoPath.Length > 0 ? f.VideoPath : f.SnapshotPath)) return HttpResponse.Error("snapshot missing", 404);
+        if (frameJpeg == null) return Serve(f.SnapshotPath, "image/jpeg", "snapshot missing");
+        return frameJpeg(f) is byte[] jpg ? new HttpResponse { ContentType = "image/jpeg", Body = jpg } : HttpResponse.Error("snapshot missing", 404);
     }
 
     /// Only serve files inside our own data dir.
     HttpResponse Serve(string path, string type, string missing)
     {
+        if (!InDataDir(path) || !File.Exists(Path.GetFullPath(path))) return HttpResponse.Error(missing, 404);
+        // Decrypted when Encrypt Recordings is on.
+        if (RecordingFile.TryRead(Path.GetFullPath(path)) is not byte[] body) return HttpResponse.Error("cannot read the recording", 500);
+        return new HttpResponse { ContentType = type, Body = body };
+    }
+
+    bool InDataDir(string path)
+    {
+        if (path.Length == 0) return false;
         var full = Path.GetFullPath(path);
         var root = Path.GetFullPath(config.DataDir).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         var cmp = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-        if (!full.StartsWith(root, cmp) || !File.Exists(full)) return HttpResponse.Error(missing, 404);
-        if (RecordingFile.TryRead(full) is not byte[] body) return HttpResponse.Error("cannot read the recording", 500);
-        return new HttpResponse { ContentType = type, Body = body };
+        return full.StartsWith(root, cmp);
     }
 }
 

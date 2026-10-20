@@ -2,9 +2,9 @@ name: Mac app
 
 on:
   push:
-    paths: ["Sources/**", "Package.swift", "Package.resolved", "THIRD_PARTY_NOTICES.txt", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", ".github/workflows/mac.yml"]
+    paths: ["Sources/**", "Package.swift", "Package.resolved", "THIRD_PARTY_NOTICES.txt", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", "scripts/gif-check.py", ".github/workflows/mac.yml"]
   pull_request:
-    paths: ["Sources/**", "Package.swift", "Package.resolved", "THIRD_PARTY_NOTICES.txt", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", ".github/workflows/mac.yml"]
+    paths: ["Sources/**", "Package.swift", "Package.resolved", "THIRD_PARTY_NOTICES.txt", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", "scripts/gif-check.py", ".github/workflows/mac.yml"]
   workflow_dispatch:
 
 permissions:
@@ -40,6 +40,19 @@ jobs:
         run: dist/OpenRewind.app/Contents/MacOS/OpenRewind selftest-encryption
       - name: Check the notices ship
         run: test -s dist/OpenRewind.app/Contents/Resources/THIRD_PARTY_NOTICES.txt
+      # Compress Older Recordings for real: encode made-up screenshots, read every frame back, delete, rewrite.
+      - name: Video check
+        run: OPENREWIND_HOME="$RUNNER_TEMP/openrewind-video-check" dist/OpenRewind.app/Contents/MacOS/OpenRewind video-check
+
+      # Export Clip's GIF encoder (GifWriter.swift): write a test GIF and decode it with an independent decoder.
+      - name: GIF encoder check
+        run: |
+          dist/OpenRewind.app/Contents/MacOS/OpenRewind gif-check "$RUNNER_TEMP/check.gif"
+          python3 scripts/gif-check.py "$RUNNER_TEMP/check.gif"
+      # Connect AI Apps' JSON and TOML editors and safe file writes (MCPConnectCheck.swift), on the
+      # same cases as the Windows tests.
+      - name: One-click connect check
+        run: dist/OpenRewind.app/Contents/MacOS/OpenRewind connect-check "$RUNNER_TEMP/connect-check"
       # Start it as an AI app does (OpenRewind mcp, pipes for stdin/stdout) and talk MCP to it,
       # with the Settings switch off, then on with an empty history.
       - name: MCP check

@@ -16,6 +16,7 @@ Usage:
   openrewind delete <15m|1h|today|all|older:week>
                              Delete recordings in that range
   openrewind doctor          Check and request permissions
+  openrewind video-check     Check that this Mac can write and read the videos of Compress Older Recordings
   openrewind mcp             MCP server for AI apps, over stdin/stdout (also --mcp).
                              Turn on Settings → Allow AI Apps to Read My History first
   openrewind selftest-encryption
@@ -30,6 +31,8 @@ Options:
   --chunk S       Audio chunk length in seconds (default 30)
   --whisper-model PATH   ggml Whisper model (default: auto-detect)
   --language L    Whisper language code, or auto (default auto)
+  --model ID      Transcription model for this run: whisper-auto, whisper-base, whisper-small,
+                  whisper-large-v3-turbo or parakeet-v3 (default: the one picked in Settings)
   --home DIR      Data folder (default ~/.openrewind, or $OPENREWIND_HOME)
 
 Env:
@@ -55,6 +58,16 @@ if command == "selftest-encryption" {
 }
 
 let config = Config.load(arguments: args)
+// Hidden: writes a test GIF with the clip exporter's GIF encoder, for scripts/gif-check.py in CI.
+if command == "gif-check" {
+    guard let path = args.filter({ !$0.hasPrefix("-") }).dropFirst().first else { print("usage: openrewind gif-check <file.gif>"); exit(2) }
+    do { try GifWriter.writeCheck(to: URL(fileURLWithPath: path)); exit(0) } catch { print("gif-check: \(error)"); exit(1) }
+}
+// Hidden: checks the one-click setup editors (MCPConnectCheck.swift) in an empty folder, in CI.
+if command == "connect-check" {
+    guard let path = args.filter({ !$0.hasPrefix("-") }).dropFirst().first else { print("usage: openrewind connect-check <empty folder>"); exit(2) }
+    exit(MCPConnectCheck.run(in: URL(fileURLWithPath: path)) ? 0 : 1)
+}
 // Started by an AI app with stdin/stdout as pipes: no menu bar icon, no recording, read-only.
 if command == "mcp" { MCPServer.serveStdio(config: config) }
 if command == "app" { openLogFile(in: config.home) }
@@ -82,6 +95,16 @@ func value(after flag: String) -> String? {
 
 func startServer() {
     do { try engine.startServer() } catch { log("cannot start server: \(error)"); exit(1) }
+}
+
+/// Which codec Compress Older Recordings would use: encodes and reads back a short test clip.
+func videoCheck() -> (text: String, ok: Bool) {
+    let codec = AVCodec()
+    switch codec.usable {
+    case "hevc": return ("HEVC (H.265, hardware)", true)
+    case "h264": return ("H.264 (no hardware HEVC encoder)", true)
+    default: return ("not available (\(codec.probeError ?? "unknown"))", false)
+    }
 }
 
 func requirePermissions() {
@@ -190,8 +213,30 @@ case "doctor":
     print("audio chunks:    \(a.chunks) (\(a.pending) pending), \(a.segments) transcript segments")
     print("whisper-cli:     \(Transcriber.findBinary(config.whisperBinary) ?? "MISSING (brew install whisper-cpp)")")
     print("whisper model:   \(Transcriber.findModel(config.whisperModel, home: config.home) ?? "MISSING")")
+    print("video storage:   \(videoCheck().text)")
+    let v = db.videoStats()
+    print("videos:          \(v.segments) (\(v.bytes >> 20) MB, saving \(v.saved >> 20) MB)")
+    if v.segments > 0 {
+        let c = AVCodec.checkVideos(db)
+        print(c.bad == 0 ? "videos play:     ok (\(c.checked) checked)"
+                         : "videos play:     \(c.bad) of \(c.checked) checked DO NOT OPEN on this Mac")
+    }
+    let stuck = db.stuckRewrites()
+    if stuck > 0 {
+        print("videos to redo:  \(stuck) still hold deleted frames (rewritten in the background; turned back into pictures if that keeps failing)")
+    }
+    let picked = SpeechModels.byId(config.transcriptionModel)
+    let ready = picked.files.isEmpty || SpeechModels.isDownloaded(picked, home: config.home)
+    print("transcription:   \(picked.name)\(ready ? "" : " (not downloaded: pick it in Settings → Transcription Model)")")
     if !Capture.hasScreenPermission { Capture.requestScreenPermission() }
     if !Accessibility.isTrusted { Accessibility.promptForTrust() }
+
+case "video-check":
+    let check = videoCheck()
+    print("video storage: \(check.text)")
+    guard check.ok else { exit(1) }
+    // Once as stored plainly, once with Encrypt Recordings on.
+    exit(VideoSelfTest.run() && VideoSelfTest.run(encrypted: true) ? 0 : 1)
 
 default:
     print(usage); exit(2)

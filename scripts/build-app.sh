@@ -15,7 +15,7 @@ APP="$DIST/OpenRewind.app"
 DMG="$DIST/openrewind-$VERSION.dmg"
 
 echo "→ compiling (release, arm64)"
-# Package.resolved pins swift-sqlcipher to one commit; never resolve anything newer at build time.
+# Package.resolved pins swift-sqlcipher and ONNX Runtime to one commit each; never resolve anything newer at build time.
 swift build -c release --arch arm64 --only-use-versions-from-resolved-file
 BIN="$(swift build -c release --arch arm64 --only-use-versions-from-resolved-file --show-bin-path)/openrewind"
 
@@ -27,7 +27,8 @@ sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" packaging/Info.plist >
 
 # Icon PNGs come from branding/logo.png via scripts/make-icons.py.
 iconutil -c icns packaging/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
-# Licenses of SQLCipher, LibTomCrypt and the rest that the app includes.
+# Licenses of what is linked into the app (SQLCipher, LibTomCrypt, ONNX Runtime, …).
+cp LICENSE "$APP/Contents/Resources/LICENSE.txt"
 cp THIRD_PARTY_NOTICES.txt "$APP/Contents/Resources/THIRD_PARTY_NOTICES.txt"
 
 # Signing. macOS keeps Screen Recording / Accessibility / Microphone permission for the signing
