@@ -11,16 +11,63 @@ import VideoToolbox
 /// all read through here. Video frames are decoded by a few cached image generators that seek exactly
 /// (zero tolerance) and kept in a small LRU (at most 48 frames and 256 MB), so scrubbing stays quick.
 /// A decode holds only its own video's lock, so cached frames and other videos are served meanwhile.
-/// Windows has the same in FrameImages.cs.
+/// With Encrypt Recordings on, stills and videos are encrypted files: a still is decrypted in memory, and
+/// a video (which AVFoundation reads from a file) is decrypted to a private temp file (0600) for as long
+/// as it is open here, then deleted. A video is closed after 30 s without use, and every video is closed
+/// when the timeline hides, the app locks or quits, and after each MCP message (releaseAll), so decrypted
+/// copies don't sit in the temp folder. Windows has the same in FrameImages.cs.
 final class FrameImages {
     static let shared = FrameImages()
     private static let cacheBytes = 256 << 20
 
-    /// One open video: its generator, and a lock so one decode runs on it at a time.
+    /// One open video: its generator, and a lock so one decode runs on it at a time. An encrypted video
+    /// is read from a decrypted temp copy, deleted when the video is closed.
     private final class Video {
         let generator: AVAssetImageGenerator
         let lock = NSLock()
-        init(_ path: String) { generator = FrameImages.generator(path) }
+        private let plainCopy: String?
+        private var touched = Date()
+        init(_ path: String) {
+            plainCopy = FrameImages.plainCopy(path)
+            generator = FrameImages.generator(plainCopy ?? path)
+        }
+        deinit { if let plainCopy { try? FileManager.default.removeItem(atPath: plainCopy) } }
+
+        /// Keeps the copy's modification time fresh while it is in use (call under `lock`), so the temp
+        /// cleanup in another OpenRewind process, which spares copies changed in the last 10 minutes, leaves it.
+        func touch() {
+            guard let plainCopy, Date().timeIntervalSince(touched) > 60 else { return }
+            touched = Date()
+            try? FileManager.default.setAttributes([.modificationDate: touched], ofItemAtPath: plainCopy)
+        }
+    }
+
+    /// How long a video stays open without use.
+    static let idleClose: TimeInterval = 30
+
+    /// For an encrypted video, a decrypted copy in the temp folder (only this user can read it); nil for a
+    /// plain one, or when it can't be decrypted (the decode then fails and says so).
+    static func plainCopy(_ path: String) -> String? {
+        guard RecordingFile.isEncrypted(path: path) else { return nil }
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(RecordingFile.tempCopyPrefix)\(UUID().uuidString).\((path as NSString).pathExtension)").path
+        do {
+            let plain = try RecordingFile.read(path)
+            guard FileManager.default.createFile(atPath: tmp, contents: plain, attributes: [.posixPermissions: 0o600]) else { return nil }
+            return tmp
+        } catch {
+            log("cannot open \((path as NSString).lastPathComponent): \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// An image source for a still, decrypted in memory when it is encrypted.
+    static func stillSource(_ path: String) -> CGImageSource? {
+        guard !path.isEmpty else { return nil }
+        if RecordingFile.isEncrypted(path: path) {
+            return RecordingFile.data(path).flatMap { CGImageSourceCreateWithData($0 as CFData, nil) }
+        }
+        return CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil)
     }
 
     private let lock = NSLock()
@@ -30,6 +77,34 @@ final class FrameImages {
     private let videos = Lru<String, Video>(capacity: 4)
     /// Goes up on every release: a decode that ran across one doesn't cache what it got.
     private var releases = 0
+    /// When each open video was last read (for the idle close).
+    private var lastUse: [String: Date] = [:]
+    private let idleTimer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+
+    init() {
+        idleTimer.schedule(deadline: .now() + 10, repeating: 10)
+        idleTimer.setEventHandler { [weak self] in self?.closeIdle() }
+        idleTimer.resume()
+    }
+
+    /// Close videos not read for `idleClose` (their decrypted copies are deleted with them).
+    func closeIdle(now: Date = Date()) {
+        lock.lock(); defer { lock.unlock() }
+        let idle = Set(lastUse.filter { now.timeIntervalSince($0.value) >= Self.idleClose }.keys)
+        guard !idle.isEmpty else { return }
+        videos.removeAll { idle.contains($0) }
+        for p in idle { lastUse[p] = nil }
+    }
+
+    /// Close every video and drop every decoded frame: the timeline hid, the app locked or is quitting,
+    /// or an MCP message was answered. No decrypted copy of a video is left behind.
+    func releaseAll() {
+        lock.lock(); defer { lock.unlock() }
+        releases += 1
+        videos.removeAll { _ in true }
+        frames.removeAll { _ in true }
+        lastUse = [:]
+    }
 
     /// The picture of frame `id`. A list of frames can be older than the database: the compactor may have moved
     /// the frame into a video (and deleted the still) or written its video again under a new name since. When the
@@ -43,7 +118,7 @@ final class FrameImages {
     /// The picture, or nil when it is gone or can't be read. `cache: false` for one-off reads (the compactor
     /// reading a whole video) that would only push the timeline's frames out of the cache.
     func image(_ f: FrameSource, cache: Bool = true) -> CGImage? {
-        guard f.isVideo else { return f.stillPath.isEmpty ? nil : ImageTools.load(URL(fileURLWithPath: f.stillPath)) }
+        guard f.isVideo else { return f.stillPath.isEmpty ? nil : RecordingFile.image(f.stillPath) }
         let key = Self.key(f.videoPath, f.videoFrame)
         lock.lock()
         if let hit = frames.get(key) { lock.unlock(); return hit }
@@ -55,10 +130,12 @@ final class FrameImages {
             video = Video(f.videoPath)
             videos.set(f.videoPath, video)
         }
+        lastUse[f.videoPath] = Date()
         let seen = releases
         lock.unlock()
 
         video.lock.lock()
+        video.touch()
         let img = Self.frame(video.generator, at: CMTime(seconds: f.videoTime, preferredTimescale: 600))
         video.lock.unlock()
 
@@ -82,7 +159,7 @@ final class FrameImages {
         if !f.isVideo {
             let opts = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: maxPixels,
                         kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary
-            guard !f.stillPath.isEmpty, let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: f.stillPath) as CFURL, nil) else { return nil }
+            guard let src = Self.stillSource(f.stillPath) else { return nil }
             return CGImageSourceCreateThumbnailAtIndex(src, 0, opts)
         }
         guard let img = image(f) else { return nil }
@@ -99,7 +176,7 @@ final class FrameImages {
 
     /// Pixel size of a still without decoding it.
     static func stillSize(_ path: String) -> (width: Int, height: Int)? {
-        guard !path.isEmpty, let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+        guard let src = stillSource(path),
               let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
               let w = props[kCGImagePropertyPixelWidth] as? Int, let h = props[kCGImagePropertyPixelHeight] as? Int else { return nil }
         return (w, h)
@@ -110,6 +187,7 @@ final class FrameImages {
         lock.lock(); defer { lock.unlock() }
         releases += 1
         videos.removeAll { $0 == videoPath }
+        lastUse[videoPath] = nil
         let prefix = videoPath + "#"
         frames.removeAll { $0.hasPrefix(prefix) }
     }
@@ -234,7 +312,7 @@ final class AVCodec: VideoCodec {
         }
         ctx.draw(decoded, in: CGRect(x: 0, y: 0, width: decoded.width, height: decoded.height))
         guard let img = ctx.makeImage(), let data = ImageTools.jpegData(img, quality: 0.95) else { throw Self.error("the frame could not be saved as JPEG") }
-        try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+        try RecordingFile.write(data, to: URL(fileURLWithPath: path))  // encrypted when Encrypt Recordings is on
     }
 
     func release(_ path: String) { FrameImages.shared.release(path) }
@@ -451,6 +529,9 @@ final class VideoJob {
         running = true
         state.unlock()
         queue.async { [self] in
+            // Decrypted copies (audio for Whisper, videos) a crash left behind: not only at launch, as the
+            // app can run for weeks.
+            RecordingFile.cleanTempCopies()
             while true {
                 let compress = enabled && codec.usable != nil
                 let r = compactor.runOnce(compress: compress, now: Date(), keepGoing: { !self.isStopping }, keepCompressing: { self.enabled })

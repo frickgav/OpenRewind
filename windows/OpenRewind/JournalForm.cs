@@ -36,6 +36,10 @@ sealed class JournalForm : Form
         open.Activate();
     }
 
+    /// App Lock: close it when the app locks, and count it as history in use.
+    public static void Release() { if (open is { IsDisposed: false }) open.Close(); }
+    public static bool IsShown => open is { IsDisposed: false, Visible: true };
+
     /// After a recap was written in the background or AI Settings changed.
     public static void Reload() { if (open is { IsDisposed: false } f) f.ShowDay(f.day); }
 

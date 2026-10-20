@@ -124,7 +124,12 @@ public sealed class Transcriber
         {
             while (!ct.IsCancellationRequested)
             {
-                if (db.NextPendingChunk() is AudioChunk chunk) await Task.Run(() => Transcribe(chunk), ct).ConfigureAwait(false);
+                if (db.NextPendingChunk() is AudioChunk chunk)
+                {
+                    // An encrypted clip and no key loaded: wait a minute (the key may come back) instead of using up its tries.
+                    if (!await Task.Run(() => Transcribe(chunk), ct).ConfigureAwait(false))
+                        await Task.Delay(60_000, ct).ConfigureAwait(false);
+                }
                 else
                 {
                     if (parakeet != null && DateTime.UtcNow - lastUsed > UnloadAfter) Unload();
@@ -140,11 +145,14 @@ public sealed class Transcriber
 
     bool loadFailed;
 
-    /// The one place both engines read a recorded clip: 16 kHz mono samples. Anything that changes how
-    /// clips are stored (such as encrypting them) only has to change this.
-    public static float[] LoadClipSamples(string path) => Wav.Load16k(path);
+    /// The one place both engines read a recorded clip: 16 kHz mono samples. A clip saved with Encrypt
+    /// Recordings on is decrypted in memory here (RecordingFile.Read; a plain clip is read as it is), so
+    /// neither engine ever needs a decrypted copy on disk. Throws RecordingFile's no-key error when the
+    /// clip is encrypted and the key is not loaded.
+    public static float[] LoadClipSamples(string path) => Wav.Load16k(RecordingFile.Read(path));
 
-    public void Transcribe(AudioChunk chunk)
+    /// False when the clip is encrypted and no key is loaded: it is left as it is (no try used up).
+    public bool Transcribe(AudioChunk chunk)
     {
         var sw = Stopwatch.StartNew();
         List<Segment> segments;
@@ -156,7 +164,7 @@ public sealed class Transcriber
             if (!db.SaveTranscripts(chunk, segments, EngineTag))
             {
                 Log.Write($"chunk {chunk.Id} was deleted while it was transcribed; its text is dropped");
-                return;
+                return true;
             }
         }
         catch (ModelLoadException e)
@@ -164,20 +172,26 @@ public sealed class Transcriber
             Log.Write($"cannot load {Model.Name}: {e.Message}");
             loadFailed = true;
             Status = Status with { Problem = e.Message };
-            return;
+            return true;
+        }
+        catch (Exception e) when (RecordingFile.IsNoKey(e))
+        {
+            Log.Write($"transcribe chunk {chunk.Id} waits: it is encrypted and the key is not loaded");
+            return false;
         }
         catch (Exception e)
         {
             Log.Write($"transcribe chunk {chunk.Id} failed: {e.Message}");
             db.MarkChunk(chunk.Id, "pending", e.Message);
             Status = Status with { Problem = e.Message };
-            return;
+            return true;
         }
         loadFailed = false;
         var secs = sw.Elapsed.TotalSeconds;
         Status = new TranscriberStatus(DateTime.UtcNow, secs, lastClipSeconds, null);
         var words = segments.Sum(s => s.Text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length);
         Log.Write($"transcribed chunk {chunk.Id}: {segments.Count} segments, {words} words in {secs:0.0}s");
+        return true;
     }
 
     double lastClipSeconds;
@@ -227,8 +241,9 @@ public sealed class Transcriber
         var path = tmp + ".wav";
         try
         {
-            // whisper-cli reads a file: give it the clip as LoadClipSamples read it.
-            Wav.Write(samples, ParakeetMath.SampleRate, path);
+            // whisper-cli reads a file: give it the clip as LoadClipSamples read it. A plain temp copy only this
+            // user can read, deleted below (and at the next launch, if the app is killed meanwhile).
+            File.WriteAllBytes(path, Wav.Bytes(samples, ParakeetMath.SampleRate));
             var psi = new ProcessStartInfo(Binary)
             {
                 RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true,

@@ -19,6 +19,8 @@ Usage:
   openrewind video-check     Check that this Mac can write and read the videos of Compress Older Recordings
   openrewind mcp             MCP server for AI apps, over stdin/stdout (also --mcp).
                              Turn on Settings → Allow AI Apps to Read My History first
+  openrewind selftest-encryption
+                             Check the encryption against the shared test vectors
 
 Options:
   --port N        API port (default 3031)
@@ -47,6 +49,14 @@ if args.contains("-h") || args.contains("--help") || command == "help" {
     print(usage); exit(0)
 }
 
+// Checks the file format and SQLCipher against the vectors the Windows tests use (run by the Mac CI).
+if command == "selftest-encryption" {
+    let problems = RecordingFile.selfTest() + LockState.selfTest()
+    for p in problems { print("FAIL: \(p)") }
+    print(problems.isEmpty ? "encryption self-test passed" : "encryption self-test failed (\(problems.count))")
+    exit(problems.isEmpty ? 0 : 1)
+}
+
 let config = Config.load(arguments: args)
 // Hidden: writes a test GIF with the clip exporter's GIF encoder, for scripts/gif-check.py in CI.
 if command == "gif-check" {
@@ -58,11 +68,21 @@ if command == "connect-check" {
     guard let path = args.filter({ !$0.hasPrefix("-") }).dropFirst().first else { print("usage: openrewind connect-check <empty folder>"); exit(2) }
     exit(MCPConnectCheck.run(in: URL(fileURLWithPath: path)) ? 0 : 1)
 }
+// Decrypted copies (audio handed to Whisper, videos being shown) left behind by a crash or kill.
+if ["app", "record", "serve", "mcp"].contains(command) { RecordingFile.cleanTempCopies() }
 // Started by an AI app with stdin/stdout as pipes: no menu bar icon, no recording, read-only.
 if command == "mcp" { MCPServer.serveStdio(config: config) }
 if command == "app" { openLogFile(in: config.home) }
 let db: Database
-do { db = try Database(path: config.dbPath) } catch {
+do {
+    // Encrypt Recordings: load the data key before the database, which may be encrypted with it.
+    let key = try Encryption.loadKey(config: config, interactive: command == "app")
+    RecordingFile.key = key
+    RecordingFile.encryptNew = Encryption.isOn && key != nil
+    // An encrypted file found later (a switch off still decrypting) loads the key then.
+    RecordingFile.keyLoader = { DataKeyStore.load() }
+    db = try Database(path: config.dbPath, key: key, createEncrypted: RecordingFile.encryptNew)
+} catch {
     log("cannot open database at \(config.dbPath.path): \(error)"); exit(1)
 }
 let engine = Engine(config: config, db: db)
@@ -186,6 +206,7 @@ case "delete":
 case "doctor":
     print("data dir:        \(config.home.path)")
     print("frames stored:   \(db.stats().count)")
+    print("encryption:      \(Encryption.isOn ? "on" : "off")\(Encryption.isDone ? "" : " (converting)") · database \(db.isEncrypted ? "encrypted" : "plain")")
     print("screen record:   \(Capture.hasScreenPermission ? "ok" : "MISSING")")
     print("accessibility:   \(Accessibility.isTrusted ? "ok" : "missing (OCR fallback)")")
     let a = db.audioStats()
@@ -214,7 +235,8 @@ case "video-check":
     let check = videoCheck()
     print("video storage: \(check.text)")
     guard check.ok else { exit(1) }
-    exit(VideoSelfTest.run() ? 0 : 1)
+    // Once as stored plainly, once with Encrypt Recordings on.
+    exit(VideoSelfTest.run() && VideoSelfTest.run(encrypted: true) ? 0 : 1)
 
 default:
     print(usage); exit(2)

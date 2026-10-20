@@ -262,11 +262,8 @@ final class ClipExporter {
     /// in a video is decoded), or nil.
     static func outputSize(_ frames: [ClipFrame], db: Database, _ format: ClipFormat) -> (width: Int, height: Int)? {
         for f in frames {
-            if !f.frame.source.isVideo,
-               let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: f.frame.path) as CFURL, nil),
-               let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
-               let w = props[kCGImagePropertyPixelWidth] as? Int, let h = props[kCGImagePropertyPixelHeight] as? Int {
-                return ClipPlan.outputSize(width: w, height: h, format: format)
+            if !f.frame.source.isVideo, let s = FrameImages.stillSize(f.frame.path) {
+                return ClipPlan.outputSize(width: s.width, height: s.height, format: format)
             }
             if let img = FrameImages.shared.current(db, id: f.frame.id, f.frame.source, cache: false) {
                 return ClipPlan.outputSize(width: img.width, height: img.height, format: format)

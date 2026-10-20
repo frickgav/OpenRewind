@@ -22,6 +22,10 @@ sealed class InsightsForm : Form
         open.Activate();
     }
 
+    /// App Lock: close it when the app locks, and count it as history in use.
+    public static void Release() { if (open is { IsDisposed: false }) open.Close(); }
+    public static bool IsShown => open is { IsDisposed: false, Visible: true };
+
     InsightsForm(Settings settings, Database db, Action<DateTime, string?> openAt)
     {
         var k = DeviceDpi / 96f;

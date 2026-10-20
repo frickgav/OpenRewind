@@ -765,12 +765,106 @@ it starts and `text` is the moment's text.
 
 Response: `{"data":[{"type":"OCR","content":{"frame_id","text","timestamp","app_name","window_name","file_path","text_source"}},{"type":"Audio","content":{"chunk_id","transcription","timestamp","start_time","end_time","device_name","device_type"}}],"pagination":{"limit","offset","total"}}`
 
+## Encryption and App Lock
+
+Both are off by default. Find them in **Settings → Encryption & Lock**, on the Mac and on Windows.
+
+**Encrypt Recordings** encrypts new screenshots, audio clips and compressed videos (Compress Older
+Recordings) with AES-256-GCM, and the database with [SQLCipher](https://www.zetetic.net/sqlcipher/).
+The database holds everything else OpenRewind keeps: the text of each screenshot, transcripts, the
+Journal's recaps, Meetings and their notes, and the Search by Meaning index, so those are encrypted
+too. What is already recorded is encrypted in the
+background; quitting halfway is fine, it carries on at the next launch. Turning it off decrypts
+everything back the same way. The menu shows how far it has got. The database is rewritten in one
+go first: recording waits until that is done (a few seconds, up to a minute or two for a very large
+history), and it needs free disk space for a second copy of the database.
+
+- **What it protects against:** someone who copies your disk, a backup or the `~/.openrewind`
+  folder, and other user accounts on the same computer. Without your login they see only
+  encrypted files.
+- **What it does not protect against:** apps running as you. OpenRewind has to record in the
+  background without asking for a password, so the key is kept where your login unlocks it: the
+  login Keychain on the Mac, DPAPI for your Windows account on Windows
+  (`~/.openrewind/encryption-key.dpapi`). Anything that can run as you can ask for it too. The
+  login Keychain is a file (`~/Library/Keychains/login.keychain-db`) protected by your login
+  password; it is not tied to this Mac, so a copy of it plus your password opens the key.
+- **What was there before:** backups, Time Machine snapshots and cloud copies made before you turned
+  it on still hold the plain files, and the old plain files are deleted, not wiped, so they can stay
+  on the disk until it reuses the space. Turn it on before you record anything sensitive, or delete
+  the older backups.
+- **The log** (`~/.openrewind/openrewind.log`) is a plain file. With encryption on it no longer
+  names the app of each saved frame or meeting, or a meeting's times; earlier lines (from before it
+  was on) still do.
+- **Recovery key:** **Export Recovery Key…** saves the key as a text file (72 characters in 9 groups)
+  that only you can read. OpenRewind offers to save it when you turn encryption on. If the Keychain
+  or your Windows account is reset, or you move your recordings to another computer, OpenRewind asks
+  for it at launch and checks it against your recordings. **If you lose the key and the Keychain or
+  Windows account, the recordings are lost for good.** Keep it somewhere safe, like a password
+  manager. The same key works in the Mac and the Windows app. OpenRewind never replaces a stored key
+  it cannot read, and keeps a copy of the old one when a recovery key replaces it.
+- Speech to text: each clip is decrypted in memory. Parakeet works from memory; whisper-cli needs a
+  file, so it gets the clip as a WAV file in your temp folder that only you can read, for the few
+  seconds it takes, deleted right after.
+- Compressed videos: the video player reads files, so a video being shown (timeline, search, clip
+  export, AI screenshots) is decrypted to a file in your temp folder that only you can read, while it
+  is in use. It is closed and deleted after 30 seconds unused, when the timeline closes or the app
+  locks or quits, and after each AI-app (MCP) request. A new video is made in the temp folder and
+  saved into `data/video` encrypted; no plain video is written under `data/`. Copies left by a crash
+  are removed when the app, `record`, `serve` or `mcp` next starts, and on each pass of Compress
+  Older Recordings.
+- Exports are plain on purpose: a clip (GIF or video), Save Screenshot, Live Text, and the Journal's
+  and Meetings' Copy and Save as Markdown write ordinary files where you choose, for you to share.
+- The Search by Meaning model files are not encrypted: they are the public all-MiniLM-L6-v2 model,
+  not your data. Its index of your history is in the encrypted database.
+- AI apps (MCP) keep working with encryption on: `OpenRewind mcp` reads the key the same way the app
+  does (Keychain or DPAPI) and opens the database read-only. With the App Lock on, they follow it (see
+  below).
+- Files (format version 2): an encrypted file is `ORENC`, the version, a key id (4 bytes), a 12-byte
+  nonce, the encrypted data and a 16-byte tag. The file key and the database key are both derived
+  from the one key you can export (HKDF-SHA256, salt `OpenRewind`, info `openrewind/files/v2` and
+  `openrewind/db/v2`), so they are never the same. Each file is also bound to its place under
+  `data/` (for example `2026-10-19/14-30-05.jpg`), so files swapped or moved inside the folder do
+  not open. Plain and encrypted files can sit side by side, so the switch can stop anywhere.
+- Libraries: [skiptools/swift-sqlcipher](https://github.com/skiptools/swift-sqlcipher) 1.9.0 on
+  the Mac (SQLCipher 4.15.0 with LibTomCrypt, built into the app and pinned to one commit in
+  `Package.resolved`), and `SQLitePCLRaw.bundle_e_sqlcipher` 2.1.10 on Windows, which carries an
+  older community build (SQLCipher 4.5.2). Both use the SQLCipher 4 default format, so a database
+  moves between them; the Windows one should move to a newer build when one is available. Their
+  licenses are in `THIRD_PARTY_NOTICES.txt`, which ships with both apps.
+- For developers: every reader of recordings goes through one loader, `RecordingFile.read(path)`
+  on the Mac and `RecordingFile.Read(path)` on Windows. It returns the plain bytes of a plain or an
+  encrypted file. Pictures (stills and video frames) go through `FrameImages`, and both speech
+  engines read clips through `Transcriber.loadClipSamples` (Mac) / `Transcriber.LoadClipSamples`
+  (Windows), which use it. New features that open screenshots, videos or audio should call these
+  too; recordings are written with `RecordingFile.write` / `RecordingFile.Write`.
+  `OpenRewind selftest-encryption` (Mac) checks the format against the vectors in the Windows tests.
+
+**Require Touch ID or Password to Open Timeline** (Mac) / **Require Windows Hello to Open Timeline**
+(Windows) asks before showing the timeline, search, Ask AI, Journal, Meetings, Insights, Blocked Apps &
+Sites, the data folder and setup, before opening a moment from an Ask AI answer, and before deleting recordings or
+changing how long they are kept. Recording keeps going while locked. An unlock lasts until the screen
+locks or the computer sleeps, or until **Lock Again After** has passed with none of those windows in
+use (5 minutes, 15 minutes (default), 1 hour, or only when the screen locks); then they close. While
+locked, the Local Search Server answers `423 Locked` for search, screenshots and audio, and `/health`
+says only that it is running. AI apps (MCP) follow the lock too: with it on, they get your history
+only while OpenRewind is running and unlocked (within **Lock Again After** of its last use), and
+otherwise get a message saying it is locked. Turning AI apps on or off and **Connect AI Apps…** ask
+for the unlock first. Windows Hello needs at least a PIN; without it (or after it is removed)
+your Windows password works instead, so you can always turn the lock off. A Mac needs a login password.
+
+The lock is against someone using your computer while you are away from it, not against programs
+running as you: those could turn it off in the settings file (`settings.json` on Windows,
+`defaults` on the Mac) or run `OpenRewind serve` from a terminal. Encrypt Recordings is what protects
+the files.
+
 ## Data
 
 `~/.openrewind/db.sqlite`, `~/.openrewind/data/<date>/*.heic` (`*.jpg` on Windows and older recordings),
 `~/.openrewind/data/video/<date>/*.mp4` (with Compress Older Recordings on), and
 `~/.openrewind/data/audio/<date>/*.wav`. In the API, a frame kept in a video has the video as
 `file_path` and its frame number in it as `offset_index`.
+With Encrypt Recordings on, these files keep their names but are encrypted (see
+[Encryption and App Lock](#encryption-and-app-lock)).
 Delete the folder to wipe everything, or from the terminal:
 
 ```bash

@@ -121,6 +121,28 @@ on older recordings and on how time is counted). Click an app, site
   title changes, and a window whose new address can't be read is hidden too (Add sites… lists the
   sites and pages you visited lately).
   `OPENREWIND_EXCLUDE` adds more app names.
+- **Settings → Encryption & Lock → Encrypt Recordings** (off by default) encrypts screenshots,
+  audio, compressed videos and the database (with the Journal, Meetings and the Search by Meaning
+  index) on disk. A video being shown is decrypted to a temp file only you can read while it is in
+  use; it is deleted after 30 seconds unused, when the timeline closes, the app locks or quits, and
+  after each AI-app request.
+  Exports (clips, Save Screenshot, Save as Markdown) are plain files you choose to make. The key is
+  kept for your Windows account (DPAPI), so recording needs no password. It protects against someone copying the disk, a backup or the folder, and
+  against other Windows accounts; not against programs running as you. Existing recordings are
+  converted in the background (recording waits while the database itself is rewritten). Backups
+  and copies made before you turned it on keep the plain files. **Export Recovery Key…** saves the
+  key; without it, encrypted recordings can't be opened after a Windows account reset or on another
+  PC. AI apps (MCP) keep working: `OpenRewind.exe mcp` reads the key the same way.
+- **Settings → Encryption & Lock → Require Windows Hello to Open Timeline** (off by default) asks
+  for your face, fingerprint or PIN before the timeline, search, Ask AI, Journal, Meetings, Insights,
+  moment links, deleting recordings, and turning AI apps on or Connect AI Apps…. AI apps (MCP) get
+  your history only while OpenRewind is running and unlocked. It locks again when the PC locks or sleeps, or after **Lock Again After**
+  (15 minutes by default) with none of those windows in use, and closes them. Without Windows Hello
+  your Windows password works instead. It does not stop programs running as you (they could edit
+  `settings.json` or run `OpenRewind.exe serve`).
+  See [Encryption and App Lock](../README.md#encryption-and-app-lock).
+- The SQLCipher in this app is the community build in `SQLitePCLRaw.bundle_e_sqlcipher` 2.1.10
+  (SQLCipher 4.5.2, older than the Mac's 4.15.0; same file format). Licenses: `THIRD_PARTY_NOTICES.txt`.
 - **Settings → Show Tutorial** walks through the timeline again; **Run Setup Again…** reopens setup.
 - Log: `%USERPROFILE%\.openrewind\openrewind.log`.
 

@@ -1,5 +1,5 @@
 import Foundation
-import SQLite3
+import SQLCipher
 
 /// Where a frame's picture is: a still file, or one frame of a video (see Compress Older Recordings).
 /// `videoTime` is the frame's time inside the video in seconds, `videoFrame` its number (both start at 0).

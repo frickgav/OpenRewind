@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 import IOKit.ps
 import NaturalLanguage
-import SQLite3
+import SQLCipher
 
 // Search by Meaning: a background indexer gives each "moment" (a stretch of one window, or one
 // audio clip) a sentence vector made on this Mac, and a search ranks moments by how close they

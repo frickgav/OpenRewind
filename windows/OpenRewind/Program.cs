@@ -80,8 +80,37 @@ static class Program
             Log.Write($"OpenRewind {Updater.Current} starting ({Environment.ProcessPath})");
         }
 
+        // Encrypt Recordings: load the data key before the database, which may be encrypted with it.
+        // Also while a switch off is still decrypting (EncryptionDone false): some files are still encrypted.
+        var startSettings = Settings.Load(config.Home);
+        var encrypt = startSettings.EncryptRecordings;
+        var key = DataKeyStore.Load(config.Home);
+        // A switch off with nothing encrypted left: it is done, carry on without a key.
+        if (key == null && !encrypt && !startSettings.EncryptionDone && !Database.IsEncryptedFile(config.DbPath)
+            && RecordingFile.FirstEncrypted(config.DataDir) == null)
+        {
+            startSettings.EncryptionDone = true;
+            startSettings.Save();
+        }
+        if (key == null && (encrypt || !startSettings.EncryptionDone || Database.IsEncryptedFile(config.DbPath)))
+        {
+            if (command == "app") key = Encryption.AskForRecoveryKey(config);
+            if (key == null)
+            {
+                Log.Write("your recordings are encrypted and the key is not on this Windows account; open OpenRewind to enter the recovery key");
+                return 1;
+            }
+        }
+        RecordingFile.Key = key;
+        RecordingFile.EncryptNew = encrypt && key != null;
+        RecordingFile.KeyLoader = () => DataKeyStore.Load(config.Home);
+        // Decrypted copies (audio for whisper-cli, videos being shown) left behind by a crash or kill.
+        if (command is "app" or "record" or "serve") RecordingFile.CleanTempCopies();
+        // Encrypt Recordings switched: close a video before its file is replaced (Windows can't replace an open file).
+        RecordingFile.BeforeConvert = p => { if (p.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)) FrameImages.Release(p); };
+
         Database db;
-        try { db = new Database(config.DbPath); }
+        try { db = new Database(config.DbPath, key, createEncrypted: RecordingFile.EncryptNew); }
         catch (Exception e)
         {
             Log.Write($"cannot open database at {config.DbPath}: {e.Message}");
@@ -195,6 +224,7 @@ static class Program
             {
                 Console.WriteLine($"data dir:        {config.Home}");
                 Console.WriteLine($"frames stored:   {db.Stats().Count}");
+                Console.WriteLine($"encryption:      {(RecordingFile.EncryptNew ? "on" : "off")}{(startSettings.EncryptionDone ? "" : " (converting)")} (database {(db.IsEncrypted ? "encrypted" : "plain")})");
                 Console.WriteLine($"windows ocr:     {(Ocr.Available ? "ok" : "MISSING (add a language with OCR in Settings → Time & language)")}");
                 Console.WriteLine($"accessibility:   {(config.UseAccessibility ? "on (UI Automation)" : "off")}");
                 Console.WriteLine($"microphone:      {(AudioStream.HasDevice(NAudio.CoreAudioApi.DataFlow.Capture) ? "found" : "none")}");
@@ -224,7 +254,8 @@ static class Program
             case "video-check":
             {
                 Console.WriteLine($"video storage: {VideoCheck()}");
-                return VideoSelfTest.Run(Console.Out) ? 0 : 1;
+                // Once as stored plainly, once with Encrypt Recordings on.
+                return VideoSelfTest.Run(Console.Out) && VideoSelfTest.Run(Console.Out, encrypted: true) ? 0 : 1;
             }
 
             default:

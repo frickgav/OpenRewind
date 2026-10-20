@@ -450,7 +450,7 @@ sealed partial class TimelineModel
         StopAudio();
         try
         {
-            reader = new WaveFileReader(a.Path);
+            reader = new WaveFileReader(new MemoryStream(RecordingFile.Read(a.Path)));
             var at = TimeSpan.FromSeconds(Math.Max(0, (Playhead - a.Start).TotalSeconds));
             if (at < reader.TotalTime) reader.CurrentTime = at;
             player = new WaveOutEvent();

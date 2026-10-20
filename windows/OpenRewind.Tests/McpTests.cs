@@ -229,11 +229,11 @@ public class McpTests : IDisposable
         Directory.CreateDirectory(dir);
         var loaded = new List<WordEmbedder>();
         using var ro = Database.OpenReadOnly(Path.Combine(home, "db.sqlite"));
-        using var meaning = new McpMeaning(ro, dir, _ => { var e = new WordEmbedder(); loaded.Add(e); return e; });
+        using var meaning = new McpMeaning(dir, _ => { var e = new WordEmbedder(); loaded.Add(e); return e; });
         bool on = false;
         McpServer S() => new("1", () =>
         {
-            var tools = new AiTools(ro) { Blocked = blocked, Meaning = meaning.Get(on) };
+            var tools = new AiTools(ro) { Blocked = blocked, Meaning = meaning.Get(ro, on) };
             return new McpState(true, tools, MeaningMissing: meaning.Missing);
         });
         List<string> Names() => ((JsonArray)Ask(S(), """{"jsonrpc":"2.0","id":1,"method":"tools/list"}""")["result"]!["tools"]!)

@@ -58,40 +58,51 @@ enum ImageTools {
     }
 
     /// HEIC is much smaller than JPEG for screenshots at the same sharpness. Macs that cannot
-    /// encode it get JPEG. `base` has no extension; returns the file written.
+    /// encode it get JPEG. `base` has no extension; returns the file written. Saved through
+    /// RecordingFile, so it is encrypted when Encrypt Recordings is on.
     static func writeSnapshot(_ image: CGImage, to base: URL) throws -> URL {
-        if canWriteHEIC {
+        if canWriteHEIC, let data = encode(image, type: .heic, quality: 0.6) {
             let heic = base.appendingPathExtension("heic")
-            if (try? write(image, to: heic, type: .heic, quality: 0.6)) != nil { return heic }
+            try RecordingFile.write(data, to: heic)
+            return heic
+        }
+        guard let data = encode(image, type: .jpeg, quality: 0.7) else {
+            throw NSError(domain: "openrewind", code: 2, userInfo: [NSLocalizedDescriptionKey: "cannot encode \(base.lastPathComponent)"])
         }
         let jpg = base.appendingPathExtension("jpg")
-        try write(image, to: jpg, type: .jpeg, quality: 0.7)
+        try RecordingFile.write(data, to: jpg)
         return jpg
     }
 
-    static let canWriteHEIC = (CGImageDestinationCopyTypeIdentifiers() as? [String] ?? []).contains(UTType.heic.identifier)
-
+    /// A plain image file somewhere the user picked (Save Screenshot). Not for recordings: those go
+    /// through RecordingFile (writeSnapshot), so they are encrypted when Encrypt Recordings is on.
     static func write(_ image: CGImage, to url: URL, type: UTType, quality: Double) throws {
-        guard let dest = CGImageDestinationCreateWithURL(url as CFURL, type.identifier as CFString, 1, nil) else {
-            throw NSError(domain: "openrewind", code: 1, userInfo: [NSLocalizedDescriptionKey: "cannot create \(url.path)"])
+        guard let data = encode(image, type: type, quality: quality) else {
+            throw NSError(domain: "openrewind", code: 2, userInfo: [NSLocalizedDescriptionKey: "cannot encode \(url.lastPathComponent)"])
         }
-        CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
-        if !CGImageDestinationFinalize(dest) {
-            try? FileManager.default.removeItem(at: url)
-            throw NSError(domain: "openrewind", code: 2, userInfo: [NSLocalizedDescriptionKey: "cannot write \(url.path)"])
-        }
+        try data.write(to: url, options: .atomic)
     }
 
-    /// JPEG bytes, for browsers that cannot show HEIC.
-    static func jpegData(_ image: CGImage, quality: Double = 0.8) -> Data? {
+    static func encode(_ image: CGImage, type: UTType, quality: Double) -> Data? {
         let data = NSMutableData()
-        guard let dest = CGImageDestinationCreateWithData(data as CFMutableData, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
+        guard let dest = CGImageDestinationCreateWithData(data as CFMutableData, type.identifier as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
         return CGImageDestinationFinalize(dest) ? data as Data : nil
     }
 
+    static let canWriteHEIC = (CGImageDestinationCopyTypeIdentifiers() as? [String] ?? []).contains(UTType.heic.identifier)
+
+    /// JPEG bytes, for browsers that cannot show HEIC.
+    static func jpegData(_ image: CGImage, quality: Double = 0.8) -> Data? { encode(image, type: .jpeg, quality: quality) }
+
+    /// An image file that is not a recording (`ingest`). Recordings go through RecordingFile.image.
     static func load(_ url: URL) -> CGImage? {
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(src, 0, nil)
+    }
+
+    static func image(from data: Data) -> CGImage? {
+        guard let src = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         return CGImageSourceCreateImageAtIndex(src, 0, nil)
     }
 }

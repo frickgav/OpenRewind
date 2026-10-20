@@ -341,17 +341,30 @@ public sealed class VideoCompactor
         Compaction.SegmentPath(VideoDir, windowStart, display, p => File.Exists(p) || File.Exists(Compaction.TempPath(p)) || db.IsVideoReferenced(p));
 
     /// Encode to a temp file, check it reads back, move it into place. Null when any of that failed
-    /// (nothing is left behind and the stills are untouched).
+    /// (nothing is left behind and the stills are untouched). With Encrypt Recordings on, the video is made
+    /// in the user's temp folder (never as a plain file under data/) and saved encrypted. Whether to encrypt
+    /// is decided again when the video is put in place, under RecordingFile.CommitGate: Encrypt Recordings
+    /// may have been switched while it was being made, and the migration may have finished meanwhile.
     VideoSegment? Write(string path, List<FrameSource> sources, int w, int h, Func<string, long, VideoSegment> make)
     {
-        var tmp = Compaction.TempPath(path);
+        var madeOutside = RecordingFile.EncryptNew;
+        var tmp = madeOutside ? Path.Combine(Path.GetTempPath(), $"{RecordingFile.TempCopyPrefix}{Guid.NewGuid():N}.mp4") : Compaction.TempPath(path);
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             var name = codec.Write(sources, w, h, tmp);
             if (!codec.Verify(tmp, sources, w, h)) throw new IOException("the new video did not read back like the pictures");
             codec.Release(tmp);
-            File.Move(tmp, path);
+            lock (RecordingFile.CommitGate)
+            {
+                if (RecordingFile.EncryptNew || madeOutside)
+                {
+                    // Encrypted or not by the setting now, written atomically under data/.
+                    RecordingFile.Write(path, File.ReadAllBytes(tmp));
+                    Delete(tmp);
+                }
+                else File.Move(tmp, path);
+            }
             AfterStep?.Invoke("written");
             return make(name, Size(path));
         }
@@ -368,7 +381,9 @@ public sealed class VideoCompactor
     {
         if (path.Length == 0) return;
         if (path.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)) codec.Release(path);
-        try { File.Delete(path); } catch (Exception e) { Log.Write($"cannot delete {path}: {e.Message}"); }
+        // Under RecordingFile's lock, so an encryption switch converting this file never writes it back.
+        RecordingFile.Delete(path);
+        if (File.Exists(path)) Log.Write($"cannot delete {path}");
     }
 
     static long Size(string path)

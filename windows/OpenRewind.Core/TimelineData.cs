@@ -71,9 +71,11 @@ public sealed partial class Database
             {
                 if (Time.ParseIso(r.GetString(1)) is not DateTime t) continue;
                 var path = r.GetString(4);
-                // 16 kHz mono 16-bit WAV: 32,000 bytes per second after the 44-byte header.
-                long size = 0;
-                try { size = new FileInfo(path).Length; } catch { }
+                // 16 kHz mono 16-bit WAV: 32,000 bytes per second after the 44-byte header. The size
+                // on disk is enough: an encrypted file is 38 bytes longer, about 1 ms of sound, and
+                // not opening each file keeps this fast on a long history.
+                long size;
+                try { size = new FileInfo(path).Length; } catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { size = 0; }
                 if (size <= 44) continue;
                 out_.Add(new TimelineAudio(r.GetInt64(0), t, (size - 44) / 32_000.0, r.GetString(2), r.GetInt64(3) != 0, path));
             }

@@ -52,6 +52,9 @@ public sealed class McpServer
 
     readonly string version;
     readonly Func<McpState> state;
+    /// Runs after each message is answered (the MCP command closes the database there, so the app
+    /// can convert it for Encrypt Recordings while an AI app keeps this process running for days).
+    public Action? AfterMessage { get; set; }
 
     public McpServer(string version, Func<McpState> state)
     {
@@ -68,6 +71,7 @@ public sealed class McpServer
             string? reply;
             try { reply = tooLong ? Error(null, -32600, "Invalid Request: message too large").ToJsonString(Json) : Handle(line); }
             catch (Exception e) { Log.Write($"mcp: {e.GetType().Name}: {e.Message}"); reply = Error(null, -32603, "Internal error").ToJsonString(Json); }
+            finally { AfterMessage?.Invoke(); }
             if (reply == null) continue;
             output.Write(reply);
             output.Write('\n');
@@ -256,5 +260,6 @@ public static class McpSetup
 public sealed partial class Database
 {
     /// For the MCP server: reads while the app records, and never changes the database.
-    public static Database OpenReadOnly(string path) => new(path, readOnly: true);
+    /// `key` is the master data key, needed when Encrypt Recordings is on.
+    public static Database OpenReadOnly(string path, byte[]? key = null) => new(path, readOnly: true, key);
 }

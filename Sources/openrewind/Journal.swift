@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import SQLite3
+import SQLCipher
 import SwiftUI
 import UniformTypeIdentifiers
 

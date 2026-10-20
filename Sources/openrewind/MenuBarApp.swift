@@ -33,10 +33,15 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         set { defaults.set(newValue, forKey: pausedUntilKey) }
     }
     private var isPaused: Bool { pausedUntil != nil }
+    private let appLock = AppLock()
+    /// Checks every 15 s whether the unlock has run out, so open history windows close.
+    private var lockTimer: Timer?
+    private var encryption: Encryption!
     /// The AI chat keeps its conversation while its window is closed.
     private lazy var aiChat: AIChatModel = {
         let m = AIChatModel(db: engine.db, meaning: engine.meaning)
-        m.openMoment = { [weak self] d in self?.overlay.show(at: d) }
+        // A moment link goes through App Lock too: the chat window may have been left open.
+        m.openMoment = { [weak self] d in self?.appLock.run("see your timeline") { self?.overlay.show(at: d) } }
         // AI Settings is a normal window, which would sit under the overlay.
         m.openSettings = { [weak self] in
             if self?.overlay.isVisible == true { self?.overlay.hide() }
@@ -47,7 +52,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The journal keeps the day it shows while its window is closed.
     private lazy var journal: JournalModel = {
         let m = JournalModel(db: engine.db)
-        m.openMoment = { [weak self] d in self?.overlay.show(at: d) }
+        m.openMoment = { [weak self] d in self?.appLock.run("see your timeline") { self?.overlay.show(at: d) } }
         m.openSettings = { [weak self] in self?.showAISettings() }
         return m
     }()
@@ -104,6 +109,20 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         overlay = OverlayController(db: engine.db)
         overlay.chat = { [unowned self] in self.aiChat }
+        appLock.onLock = { [weak self] in self?.hideHistory() }
+        appLock.stateHome = engine.config.home
+        let t = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            // In use: OpenRewind is in front with a window that shows history.
+            let open = self.overlay.isVisible || InsightsWindow.shared.isOpen
+                || ["ai", "journal", "meetings"].contains { SetupWindows.shared.isOpen($0) }
+            self.appLock.tick(historyInUse: NSApp.isActive && open)
+        }
+        RunLoop.main.add(t, forMode: .common)
+        lockTimer = t
+        engine.serverLocked = { [appLock] in !appLock.isUnlocked }
+        encryption = Encryption(engine: engine)
+        encryption.resume()
         overlay.model.meaning = engine.meaning
         engine.meaning.pace = { MeaningPace.now() }
         if defaults.bool(forKey: meaningKey) { startMeaning() }
@@ -133,11 +152,15 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         recapTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in self?.writeDueRecap() }
     }
 
+    /// The journal is history too: behind App Lock.
     @objc private func showJournal() {
-        let j = journal
-        j.reload()
-        SetupWindows.shared.show("journal", title: "Journal", size: NSSize(width: 620, height: 800), resizable: true) {
-            JournalView(model: j)
+        appLock.run("see your journal") { [weak self] in
+            guard let self else { return }
+            let j = self.journal
+            j.reload()
+            SetupWindows.shared.show("journal", title: "Journal", size: NSSize(width: 620, height: 800), resizable: true) {
+                JournalView(model: j)
+            }
         }
     }
 
@@ -152,7 +175,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                              attemptDay: JournalSettings.attemptDay, attempts: JournalSettings.attempts),
               let day = Journal.date(fromKey: key) else { return }
         let db = engine.db, j = journal
-        guard !j.writing.contains(key) else { return }
+        guard !j.writing.contains(key), !db.isConverting else { return }  // held while Encrypt Recordings converts it
         if let r = db.recap(day: key), !r.partial { JournalSettings.lastAutoDay = key; return }
         writingRecap = true
         let tools = JournalModel.tools(db), price = AISettings.price(for: s.model)
@@ -181,32 +204,47 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// The first-run setup; ends in the guided tour if the user asks for it.
     @objc private func showSetup() {
-        Onboarding.show(db: engine.db) { [weak self] tour in if tour { self?.overlay.showTutorial() } }
+        appLock.run("change OpenRewind's setup") { [weak self] in
+            guard let self else { return }
+            Onboarding.show(db: self.engine.db) { [weak self] tour in if tour { self?.overlay.showTutorial() } }
+        }
     }
 
-    @objc private func showTutorial() { overlay.showTutorial() }
+    @objc private func showTutorial() {
+        appLock.run("see your timeline") { [weak self] in self?.overlay.showTutorial() }
+    }
 
     @objc private func showBlockedApps() {
-        SetupWindows.shared.show("blocked", title: "Blocked Apps & Sites", size: NSSize(width: 600, height: 860), resizable: true) {
-            BlockedAppsView(db: engine.db)
+        appLock.run("change blocked apps and sites") { [weak self] in
+            guard let self else { return }
+            SetupWindows.shared.show("blocked", title: "Blocked Apps & Sites", size: NSSize(width: 600, height: 860), resizable: true) {
+                BlockedAppsView(db: self.engine.db)
+            }
         }
     }
 
     @objc private func showAIChat() {
-        let chat = aiChat
-        chat.reloadSettings()
-        SetupWindows.shared.show("ai", title: "Ask OpenRewind", size: NSSize(width: 560, height: 720), resizable: true) {
-            AIChatView(model: chat)
+        appLock.run("ask about your history") { [weak self] in
+            guard let self else { return }
+            let chat = self.aiChat
+            chat.reloadSettings()
+            SetupWindows.shared.show("ai", title: "Ask OpenRewind", size: NSSize(width: 560, height: 720), resizable: true) {
+                AIChatView(model: chat)
+            }
         }
     }
 
+    /// Meeting transcripts and notes are history too: behind App Lock, and so are its moment links.
     @objc private func showMeetings() {
-        let model = MeetingsModel(db: engine.db)
-        model.openMoment = { [weak self] d in self?.overlay.show(at: d) }
-        model.openSettings = { [weak self] in self?.showAISettings() }
-        let center = meetings
-        SetupWindows.shared.show("meetings", title: "Meetings", size: NSSize(width: 1000, height: 700), resizable: true) {
-            MeetingsView(model: model, center: center)
+        appLock.run("see your meetings") { [weak self] in
+            guard let self else { return }
+            let model = MeetingsModel(db: self.engine.db)
+            model.openMoment = { [weak self] d in self?.appLock.run("see your timeline") { self?.overlay.show(at: d) } }
+            model.openSettings = { [weak self] in self?.showAISettings() }
+            let center = self.meetings
+            SetupWindows.shared.show("meetings", title: "Meetings", size: NSSize(width: 1000, height: 700), resizable: true) {
+                MeetingsView(model: model, center: center)
+            }
         }
     }
 
@@ -276,9 +314,27 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Where the time went; a click shows that app or moment in the timeline.
+    /// Where the time went (app names and hours, so it is history too); a click opens the timeline.
     @objc private func showInsights() {
-        InsightsWindow.shared.show(db: engine.db) { [weak self] date, app in self?.overlay.show(at: date, app: app) }
+        appLock.run("see your insights") { [weak self] in
+            guard let self else { return }
+            InsightsWindow.shared.show(db: self.engine.db) { [weak self] date, app in
+                self?.appLock.run("see your timeline") { self?.overlay.show(at: date, app: app) }
+            }
+        }
+    }
+
+    /// Open the timeline, after Touch ID or the password when App Lock is on; close it if it is open.
+    private func toggleTimeline() {
+        if overlay.isVisible { overlay.hide() } else { appLock.run("see your timeline") { [weak self] in self?.overlay.show() } }
+    }
+
+    /// The app locked (screen locked, Mac asleep): close everything that shows history. Recording goes on.
+    private func hideHistory() {
+        if overlay.isVisible { overlay.hide(restoreFocus: false) }
+        for w in ["ai", "blocked", "journal", "meetings", "mcp"] { SetupWindows.shared.close(w) }
+        InsightsWindow.shared.close()
+        FrameImages.shared.releaseAll()
     }
 
     @objc private func showAISettings() {
@@ -292,13 +348,20 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Turning it on shows how to add OpenRewind to each AI app.
+    /// Behind App Lock: AI apps read the whole history through it.
     @objc private func toggleMCP() {
-        MCPSetup.enabled.toggle()
-        log("AI apps (MCP) \(MCPSetup.enabled ? "allowed" : "not allowed")")
-        if MCPSetup.enabled { showConnectAIApps() }
+        appLock.run("change whether AI apps can read your history") { [weak self] in
+            MCPSetup.enabled.toggle()
+            log("AI apps (MCP) \(MCPSetup.enabled ? "allowed" : "not allowed")")
+            if MCPSetup.enabled { self?.openConnectAIApps() }
+        }
     }
 
     @objc private func showConnectAIApps() {
+        appLock.run("connect AI apps") { [weak self] in self?.openConnectAIApps() }
+    }
+
+    private func openConnectAIApps() {
         SetupWindows.shared.show("mcp", title: "Connect AI Apps", size: NSSize(width: 620, height: 860), resizable: true) {
             ConnectAIAppsView(home: engine.config.home)
         }
@@ -440,6 +503,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let m = NSMenu()
         m.addItem(action("Blocked Apps & Sites…", #selector(showBlockedApps)))
         m.addItem(action("AI Settings…", #selector(showAISettings)))
+        m.addItem(encryptionMenu())
         let autoRecap = action("Write Each Day's Recap Automatically", #selector(toggleAutoRecap))
         let ai = AISettings.load()
         autoRecap.state = JournalSettings.isOn(for: ai) ? .on : .off
@@ -646,7 +710,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             lines.append("No clips transcribed since it started")
         }
-        let pending = engine.db.audioStats().pending
+        // While the database is being converted every query waits for it; don't hang the menu.
+        let pending = engine.db.isConverting ? 0 : engine.db.audioStats().pending
         if pending > 0 { lines.append(pending == 1 ? "1 clip waiting" : "\(pending) clips waiting") }
         return lines
     }
@@ -721,7 +786,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @discardableResult
     private func registerHotKey(_ sc: Shortcut) -> Bool {
         hotKey = nil  // unregister the old one first
-        hotKey = HotKey(keyCode: sc.keyCode, modifiers: sc.modifiers) { [weak self] in self?.overlay.toggle() }
+        hotKey = HotKey(keyCode: sc.keyCode, modifiers: sc.modifiers) { [weak self] in self?.toggleTimeline() }
         return hotKey?.registered == true
     }
 
@@ -818,6 +883,88 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         log("timeline look set to \(raw)")
     }
 
+    // MARK: encryption & lock
+
+    private func encryptionMenu() -> NSMenuItem {
+        let item = NSMenuItem(title: "Encryption & Lock", action: nil, keyEquivalent: "")
+        item.image = NSImage(systemSymbolName: "lock", accessibilityDescription: nil)
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+        let enc = action("Encrypt Recordings", #selector(toggleEncryption))
+        enc.state = encryption.on ? .on : .off
+        enc.toolTip = "Encrypt screenshots, audio and the database on disk. The key stays in your login Keychain."
+        sub.addItem(enc)
+        let status = NSMenuItem(title: "   " + encryption.status(), action: nil, keyEquivalent: "")
+        status.isEnabled = false
+        sub.addItem(status)
+        if encryption.failed > 0 {
+            sub.addItem(action("Stop Retrying \(encryption.failed.formatted()) Files…", #selector(skipFailedFiles)))
+        }
+        let export = action("Export Recovery Key…", #selector(exportRecoveryKey))
+        export.isEnabled = encryption.hasKey
+        sub.addItem(export)
+        sub.addItem(.separator())
+
+        let lock = action("Require Touch ID or Password to Open Timeline", #selector(toggleAppLock))
+        lock.state = appLock.enabled ? .on : .off
+        lock.toolTip = "Ask for Touch ID or your Mac password before showing the timeline, search, Ask AI and other history. Recording keeps going."
+        sub.addItem(lock)
+        let after = NSMenuItem(title: "Lock Again After", action: nil, keyEquivalent: "")
+        after.isEnabled = appLock.enabled
+        let am = NSMenu()
+        for choice in AppLock.timeoutChoices {
+            let i = action(choice.title + (choice.minutes == 15 ? " (Default)" : ""), #selector(setLockMinutes(_:)))
+            i.tag = choice.minutes
+            i.state = appLock.minutes == choice.minutes ? .on : .off
+            am.addItem(i)
+        }
+        after.submenu = am
+        sub.addItem(after)
+        item.submenu = sub
+        return item
+    }
+
+    @objc private func toggleEncryption() {
+        if !encryption.on { encryption.turnOn() }
+        else { appLock.run("stop encrypting recordings") { [weak self] in self?.encryption.turnOff() } }
+    }
+
+    @objc private func skipFailedFiles() { encryption.skipFailed() }
+
+    @objc private func exportRecoveryKey() {
+        appLock.run("save the recovery key") { [weak self] in _ = self?.encryption.exportKey() }
+    }
+
+    @objc private func setLockMinutes(_ sender: NSMenuItem) { appLock.minutes = sender.tag }
+
+    @objc private func toggleAppLock() {
+        if appLock.enabled {
+            // Turning it off from the menu asks first, so someone at the unlocked Mac can't just
+            // switch it off. (A program running as you could still use `defaults write`; see AppLock.)
+            appLock.unlock("stop asking for Touch ID or your password") { [weak self] ok in
+                guard ok, let self else { return }
+                self.appLock.enabled = false
+                log("app lock off")
+            }
+            return
+        }
+        if let why = AppLock.unavailableReason() {
+            NSApp.activate(ignoringOtherApps: true)
+            let a = NSAlert()
+            a.messageText = "Touch ID or a password is needed"
+            a.informativeText = "\(why)\n\nSet a login password for your Mac account in System Settings → Users & Groups, then try again."
+            a.runModal()
+            return
+        }
+        appLock.enabled = true
+        // Check it works now, so nobody is locked out by a prompt that never answers.
+        appLock.unlock("check that unlocking works for OpenRewind") { [weak self] ok in
+            guard let self else { return }
+            if !ok { self.appLock.enabled = false; return }
+            log("app lock on")
+        }
+    }
+
     // MARK: permissions
 
     /// One line per macOS permission with its state. Clicking a line opens its page in System Settings.
@@ -866,7 +1013,12 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return item
     }
 
+    /// Deleting is behind App Lock too: someone at the Mac could otherwise erase the history.
     @objc private func setKeep(_ sender: NSMenuItem) {
+        appLock.run("change how long recordings are kept") { [weak self] in self?.setKeepNow(sender) }
+    }
+
+    private func setKeepNow(_ sender: NSMenuItem) {
         guard let pair = sender.representedObject as? [String], pair.count == 2,
               let k = KeepFor(rawValue: pair[1]) else { return }
         let key = pair[0]
@@ -882,6 +1034,10 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func deleteRecent(_ sender: NSMenuItem) {
+        appLock.run("delete recordings") { [weak self] in self?.deleteRecentNow(sender) }
+    }
+
+    private func deleteRecentNow(_ sender: NSMenuItem) {
         let now = Date()
         let from: Date
         switch sender.tag {
@@ -900,6 +1056,10 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func deleteAll(_ sender: NSMenuItem) {
+        appLock.run("delete recordings") { [weak self] in self?.deleteAllNow(sender) }
+    }
+
+    private func deleteAllNow(_ sender: NSMenuItem) {
         let screen = sender.tag != 2, audio = sender.tag != 1
         let what = screen && audio ? "all screenshots and audio" : (screen ? "all screenshots" : "all audio recordings")
         guard confirm("Delete \(what)?", "This removes \(what) from this Mac, and every journal recap. This cannot be undone.",
@@ -984,10 +1144,14 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func storageLines() -> [String] {
         let size = dataSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "measuring…"
         // Compressed recordings: how much less the videos take than the screenshots they replaced.
-        let v = engine.db.videoStats()
+        // While the database is being converted every query waits for it; don't hang the menu.
+        let converting = engine.db.isConverting
+        let v = converting ? (segments: 0, bytes: Int64(0), saved: Int64(0)) : engine.db.videoStats()
         let saved = v.segments > 0 ? " · video saves " + ByteCountFormatter.string(fromByteCount: v.saved, countStyle: .file) : ""
         var lines = ["Using \(size)" + saved]
-        if let oldest = engine.db.oldestRecording() {
+        if converting {
+            lines.append("Encrypting or decrypting the database…")
+        } else if let oldest = engine.db.oldestRecording() {
             let f = DateFormatter()
             f.dateStyle = .medium; f.timeStyle = .short
             let rel = RelativeDateTimeFormatter()
@@ -997,7 +1161,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lines.append("No recordings yet")
         }
         // Deleted frames that are still inside a video until it is written again (or turned back into pictures).
-        let stuck = engine.db.stuckRewrites()
+        let stuck = converting ? 0 : engine.db.stuckRewrites()
         if stuck > 0 { lines.append("\(stuck) video\(stuck == 1 ? "" : "s") still hold\(stuck == 1 ? "s" : "") deleted frames · being redone") }
         return lines
     }
@@ -1022,6 +1186,9 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func statusLine() -> String {
+        if engine.db.isConverting {
+            return (encryption?.on == true ? "Encrypting" : "Decrypting") + " the database… (recording waits until it is done)"
+        }
         let s = engine.db.stats(), a = engine.db.audioStats()
         var parts: [String] = []
         if let until = pausedUntil { let t = pauseText(until); return t.prefix(1).uppercased() + t.dropFirst() + "  —  \(s.count) frames, \(a.segments) audio" }
@@ -1078,14 +1245,19 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         PermissionHelper.shared.show(.screen)
     }
 
-    @objc private func openTimeline() { overlay.show() }
+    @objc private func openTimeline() {
+        appLock.run("see your timeline") { [weak self] in self?.overlay.show() }
+    }
 
     /// The browser page when the local server is on, else the timeline's own search box.
     @objc private func openSearch() {
-        if engine.serverOn {
-            NSWorkspace.shared.open(URL(string: "http://127.0.0.1:\(engine.config.port)/")!)
-        } else {
-            overlay.showSearch()
+        appLock.run("search your history") { [weak self] in
+            guard let self else { return }
+            if self.engine.serverOn {
+                NSWorkspace.shared.open(URL(string: "http://127.0.0.1:\(self.engine.config.port)/")!)
+            } else {
+                self.overlay.showSearch()
+            }
         }
     }
 
@@ -1098,7 +1270,12 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         do { try engine.startServer(exitOnFailure: false) } catch { log("cannot start server: \(error)") }
     }
 
-    @objc private func openData() { NSWorkspace.shared.open(engine.config.home) }
+    @objc private func openData() {
+        appLock.run("open its data folder") { [weak self] in
+            guard let self else { return }
+            NSWorkspace.shared.open(self.engine.config.home)
+        }
+    }
 
     // MARK: search by meaning
 
@@ -1186,8 +1363,15 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func quit() {
+        appLock.forget()  // AI apps (MCP) get nothing once the app is gone
+        encryption.stop()
         video?.stop()
         NSApp.terminate(nil)
+    }
+
+    /// Quit from the menu, logout or shutdown: delete the decrypted copies of open videos.
+    func applicationWillTerminate(_ notification: Notification) {
+        FrameImages.shared.releaseAll()
     }
 }
 

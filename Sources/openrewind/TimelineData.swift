@@ -1,5 +1,5 @@
 import Foundation
-import SQLite3
+import SQLCipher
 
 struct TimelineFrame {
     var id: Int64
@@ -85,8 +85,9 @@ extension Database {
         while sqlite3_step(st) == SQLITE_ROW {
             guard let t = Time.iso.date(from: col(st, 1)) else { continue }
             let path = col(st, 4)
-            // 16 kHz mono 16-bit WAV: 32,000 bytes per second after the 44-byte header.
-            let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int) ?? 0
+            // 16 kHz mono 16-bit WAV: 32,000 bytes per second after the 44-byte header. The size on
+            // disk is used as is (one stat, no read): an encrypted file is 38 bytes longer, about 1 ms.
+            let size = ((try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? NSNumber)?.intValue ?? 0
             guard size > 44 else { continue }
             out.append(TimelineAudio(id: sqlite3_column_int64(st, 0), start: t, duration: Double(size - 44) / 32_000,
                                      device: col(st, 2), isInput: sqlite3_column_int(st, 3) != 0, path: path))

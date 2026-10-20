@@ -50,6 +50,9 @@ public sealed class MeaningService : IDisposable
 
     public MeaningService(Database db) { this.db = db; }
 
+    /// The database this searches (McpMeaning rebinds when the MCP process reopened it).
+    public Database Db => db;
+
     public bool Running => thread != null;
 
     public void Start()

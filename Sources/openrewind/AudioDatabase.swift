@@ -1,5 +1,5 @@
 import Foundation
-import SQLite3
+import SQLCipher
 
 struct AudioChunk {
     var id: Int64

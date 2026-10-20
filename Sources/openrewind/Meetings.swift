@@ -1,5 +1,5 @@
 import AppKit
-import SQLite3
+import SQLCipher
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -1121,10 +1121,10 @@ final class MeetingCenter: ObservableObject {
             var ended: [Meeting] = [], late: [Meeting] = []
             if full {
                 ended = MeetingTracker.update(db: db, blocked: blocked, now: now, chunkSeconds: chunk, transcribing: whisper)
-                for m in ended { log("meeting ended: \(m.app), \(AITime.label(m.start))–\(MeetingTranscript.clock(m.end))") }
+                for m in ended { log("meeting ended: " + RecordingFile.forLog("\(m.app), \(AITime.label(m.start))–\(MeetingTranscript.clock(m.end))")) }
                 if lookLate { late = MeetingTracker.late(db: db, now: now) }
             } else if let spotted = MeetingTracker.spot(db: db, blocked: blocked, now: now) {
-                log("meeting started: \(spotted.app), call window in front")
+                log("meeting started: \(RecordingFile.forLog(spotted.app)), call window in front")
             } else {
                 DispatchQueue.main.async { self?.running = false }
                 return
@@ -1188,7 +1188,7 @@ final class MeetingCenter: ObservableObject {
                                          y: screen.maxY - (size.height + 12) * CGFloat(prompts.count + 1)))
         }
         prompts[m.id] = panel
-        log("meeting detected: \(m.app), asking about notes")
+        log("meeting detected: \(RecordingFile.forLog(m.app)), asking about notes")
         panel.orderFrontRegardless()
     }
 
@@ -1201,7 +1201,7 @@ final class MeetingCenter: ObservableObject {
             c[m.app] = take ? MeetingPrompt.always : MeetingPrompt.never
             Self.choices = c
         }
-        log("meeting \(m.id): \(take ? "take notes" : "not this time")\(remember ? ", remembered for \(m.app)" : "")")
+        log("meeting \(m.id): \(take ? "take notes" : "not this time")\(remember ? ", remembered for \(RecordingFile.forLog(m.app))" : "")")
         NotificationCenter.default.post(name: Self.changed, object: nil)
         // Answered after the call ended: summarize now, as it would have been when it ended.
         if take, let fresh = db.meeting(id: m.id), fresh.status == MeetingStatus.ended, autoSummarizes(fresh) {

@@ -1,5 +1,5 @@
 import Foundation
-import SQLite3
+import SQLCipher
 
 /// How long to keep recordings. `forever` means: only delete when the user asks.
 enum KeepFor: String, CaseIterable {
@@ -135,7 +135,7 @@ extension Database {
         let fm = FileManager.default
         var dirs = Set<String>()
         for p in paths where !p.isEmpty {
-            try? fm.removeItem(atPath: p)
+            RecordingFile.delete(p)
             dirs.insert((p as NSString).deletingLastPathComponent)
         }
         for d in dirs where ((try? fm.contentsOfDirectory(atPath: d)) ?? ["x"]).isEmpty {

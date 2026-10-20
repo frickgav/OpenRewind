@@ -125,7 +125,8 @@ sealed class Recorder
 
         var id = db.Insert(new Frame(0, ts, window.AppName, window.WindowName, true, file, text, source, unchecked((long)hash), url, blocked, display));
         lastThumb = thumb; lastText = text; lastKey = key; lastWrite = DateTime.UtcNow;
-        Log.Write($"frame {id} {window.AppName} — {text.Length} chars via {source}");
+        // The log is a plain file: with Encrypt Recordings on, it does not name the app.
+        Log.Write(RecordingFile.EncryptNew ? $"frame {id} — {text.Length} chars via {source}" : $"frame {id} {window.AppName} — {text.Length} chars via {source}");
         return id;
     }
 }

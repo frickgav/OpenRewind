@@ -82,12 +82,13 @@ static class ImageTools
 
     public static readonly ImageCodecInfo JpegCodec = ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Jpeg.Guid);
 
+    /// Saved through RecordingFile: encrypted when Encrypt Recordings is on.
     public static void WriteJpeg(Bitmap image, string path, long quality = 70)
     {
         using var ps = new EncoderParameters(1);
         ps.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
-        var tmp = path + ".tmp";
-        image.Save(tmp, JpegCodec, ps);
-        File.Move(tmp, path, overwrite: true);
+        using var ms = new MemoryStream();
+        image.Save(ms, JpegCodec, ps);
+        RecordingFile.Write(path, ms.ToArray());
     }
 }

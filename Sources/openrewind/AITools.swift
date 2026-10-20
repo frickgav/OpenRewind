@@ -1,6 +1,6 @@
 import Foundation
 import CoreGraphics
-import SQLite3
+import SQLCipher
 
 /// What the AI can look up in the local database. A whole day of screen text is far too much to
 /// send, so the model asks for summaries and searches instead, and every answer is capped in size.

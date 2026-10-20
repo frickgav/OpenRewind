@@ -45,11 +45,11 @@ sealed class MeetingWatcher : IDisposable
             {
                 lastUpdate = now;
                 ended = MeetingTracker.Update(db, Blocklist.Current, now, chunkSeconds, transcribing());
-                foreach (var m in ended) Log.Write($"meeting ended: {m.App}, {m.Start.ToLocalTime():t}–{m.End.ToLocalTime():t}");
+                foreach (var m in ended) Log.Write("meeting ended: " + RecordingFile.ForLog($"{m.App}, {m.Start.ToLocalTime():t}–{m.End.ToLocalTime():t}"));
                 if (settings.SummarizeMeetings) late = MeetingTracker.Late(db, now);
             }
             else if (MeetingTracker.Spot(db, Blocklist.Current, now) is Meeting spotted)
-                Log.Write($"meeting started: {spotted.App}, call window in front");
+                Log.Write($"meeting started: {RecordingFile.ForLog(spotted.App)}, call window in front");
             else return;
             var recent = db.MeetingsBetween(now - TimeSpan.FromDays(1), now);
             ui(() =>
@@ -88,7 +88,7 @@ sealed class MeetingWatcher : IDisposable
             ? ai.Kind.Title() : null;
         var form = new MeetingPromptForm(m, summarizer, (take, remember) => Answer(m, take, remember));
         prompts[m.Id] = form;
-        Log.Write($"meeting detected: {m.App}, asking about notes");
+        Log.Write($"meeting detected: {RecordingFile.ForLog(m.App)}, asking about notes");
         form.ShowNear(prompts.Count - 1);
     }
 
@@ -102,7 +102,7 @@ sealed class MeetingWatcher : IDisposable
             settings.MeetingChoices[m.App] = take ? MeetingPrompt.Always : MeetingPrompt.Never;
             settings.Save();
         }
-        Log.Write($"meeting {m.Id}: {(take ? "take notes" : "not this time")}{(remember ? $", remembered for {m.App}" : "")}");
+        Log.Write($"meeting {m.Id}: {(take ? "take notes" : "not this time")}{(remember ? $", remembered for {RecordingFile.ForLog(m.App)}" : "")}");
         Changed?.Invoke();
         // Answered after the call ended: summarize now, as it would have been when it ended.
         if (take && db.MeetingById(m.Id) is Meeting fresh && !fresh.IsLive && fresh.Status == MeetingStatus.Ended && AutoSummarizes(fresh))
@@ -269,6 +269,10 @@ sealed class MeetingsForm : Form
         open.Show();
         open.Activate();
     }
+
+    /// App Lock: close it when the app locks, and count it as history in use.
+    public static void Release() { if (open is { IsDisposed: false }) open.Close(); }
+    public static bool IsShown => open is { IsDisposed: false, Visible: true };
 
     MeetingsForm(Database db, Settings settings, MeetingWatcher watcher, Action<DateTime> openMoment, Action openSettings)
     {

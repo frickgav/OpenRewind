@@ -93,7 +93,7 @@ final class Server {
     }
 
     private func respond(_ conn: NWConnection, _ r: HTTPResponse) {
-        let reason = [200: "OK", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed", 500: "Internal Server Error"][r.status] ?? "OK"
+        let reason = [200: "OK", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed", 423: "Locked", 500: "Internal Server Error"][r.status] ?? "OK"
         var head = "HTTP/1.1 \(r.status) \(reason)\r\n"
         head += "Content-Type: \(r.contentType)\r\nContent-Length: \(r.body.count)\r\n"
         head += "Cache-Control: no-store\r\nConnection: close\r\n\r\n"
@@ -107,6 +107,9 @@ final class Server {
 struct API {
     let db: Database
     let config: Config
+    /// True while the app is locked (AppLock): search, screenshots and audio answer 423 until the user unlocks.
+    var locked: () -> Bool = { false }
+    static let lockedMessage = "OpenRewind is locked. Open the timeline to unlock it, then try again."
     /// Search by Meaning (mode=meaning on /search); it answers only while it is on.
     var meaning: MeaningService? = nil
 
@@ -115,6 +118,9 @@ struct API {
         switch req.path {
         case "/", "/index.html":
             return HTTPResponse(contentType: "text/html; charset=utf-8", body: Data(WebUI.html.utf8))
+        case "/health" where locked():
+            // Locked: no counts, times or folder, only that it is running.
+            return .json(["status": "healthy", "locked": true])
         case "/health":
             let s = db.stats()
             let a = db.audioStats()
@@ -130,6 +136,11 @@ struct API {
                 "data_dir": config.home.path,
                 "search_by_meaning": meaning?.embedder != nil,
             ])
+        default:
+            break
+        }
+        if locked() { return .error(API.lockedMessage, status: 423) }
+        switch req.path {
         case "/search":
             return search(req.query)
         case "/apps":
@@ -258,10 +269,10 @@ struct API {
     private func audioFile(_ idStr: String) -> HTTPResponse {
         guard let id = Int64(idStr), let c = db.chunk(id: id) else { return .error("audio not found", status: 404) }
         let path = URL(fileURLWithPath: c.filePath).standardizedFileURL.path
-        guard isInDataDir(path),
-              let data = FileManager.default.contents(atPath: path) else {
+        guard isInDataDir(path), FileManager.default.fileExists(atPath: path) else {
             return .error("audio file missing", status: 404)
         }
+        guard let data = RecordingFile.data(path) else { return .error("cannot read audio", status: 500) }
         return HTTPResponse(contentType: "audio/wav", body: data)
     }
 
@@ -274,9 +285,10 @@ struct API {
         guard !file.isEmpty, isInDataDir(path), FileManager.default.fileExists(atPath: path) else {
             return .error("snapshot missing", status: 404)
         }
-        // A JPEG still goes out as it is. Chrome and Firefox cannot show HEIC, and a video frame is no file: send JPEG.
+        // A JPEG still goes out as it is (decrypted when Encrypt Recordings is on). Chrome and Firefox
+        // cannot show HEIC, and a video frame is no file: send JPEG.
         if f.videoPath.isEmpty, !path.hasSuffix(".heic") {
-            guard let data = FileManager.default.contents(atPath: path) else { return .error("snapshot missing", status: 404) }
+            guard let data = RecordingFile.data(path) else { return .error("cannot read snapshot", status: 500) }
             return HTTPResponse(contentType: "image/jpeg", body: data)
         }
         guard let jpg = FrameImages.shared.jpeg(f.source) else { return .error("cannot decode snapshot", status: 500) }

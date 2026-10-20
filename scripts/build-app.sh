@@ -15,8 +15,9 @@ APP="$DIST/OpenRewind.app"
 DMG="$DIST/openrewind-$VERSION.dmg"
 
 echo "→ compiling (release, arm64)"
-swift build -c release --arch arm64
-BIN="$(swift build -c release --arch arm64 --show-bin-path)/openrewind"
+# Package.resolved pins swift-sqlcipher and ONNX Runtime to one commit each; never resolve anything newer at build time.
+swift build -c release --arch arm64 --only-use-versions-from-resolved-file
+BIN="$(swift build -c release --arch arm64 --only-use-versions-from-resolved-file --show-bin-path)/openrewind"
 
 echo "→ assembling $APP"
 rm -rf "$APP"
@@ -26,7 +27,7 @@ sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" packaging/Info.plist >
 
 # Icon PNGs come from branding/logo.png via scripts/make-icons.py.
 iconutil -c icns packaging/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
-# Licenses of what is linked into the app (ONNX Runtime, …).
+# Licenses of what is linked into the app (SQLCipher, LibTomCrypt, ONNX Runtime, …).
 cp LICENSE "$APP/Contents/Resources/LICENSE.txt"
 cp THIRD_PARTY_NOTICES.txt "$APP/Contents/Resources/THIRD_PARTY_NOTICES.txt"
 

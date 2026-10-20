@@ -262,7 +262,7 @@ enum KeyStore {
     }
 
     /// Changes whenever the app binary does.
-    private static var buildID: String {
+    static var buildID: String {
         let exe = Bundle.main.executableURL
         let date = exe.flatMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate }
         let version = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""

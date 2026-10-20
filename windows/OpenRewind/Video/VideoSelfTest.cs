@@ -8,18 +8,25 @@ namespace OpenRewind;
 /// folder (encode, check, commit, delete stills), reads every frame back in a jumbled order, deletes part
 /// of the video and checks the rewrite, runs doctor's check that videos open, and compresses a capture
 /// wider than encoders take. CI runs it; it is also a quick check on a new PC.
+/// `encrypted`: the same with Encrypt Recordings on (a throwaway key): stills, videos and the database are
+/// encrypted, every step still works, and no plain picture or video is left in the data folder.
 static class VideoSelfTest
 {
-    public static bool Run(TextWriter log)
+    public static bool Run(TextWriter log, bool encrypted = false)
     {
         var codec = new MfCodec();
         if (codec.Usable == null) { log.WriteLine($"no video encoder: {codec.ProbeError}"); return false; }
-        log.WriteLine($"codec: {codec.Usable}");
+        log.WriteLine($"codec: {codec.Usable}{(encrypted ? ", encrypted" : "")}");
         var home = Path.Combine(Path.GetTempPath(), "openrewind-video-check-" + Guid.NewGuid().ToString("N")[..8]);
+        var (keyBefore, encryptBefore) = (RecordingFile.Key, RecordingFile.EncryptNew);
+        var key = encrypted ? RecordingFile.NewKey() : null;
+        RecordingFile.Key = key;
+        RecordingFile.EncryptNew = encrypted;
         try
         {
             var config = Config.Load(new[] { "--home", home });
-            using var db = new Database(config.DbPath);
+            using var db = new Database(config.DbPath, key, createEncrypted: encrypted);
+            if (db.IsEncrypted != encrypted) { log.WriteLine($"the database is {(db.IsEncrypted ? "" : "not ")}encrypted"); return false; }
             db.ReleasingVideos += paths => { foreach (var v in paths) FrameImages.Release(v); };
             var now = DateTime.UtcNow;
             // Odd size on purpose: videos are cut to even sizes.
@@ -48,6 +55,7 @@ static class VideoSelfTest
             if (Directory.GetFiles(config.DataDir, "*.jpg", SearchOption.AllDirectories).Length != 0) { log.WriteLine("stills were not deleted"); return false; }
 
             if (!CheckAll(db, thumbs, w, h, log)) return false;
+            if (!AllEncrypted(config, encrypted, log)) return false;
 
             // Delete a stretch in the middle: the video is written again without it.
             int deleted = db.DeleteFrames(start.AddSeconds(20), start.AddSeconds(40));
@@ -56,6 +64,7 @@ static class VideoSelfTest
             log.WriteLine($"deleted {deleted} frames, rewrote {r2.Rewritten} video(s), {r2.Failed} failed");
             if (r2.Rewritten != 1 || r2.Failed != 0 || thumbs.Count != n - deleted) return false;
             if (!CheckAll(db, thumbs, w, h, log)) return false;
+            if (!AllEncrypted(config, encrypted, log)) return false;
 
             var (seen, bad) = MfCodec.CheckVideos(db);
             log.WriteLine($"doctor's check: {seen} video(s), {bad} do not open");
@@ -83,6 +92,7 @@ static class VideoSelfTest
             log.WriteLine($"wide capture: {r3.Frames} frames of {ww}x{wh} into {r3.Videos} video(s) of {fw}x{fh}, {r3.Failed} failed");
             if (r3.Frames != 3 || r3.Failed != 0) return false;
             if (!CheckAll(db, wide, fw, fh, log)) return false;
+            if (!AllEncrypted(config, encrypted, log)) return false;
 
             // Delete the rest: the video goes too.
             db.DeleteFrames(null, now);
@@ -98,7 +108,21 @@ static class VideoSelfTest
         finally
         {
             try { Directory.Delete(home, true); } catch { }
+            RecordingFile.Key = keyBefore;
+            RecordingFile.EncryptNew = encryptBefore;
         }
+    }
+
+    /// With encryption, every picture and video under data/ is encrypted (none was left plain on the way).
+    static bool AllEncrypted(Config config, bool encrypted, TextWriter log)
+    {
+        if (!encrypted) return true;
+        var files = Directory.GetFiles(config.DataDir, "*", SearchOption.AllDirectories)
+            .Where(f => f.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase)).ToList();
+        var plain = files.Where(f => !RecordingFile.IsEncrypted(f)).ToList();
+        log.WriteLine($"encrypted: {files.Count - plain.Count} of {files.Count} pictures and videos");
+        if (plain.Count > 0) log.WriteLine($"plain files: {string.Join(", ", plain.Take(5).Select(Path.GetFileName))}");
+        return plain.Count == 0 && files.Count > 0;
     }
 
     /// Every frame reads back like its screenshot, in a jumbled order (scrubbing back and forth).

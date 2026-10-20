@@ -317,9 +317,16 @@ final class VideoCompactor {
     }
 
     /// Encode to a temp file, check it reads back, move it into place. Nil when any of that failed
-    /// (nothing is left behind and the stills are untouched).
+    /// (nothing is left behind and the stills are untouched). With Encrypt Recordings on, the video is
+    /// made in the private temp folder (never as a plain file under data/) and saved encrypted.
+    /// Whether to encrypt is decided again when the video is put in place, under RecordingFile.commitGate:
+    /// Encrypt Recordings may have been switched while it was being made, and the migration may have
+    /// finished meanwhile.
     private func write(_ path: String, _ sources: [FrameSource], width: Int, height: Int) -> (codec: String, bytes: Int64)? {
-        let tmp = Compaction.tempPath(path)
+        let madeOutside = RecordingFile.encryptNew
+        let tmp = madeOutside
+            ? fm.temporaryDirectory.appendingPathComponent("\(RecordingFile.tempCopyPrefix)\(UUID().uuidString).mp4").path
+            : Compaction.tempPath(path)
         do {
             try fm.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
             let name = try codec.write(sources, width: width, height: height, to: tmp)
@@ -327,7 +334,7 @@ final class VideoCompactor {
                 throw AVCodec.error("the new video did not read back like the pictures")
             }
             codec.release(tmp)
-            try fm.moveItem(atPath: tmp, toPath: path)
+            try commit(tmp, to: path, madeOutside: madeOutside)
             return (name, size(path))
         } catch {
             log("compress older recordings: could not write \((path as NSString).lastPathComponent): \(error.localizedDescription)")
@@ -337,10 +344,25 @@ final class VideoCompactor {
         }
     }
 
+    /// Put a checked video in place: encrypted when Encrypt Recordings is on now, else plain.
+    func commit(_ tmp: String, to path: String, madeOutside: Bool) throws {
+        RecordingFile.commitGate.lock(); defer { RecordingFile.commitGate.unlock() }
+        if RecordingFile.encryptNew || madeOutside {
+            // RecordingFile.write encrypts or not by the setting now, and writes atomically under data/.
+            guard let plain = fm.contents(atPath: tmp) else { throw AVCodec.error("the new video could not be read") }
+            try RecordingFile.write(plain, to: URL(fileURLWithPath: path))
+            delete(tmp)
+        } else {
+            try fm.moveItem(atPath: tmp, toPath: path)
+        }
+    }
+
     private func delete(_ path: String) {
         guard !path.isEmpty, fm.fileExists(atPath: path) else { return }
         if path.hasSuffix(".mp4") { codec.release(path) }
-        do { try fm.removeItem(atPath: path) } catch { log("cannot delete \(path): \(error.localizedDescription)") }
+        // Under RecordingFile's lock, so an encryption switch converting this file never writes it back.
+        RecordingFile.delete(path)
+        if fm.fileExists(atPath: path) { log("cannot delete \(path)") }
     }
 
     private func size(_ path: String) -> Int64 {

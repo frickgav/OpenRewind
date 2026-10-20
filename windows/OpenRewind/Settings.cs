@@ -47,6 +47,14 @@ sealed class Settings
     public string TranscriptionModel { get; set; } = SpeechModels.DefaultId;
     /// Timeline Look: "system", "light" or "dark".
     public string TimelineLook { get; set; } = "system";
+    /// Encrypt Recordings (see Encryption). The key is in encryption-key.dpapi, never here.
+    public bool EncryptRecordings { get; set; }
+    /// Everything already recorded matches EncryptRecordings. False while a switch is still converting.
+    public bool EncryptionDone { get; set; } = true;
+    /// Ask for Windows Hello before showing the timeline, search, Ask AI and history (see AppLock).
+    public bool RequireUnlock { get; set; }
+    /// Minutes an unlock lasts after the last use; 0 = until the PC locks.
+    public int LockAfterMinutes { get; set; } = 15;
 
     /// AI: the picked provider, and per provider (by AiProviders.Id) the model, server address and
     /// models seen. API keys are in the Windows Credential Manager (AiKeyStore), not here.

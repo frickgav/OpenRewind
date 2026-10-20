@@ -20,6 +20,9 @@ sealed class ConnectAiAppsForm : Form
         open.Activate();
     }
 
+    /// App Lock: close it when the app locks (its switch lets AI apps read the history).
+    public static void Release() { if (open is { IsDisposed: false }) open.Close(); }
+
     /// The tray switch changed; keep the box here in step with it.
     public static void SettingsChanged(Settings settings)
     {

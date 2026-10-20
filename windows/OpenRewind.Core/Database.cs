@@ -35,30 +35,36 @@ public class SearchQuery
 /// Thin SQLite wrapper with the exact schema the Mac app uses:
 /// `frames` + `frames_fts`, `audio_chunks` + `audio_transcriptions` + `audio_fts`.
 /// One connection, one lock: the app is small and writes are rare.
+/// The file is plain SQLite, or SQLCipher-encrypted with the data key (see Vault.cs).
 public sealed partial class Database : IDisposable
 {
-    readonly SqliteConnection conn;
+    SqliteConnection conn;
     readonly object gate = new();
+    readonly string path;
     /// The frame columns to read. A read-only open (the MCP server) may see a database the recording app
     /// has not migrated yet; it then reads every frame as a still.
     readonly string cols = FullCols;
 
-    public Database(string path)
+    /// `key` opens an encrypted database; `createEncrypted` makes a new one encrypted with it.
+    public Database(string path, byte[]? key = null, bool createEncrypted = false)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-        conn = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadWriteCreate, Pooling = false }.ToString());
-        conn.Open();
+        this.path = Path.GetFullPath(path);
+        Directory.CreateDirectory(Path.GetDirectoryName(this.path)!);
+        RecoverSwap(this.path);
+        var encrypted = IsEncryptedFile(this.path) || (createEncrypted && key != null && !HasData(this.path));
+        conn = Connect(this.path, encrypted ? key ?? throw new DatabaseLockedException() : null);
         Exec("PRAGMA journal_mode=WAL;");
         Exec("PRAGMA busy_timeout=5000;");
         Migrate();
-        FinishHomeMove(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        FinishHomeMove(Path.GetDirectoryName(this.path)!);
     }
 
     /// Read-only: no schema changes and no home move, which are the recording app's job (see OpenReadOnly).
-    Database(string path, bool readOnly)
+    /// `key` is the master data key when the database is encrypted.
+    Database(string path, bool readOnly, byte[]? key)
     {
-        conn = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
-        conn.Open();
+        this.path = Path.GetFullPath(path);
+        conn = Connect(this.path, IsEncryptedFile(this.path) ? key ?? throw new DatabaseLockedException() : null, SqliteOpenMode.ReadOnly);
         Exec("PRAGMA busy_timeout=5000;");
         if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name IN ('display', 'video_path', 'video_frame', 'video_time')") < 4)
             cols = StillCols;
@@ -177,12 +183,13 @@ public sealed partial class Database : IDisposable
     /// off the UI thread, so the app starts at once and reads keep working meanwhile. A failure (full
     /// disk, another process writing) is logged and tried again next launch; Insights still works,
     /// only slower. The Mac app does the same.
-    public static Task BuildSlowIndexesInBackground(string path) => Task.Run(() =>
+    /// With Encrypt Recordings on, the connection opens with the data key (RecordingFile.Key unless `key` is given).
+    public static Task BuildSlowIndexesInBackground(string path, byte[]? key = null) => Task.Run(() =>
     {
         try
         {
-            using var c = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadWrite, Pooling = false }.ToString());
-            c.Open();
+            if (!File.Exists(path)) throw new FileNotFoundException("no database", path);
+            using var c = Open(path, IsEncryptedFile(path) ? key ?? RecordingFile.Key ?? throw new DatabaseLockedException() : null, SqliteOpenMode.ReadWrite);
             void Run(string sql) { using var cmd = c.CreateCommand(); cmd.CommandText = sql; cmd.ExecuteNonQuery(); }
             Run("PRAGMA busy_timeout=30000;");
             using (var has = c.CreateCommand())
@@ -331,7 +338,7 @@ public sealed partial class Database : IDisposable
             using (var exists = Cmd("SELECT COUNT(*) FROM audio_chunks WHERE id = ?", chunk.Id))
             {
                 exists.Transaction = tx;
-                if (Convert.ToInt64(exists.ExecuteScalar()) == 0)
+                if (System.Convert.ToInt64(exists.ExecuteScalar()) == 0)
                 {
                     // Deleted (Delete Recordings, or kept-for-days cleanup) after it was picked up: do not bring its words back.
                     tx.Rollback();

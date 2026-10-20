@@ -33,10 +33,13 @@ final class Engine {
     }
 
     var serverOn: Bool { server != nil }
+    /// True while the app is locked; the local server then serves no history (see AppLock).
+    var serverLocked: () -> Bool = { false }
 
     func startServer(exitOnFailure: Bool = true) throws {
         guard server == nil else { return }
-        let api = API(db: db, config: config, meaning: meaning)
+        var api = API(db: db, config: config, meaning: meaning)
+        api.locked = { [weak self] in self?.serverLocked() == true }
         let s = Server(port: config.port, exitOnFailure: exitOnFailure, router: api.handle)
         try s.start()
         server = s

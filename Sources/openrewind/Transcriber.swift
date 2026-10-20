@@ -127,12 +127,13 @@ final class Transcriber: @unchecked Sendable {
         defer { unload() }
         while !Task.isCancelled {
             if let chunk = db.nextPendingChunk() {
-                await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+                // An encrypted clip and no key yet (the Keychain is locked): wait, without using up its tries.
+                let done: Bool = await withCheckedContinuation { (finished: CheckedContinuation<Bool, Never>) in
                     Transcriber.queue.async {
-                        self.transcribe(chunk)
-                        done.resume()
+                        finished.resume(returning: self.transcribe(chunk))
                     }
                 }
+                if !done { try? await Task.sleep(nanoseconds: 60_000_000_000) }
             } else {
                 if parakeet != nil, Date().timeIntervalSince(lastUsed) > Transcriber.unloadAfter { unload() }
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -146,13 +147,21 @@ final class Transcriber: @unchecked Sendable {
         let errorDescription: String?
     }
 
-    /// The one place both engines read a recorded clip: 16 kHz mono samples. Anything that changes how
-    /// clips are stored (such as encrypting them) only has to change this.
+    /// The one place both engines read a recorded clip: 16 kHz mono samples. An encrypted clip is
+    /// decrypted in memory (Encrypt Recordings); it throws RecordingFile's no-key error without the key.
     static func loadClipSamples(_ path: String) throws -> [Float] {
-        try WAV.load16k(URL(fileURLWithPath: path))
+        if RecordingFile.isEncrypted(path: path) {
+            let plain = try RecordingFile.read(path)
+            if let samples = WAV.samples16kMono(plain) { return samples }
+            // Not the 16 kHz mono 16-bit WAV the recorder writes: let macOS decode a private copy.
+            return try RecordingFile.withPlainCopy(path) { try WAV.load16k(URL(fileURLWithPath: $0)) }
+        }
+        return try WAV.load16k(URL(fileURLWithPath: path))
     }
 
-    func transcribe(_ chunk: AudioChunk) {
+    /// False when the clip is encrypted and the key is not loaded; the chunk is left as it was.
+    @discardableResult
+    func transcribe(_ chunk: AudioChunk) -> Bool {
         let started = Date()
         let segments: [(start: Double, end: Double, text: String)]
         let clipSeconds: Double
@@ -162,24 +171,28 @@ final class Transcriber: @unchecked Sendable {
             segments = try model.engine == .parakeet ? parakeetLines(samples) : whisper(samples)
             guard try db.saveTranscripts(chunk: chunk, segments: segments, engine: engineTag) else {
                 log("chunk \(chunk.id) was deleted while it was transcribed; its text is dropped")
-                return
+                return true
             }
+        } catch let error where RecordingFile.isNoKey(error) {
+            log("transcribe chunk \(chunk.id) waits: the encryption key is not loaded")
+            return false
         } catch let e as ModelLoadError {
             log("cannot load \(model.name): \(e.localizedDescription)")
             loadFailed = true
             status.problem = e.localizedDescription
-            return
+            return true
         } catch {
             log("transcribe chunk \(chunk.id) failed: \(error.localizedDescription)")
             db.markChunk(chunk.id, status: "pending", reason: error.localizedDescription)
             status.problem = error.localizedDescription
-            return
+            return true
         }
         loadFailed = false
         let secs = Date().timeIntervalSince(started)
         status = TranscriberStatus(lastAt: Date(), lastSeconds: secs, lastAudioSeconds: clipSeconds, problem: nil)
         let words = segments.reduce(0) { $0 + $1.text.split(separator: " ").count }
         log("transcribed chunk \(chunk.id): \(segments.count) segments, \(words) words in \(String(format: "%.1f", secs))s")
+        return true
     }
 
     private func parakeetLines(_ samples: [Float]) throws -> [(start: Double, end: Double, text: String)] {
@@ -222,7 +235,7 @@ final class Transcriber: @unchecked Sendable {
             try? FileManager.default.removeItem(atPath: path)
         }
         // whisper-cli reads a file: give it the clip as loadClipSamples read it.
-        try WAV.write(samples, sampleRate: ParakeetMath.sampleRate, to: URL(fileURLWithPath: path))
+        try WAV.write(samples, sampleRate: ParakeetMath.sampleRate, to: URL(fileURLWithPath: path), recording: false)
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binary)
         p.arguments = ["-m", modelPath, "-f", path, "-l", config.whisperLanguage, "-oj", "-of", tmp.path, "-np",

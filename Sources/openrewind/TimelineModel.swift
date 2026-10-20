@@ -371,7 +371,7 @@ final class TimelineModel: ObservableObject {
     func play(_ a: TimelineAudio) {
         stopAudio()
         do {
-            let p = try AVAudioPlayer(contentsOf: URL(fileURLWithPath: a.path))
+            let p = try AVAudioPlayer(data: RecordingFile.read(a.path))
             p.currentTime = max(0, playhead.timeIntervalSince(a.start))
             p.play()
             player = p

@@ -24,6 +24,9 @@ sealed class BlockedAppsForm : Form
         open.Activate();
     }
 
+    /// The app locked (see AppLock): the recent pages list shows history, so close.
+    public static void Release() { if (open is { IsDisposed: false }) open.Close(); }
+
     BlockedAppsForm(Settings settings, Database db)
     {
         this.settings = settings;

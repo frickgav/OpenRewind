@@ -51,6 +51,11 @@ static class MfThread
 /// server all read through here. Video frames are decoded with a few cached readers and kept in a small
 /// LRU (at most 48 frames and 256 MB), so scrubbing stays quick. Readers unused for 30 s are closed, so
 /// a long-running process (the MCP server) doesn't keep a video open that the app wants to delete.
+/// With Encrypt Recordings on, stills and videos are encrypted files: a still is decrypted in memory, and
+/// a video (Media Foundation reads files) is decrypted to a temp file only this Windows account can read,
+/// for as long as its reader is open, then deleted. Readers close after 30 s idle, and all of them close
+/// when the timeline hides, the app locks or quits, and after each MCP message (ReleaseAll).
+/// Mac has the same in FrameImages.swift.
 static class FrameImages
 {
     const long CacheBytes = 256L << 20;
@@ -59,7 +64,7 @@ static class FrameImages
     /// Decoded video frames by "path#frame".
     static readonly Lru<string, Bitmap> frames = new(48, b => b.Dispose(), b => (long)b.Width * b.Height * 4, CacheBytes);
     /// Open videos, so the next frame of the same one needs no seek.
-    static readonly Lru<string, Mp4Reader> readers = new(3, r => r.Dispose());
+    static readonly Lru<string, OpenVideo> readers = new(3, r => r.Dispose());
     static readonly Dictionary<string, DateTime> lastUse = new(Database.PathComparer);
     static readonly System.Threading.Timer idle = new(_ => CloseIdle(), null, IdleClose, IdleClose);
 
@@ -77,21 +82,22 @@ static class FrameImages
             if (frames.TryGet(key, out var hit)) return new Bitmap(hit);
             try
             {
-                if (!readers.TryGet(f.VideoPath, out var reader))
+                if (!readers.TryGet(f.VideoPath, out var video))
                 {
                     if (!File.Exists(f.VideoPath)) return null;
-                    reader = Mp4Reader.Open(f.VideoPath);
-                    readers.Set(f.VideoPath, reader);
+                    video = OpenVideo.Open(f.VideoPath);
+                    readers.Set(f.VideoPath, video);
                 }
                 lastUse[f.VideoPath] = DateTime.UtcNow;
                 var path = f.VideoPath;
-                var bmp = reader.Read(f.VideoTime, cache ? (n, b) => frames.Set(Key(path, n), b) : null);
+                var bmp = video.Reader.Read(f.VideoTime, cache ? (n, b) => frames.Set(Key(path, n), b) : null);
                 if (bmp == null || !cache) return bmp;
                 var copy = new Bitmap(bmp);
                 frames.Set(key, bmp);
                 return copy;
             }
-            catch (Exception e) when (e is IOException or ExternalException or InvalidOperationException or ArgumentException)
+            catch (Exception e) when (e is IOException or ExternalException or InvalidOperationException or ArgumentException
+                                       or UnauthorizedAccessException or InvalidDataException or System.Security.Cryptography.CryptographicException)
             {
                 Log.Write($"cannot read frame {f.VideoFrame} of {Path.GetFileName(f.VideoPath)}: {e.Message}");
                 Forget(f.VideoPath);
@@ -106,30 +112,36 @@ static class FrameImages
     public static Bitmap? LoadCurrent(Database db, long id, FrameSource f, bool cache = true) =>
         Load(f, cache) ?? (db.FrameById(id) is Frame now && now.Source != f ? Load(now.Source, cache) : null);
 
-    /// Read the file into memory first, so it is not locked (retention or compression may delete it).
+    /// Read the file into memory first (decrypted if need be), so it is not locked (retention or
+    /// compression may delete it).
     static Bitmap? LoadStill(string path)
     {
         if (path.Length == 0) return null;
         try
         {
-            using var ms = new MemoryStream(File.ReadAllBytes(path));
+            using var ms = new MemoryStream(RecordingFile.Read(path));
             using var img = Image.FromStream(ms);
             return new Bitmap(img);
         }
-        catch (Exception e) when (e is IOException or ArgumentException or UnauthorizedAccessException or ExternalException) { return null; }
+        catch (Exception e) when (Unreadable(e)) { return null; }
     }
 
-    /// Pixel size of a still without decoding all of it.
+    /// Pixel size of a still without decoding all of it (an encrypted one is decrypted in memory first).
     public static (int Width, int Height)? StillSize(string path)
     {
+        if (path.Length == 0) return null;
         try
         {
-            using var fs = File.OpenRead(path);
-            using var img = Image.FromStream(fs, false, false);
+            using Stream s = RecordingFile.IsEncrypted(path) ? new MemoryStream(RecordingFile.Read(path)) : File.OpenRead(path);
+            using var img = Image.FromStream(s, false, false);
             return (img.Width, img.Height);
         }
-        catch (Exception e) when (e is IOException or ArgumentException or UnauthorizedAccessException or ExternalException) { return null; }
+        catch (Exception e) when (Unreadable(e)) { return null; }
     }
+
+    /// Gone, damaged, not a picture, or encrypted with a key that is not loaded.
+    static bool Unreadable(Exception e) => e is IOException or ArgumentException or UnauthorizedAccessException or ExternalException
+        or InvalidDataException or InvalidOperationException or System.Security.Cryptography.CryptographicException;
 
     /// The picture as JPEG, at most `maxSide` pixels on its long side (0 = full size).
     public static byte[]? Jpeg(FrameSource f, int maxSide = 0, long quality = 80)
@@ -147,6 +159,24 @@ static class FrameImages
 
     /// Close a video and forget its frames (before it is deleted or replaced).
     public static void Release(string videoPath) => MfThread.Run(() => { lock (gate) Forget(videoPath); });
+
+    /// Close every video (deleting its decrypted copy) and drop every decoded frame.
+    public static void ReleaseAll()
+    {
+        try
+        {
+            MfThread.Run(() =>
+            {
+                lock (gate)
+                {
+                    readers.RemoveWhere(_ => true);
+                    frames.RemoveWhere(_ => true);
+                    lastUse.Clear();
+                }
+            });
+        }
+        catch (Exception e) { Log.Write($"closing videos failed: {e.Message}"); }
+    }
 
     static void Forget(string videoPath)
     {
@@ -178,6 +208,29 @@ static class FrameImages
     }
 
     static string Key(string path, int frame) => path + "#" + frame;
+
+    /// An open video: its reader, and the decrypted copy it reads when the video is encrypted. Closing it
+    /// closes the reader, then deletes the copy.
+    sealed class OpenVideo : IDisposable
+    {
+        public readonly Mp4Reader Reader;
+        readonly RecordingFile.PlainFile file;
+
+        OpenVideo(Mp4Reader reader, RecordingFile.PlainFile file) { Reader = reader; this.file = file; }
+
+        public static OpenVideo Open(string path)
+        {
+            var file = RecordingFile.PlainCopy(path);
+            try { return new OpenVideo(Mp4Reader.Open(file.Path), file); }
+            catch { file.Dispose(); throw; }
+        }
+
+        public void Dispose()
+        {
+            Reader.Dispose();
+            file.Dispose();
+        }
+    }
 
     /// A small gray copy for checking a video frame against its screenshot. The screenshot is first cut to
     /// the even size a video has, and both are shrunk smoothly, so thin lines of text land on the same
@@ -357,6 +410,9 @@ sealed class VideoJob : IDisposable
         if (Interlocked.Exchange(ref running, 1) == 1) { pending = true; return; }
         var t = new Thread(() =>
         {
+            // Decrypted copies (audio for Whisper, videos) a crash left behind: not only at launch, as the
+            // app can run for weeks.
+            RecordingFile.CleanTempCopies();
             try
             {
                 do

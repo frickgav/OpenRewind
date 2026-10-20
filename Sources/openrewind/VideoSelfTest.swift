@@ -7,17 +7,28 @@ import UniformTypeIdentifiers
 /// of the video and checks the rewrite, deletes a row behind the app's back (the backstop rewrites it),
 /// runs doctor's check, compresses a capture wider than encoders take, and turns a video that can't be
 /// written again back into pictures. CI runs it; it is also a quick check on a new Mac.
+/// `encrypted`: the same with Encrypt Recordings on (a throwaway key): stills, videos and the database
+/// are encrypted, every step still works, and no plain picture or video is left in the data folder.
 /// Windows has the same check in VideoSelfTest.cs, and unit tests for these steps in VideoTests.cs.
 enum VideoSelfTest {
-    static func run() -> Bool {
+    static func run(encrypted: Bool = false) -> Bool {
         let codec = AVCodec()
         guard let name = codec.usable else { print("no video encoder: \(codec.probeError ?? "unknown")"); return false }
-        print("codec: \(name)")
+        print("codec: \(name)\(encrypted ? ", encrypted" : "")")
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("openrewind-video-check-\(UUID().uuidString.prefix(8))")
-        defer { try? FileManager.default.removeItem(at: home) }
+        let before = (key: RecordingFile.key, encryptNew: RecordingFile.encryptNew)
+        let key: Data? = encrypted ? RecordingFile.newKey() : nil
+        RecordingFile.key = key
+        RecordingFile.encryptNew = encrypted
+        defer {
+            try? FileManager.default.removeItem(at: home)
+            RecordingFile.key = before.key
+            RecordingFile.encryptNew = before.encryptNew
+        }
         do {
             let config = Config.load(arguments: ["--home", home.path])
-            let db = try Database(path: config.dbPath)
+            let db = try Database(path: config.dbPath, key: key, createEncrypted: encrypted)
+            if encrypted != db.isEncrypted { print("the database is \(db.isEncrypted ? "" : "not ")encrypted"); return false }
             db.releasingVideos = { paths in paths.forEach(FrameImages.shared.release) }
             let now = Date()
             // Odd size on purpose: videos are cut to even sizes.
@@ -36,6 +47,7 @@ enum VideoSelfTest {
             guard jpgs.isEmpty else { print("stills were not deleted"); return false }
 
             guard checkAll(db, thumbs, w, h) else { return false }
+            guard allEncrypted(config, encrypted) else { return false }
 
             // Delete a stretch in the middle: the video is written again without it.
             let deleted = db.deleteFrames(from: start.addingTimeInterval(20), to: start.addingTimeInterval(40))
@@ -48,7 +60,7 @@ enum VideoSelfTest {
 
             // A row deleted behind the app's back (another process, a delete cut short): the video still
             // holds its picture until the backstop marks it and it is written again.
-            let other = try Database(path: config.dbPath)
+            let other = try Database(path: config.dbPath, key: key)
             guard let gone = thumbs.keys.sorted().first else { return false }
             other.run("DELETE FROM frames WHERE id = ?", [.int(gone)])
             thumbs.removeValue(forKey: gone)
@@ -91,6 +103,7 @@ enum VideoSelfTest {
             guard r5.unpacked == 1, r5.failed == 0, db.segments().count == before - 1, db.stuckRewrites() == 0 else { return false }
             guard thumbs.keys.allSatisfy({ db.frame(id: $0)?.videoPath.isEmpty == true }) else { print("frames still point at the video"); return false }
             guard checkAll(db, shown, w, h) else { return false }
+            guard allEncrypted(config, encrypted) else { return false }
 
             // Delete the rest: the videos and stills go too.
             db.deleteFrames(from: nil, to: now)
@@ -113,13 +126,25 @@ enum VideoSelfTest {
             let dir = config.dataDir.appendingPathComponent(String(ts.prefix(10)))
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let file = dir.appendingPathComponent(ts.replacingOccurrences(of: ":", with: "-") + ".jpg")
-            try ImageTools.write(pic, to: file, type: .jpeg, quality: 0.8)
+            guard let jpg = ImageTools.jpegData(pic, quality: 0.8) else { throw AVCodec.error("cannot save a test picture") }
+            try RecordingFile.write(jpg, to: file)  // encrypted when the check runs with encryption
             let id = try db.insert(Frame(id: 0, timestamp: ts, appName: "Test", windowName: "Window \(i)", focused: true,
                                          snapshotPath: file.path, text: "frame \(i)", textSource: "ocr", hash: 0, display: display))
             guard let still = FrameImages.shared.image(FrameSource(stillPath: file.path)) else { throw AVCodec.error("cannot read a test picture") }
             thumbs[id] = FrameImages.comparable(still)
         }
         return thumbs
+    }
+
+    /// With encryption, every picture and video under data/ is encrypted (none was left plain on the way).
+    private static func allEncrypted(_ config: Config, _ encrypted: Bool) -> Bool {
+        guard encrypted else { return true }
+        let files = (FileManager.default.enumerator(atPath: config.dataDir.path)?.allObjects as? [String] ?? [])
+            .filter { $0.hasSuffix(".mp4") || $0.hasSuffix(".jpg") }
+        let plain = files.filter { !RecordingFile.isEncrypted(path: config.dataDir.appendingPathComponent($0).path) }
+        print("encrypted: \(files.count - plain.count) of \(files.count) pictures and videos")
+        if !plain.isEmpty { print("plain files: \(plain.prefix(5).joined(separator: ", "))") }
+        return plain.isEmpty && !files.isEmpty
     }
 
     /// Every frame reads back like its screenshot, in a jumbled order (scrubbing back and forth).

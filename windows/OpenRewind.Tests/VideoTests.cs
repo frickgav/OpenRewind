@@ -539,6 +539,7 @@ public class VideoTests : IDisposable
 }
 
 /// A "video" is JSON: its size, codec and the pictures in order. A still is "WxH:picture:padding".
+/// Files are read and written through RecordingFile, like the real codec, so it works with encryption on.
 sealed class FakeCodec : IVideoCodec
 {
     public bool FailWrite, FailVerify;
@@ -547,7 +548,9 @@ sealed class FakeCodec : IVideoCodec
 
     public record Video(int Width, int Height, string Codec, List<string> Pictures);
 
-    public static Video Read(string path) => JsonSerializer.Deserialize<Video>(File.ReadAllText(path))!;
+    public static Video Read(string path) => JsonSerializer.Deserialize<Video>(RecordingFile.Read(path))!;
+
+    static string Text(string path) => System.Text.Encoding.UTF8.GetString(RecordingFile.Read(path));
 
     public string? Load(FrameSource f)
     {
@@ -558,7 +561,7 @@ sealed class FakeCodec : IVideoCodec
                 var v = Read(f.VideoPath);
                 return f.VideoFrame < v.Pictures.Count ? v.Pictures[f.VideoFrame] : null;
             }
-            return File.ReadAllText(f.StillPath).Split(':')[1];
+            return Text(f.StillPath).Split(':')[1];
         }
         catch (IOException) { return null; }
     }
@@ -568,7 +571,7 @@ sealed class FakeCodec : IVideoCodec
         try
         {
             if (f.IsVideo) { var v = Read(f.VideoPath); return (v.Width, v.Height); }
-            var wh = File.ReadAllText(f.StillPath).Split(':')[0].Split('x');
+            var wh = Text(f.StillPath).Split(':')[0].Split('x');
             return (int.Parse(wh[0]), int.Parse(wh[1]));
         }
         catch (IOException) { return null; }
@@ -596,8 +599,149 @@ sealed class FakeCodec : IVideoCodec
     {
         var size = Measure(frame) ?? throw new IOException("unreadable frame");
         var pic = Load(frame) ?? throw new IOException("unreadable frame");
-        File.WriteAllText(path, $"{size.Width}x{size.Height}:{pic}:" + new string('.', 2000));
+        RecordingFile.Write(path, System.Text.Encoding.UTF8.GetBytes($"{size.Width}x{size.Height}:{pic}:" + new string('.', 2000)));
     }
 
     public void Release(string path) { }
+}
+
+[CollectionDefinition(EncryptedRecordingsTests.Collection, DisableParallelization = true)]
+public class EncryptedRecordingsCollection { }
+
+/// Encrypt Recordings turned on for the whole process (RecordingFile.Key and EncryptNew), as the app does:
+/// these run on their own, never alongside other tests. Clips for both speech engines and compressed
+/// videos are encrypted on disk and still read back.
+[Collection(Collection)]
+public class EncryptedRecordingsTests : IDisposable
+{
+    public const string Collection = "Encrypt Recordings on";
+    readonly string home = Path.Combine(Path.GetTempPath(), "openrewind-encrypted-test-" + Guid.NewGuid());
+    readonly Config config;
+    readonly byte[] key = RecordingFile.NewKey();
+    readonly byte[]? keyBefore = RecordingFile.Key;
+    readonly bool encryptBefore = RecordingFile.EncryptNew;
+    readonly Func<byte[]?>? loaderBefore = RecordingFile.KeyLoader;
+    readonly DateTime now = new(2026, 10, 19, 12, 0, 0, DateTimeKind.Utc);
+
+    public EncryptedRecordingsTests()
+    {
+        config = Config.Load(new[] { "--home", home });
+        RecordingFile.Key = key;
+        RecordingFile.EncryptNew = true;
+        RecordingFile.KeyLoader = null;
+    }
+
+    public void Dispose()
+    {
+        RecordingFile.Key = keyBefore;
+        RecordingFile.EncryptNew = encryptBefore;
+        RecordingFile.KeyLoader = loaderBefore;
+        try { Directory.Delete(home, true); } catch { }
+    }
+
+    [Fact]
+    public void BothSpeechEnginesReadAnEncryptedClip()
+    {
+        var dir = Path.Combine(config.DataDir, "audio", "2026-10-19");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "12-00-00.wav");
+        var samples = Enumerable.Range(0, 1600).Select(i => (float)Math.Sin(i / 10.0) * 0.5f).ToArray();
+        Wav.Write(samples, 16000, path);
+        Assert.True(RecordingFile.IsEncrypted(path));
+
+        // The same samples as the plain clip gives.
+        Assert.Equal(Wav.Load16k(Wav.Bytes(samples, 16000)), Transcriber.LoadClipSamples(path));
+
+        // No key: the transcriber is told so (it waits instead of using up the clip's tries).
+        RecordingFile.Key = null;
+        var e = Assert.ThrowsAny<Exception>(() => Transcriber.LoadClipSamples(path));
+        Assert.True(RecordingFile.IsNoKey(e));
+    }
+
+    [Fact]
+    public void CompressedVideosAreSavedEncryptedAndStillRead()
+    {
+        using var db = new Database(config.DbPath, key, createEncrypted: true);
+        var codec = new FakeCodec();
+        var ids = new List<long>();
+        for (int i = 0; i < 4; i++)
+        {
+            var t = now.AddHours(-3).AddSeconds(i * 2);
+            var dir = Path.Combine(config.DataDir, Time.Iso(t)[..10]);
+            Directory.CreateDirectory(dir);
+            var file = Path.Combine(dir, Time.Iso(t).Replace(':', '-') + ".jpg");
+            RecordingFile.Write(file, System.Text.Encoding.UTF8.GetBytes($"64x40:p{i}:" + new string('.', 2000)));
+            ids.Add(db.Insert(new Frame(0, Time.Iso(t), "App", "Window", true, file, $"text p{i}", "ocr", 0, Display: "screen1")));
+        }
+        var compactor = new VideoCompactor(db, codec, config.DataDir) { OrphanAge = TimeSpan.Zero };
+        var r = compactor.RunOnce(compress: true, now);
+        Assert.Equal(4, r.Frames);
+        Assert.Equal(0, r.Failed);
+
+        // The video is encrypted, and no plain video (or its temp file) was left under data/.
+        var files = Directory.GetFiles(config.DataDir, "*", SearchOption.AllDirectories);
+        var video = Assert.Single(files);
+        Assert.EndsWith(".mp4", video);
+        Assert.True(RecordingFile.IsEncrypted(video));
+        foreach (var (id, i) in ids.Select((id, i) => (id, i))) Assert.Equal($"p{i}", codec.Load(db.FrameById(id)!.Source));
+
+        // A delete rewrites the video, encrypted again.
+        db.DeleteFrames(now.AddHours(-3).AddSeconds(1), now.AddHours(-3).AddSeconds(3));
+        Assert.Equal(1, compactor.RunOnce(compress: false, now).Rewritten);
+        var left = Directory.GetFiles(config.DataDir, "*", SearchOption.AllDirectories);
+        Assert.All(left, f => Assert.True(RecordingFile.IsEncrypted(f)));
+        Assert.Equal(new[] { "p0", "p2", "p3" }, ids.Select(id => db.FrameById(id)).OfType<Frame>().Select(f => codec.Load(f.Source)));
+
+        // Deleting the rest deletes the encrypted video too.
+        db.DeleteFrames(null, now);
+        compactor.RunOnce(compress: false, now);
+        Assert.Empty(Directory.GetFiles(config.DataDir, "*.mp4", SearchOption.AllDirectories));
+    }
+
+    /// Encrypt Recordings is turned on while a video is being made (from plain stills): the video still
+    /// lands encrypted, and the migration that ran meanwhile has nothing plain left behind.
+    [Fact]
+    public void AVideoMadeAcrossTheSwitchIsSavedEncrypted()
+    {
+        RecordingFile.EncryptNew = false;
+        // Only the files are left to convert (the database switch has its own tests).
+        using var db = new Database(config.DbPath, key, createEncrypted: true);
+        var codec = new FakeCodec();
+        for (int i = 0; i < 3; i++)
+        {
+            var t = now.AddHours(-3).AddSeconds(i * 2);
+            var dir = Path.Combine(config.DataDir, Time.Iso(t)[..10]);
+            Directory.CreateDirectory(dir);
+            var file = Path.Combine(dir, Time.Iso(t).Replace(':', '-') + ".jpg");
+            File.WriteAllText(file, $"64x40:p{i}:" + new string('.', 2000));
+            db.Insert(new Frame(0, Time.Iso(t), "App", "Window", true, file, $"text p{i}", "ocr", 0, Display: "screen1"));
+        }
+        // The switch, and the whole migration, happen after the video was made and checked, before it is put in place.
+        codec.AfterVerify = () =>
+        {
+            RecordingFile.EncryptNew = true;
+            var r = VaultMigration.Run(db, config.DataDir, key, encrypt: true, CancellationToken.None);
+            Assert.False(r.Cancelled);
+        };
+        var done = new VideoCompactor(db, codec, config.DataDir) { OrphanAge = TimeSpan.Zero }.RunOnce(compress: true, now);
+        Assert.Equal(3, done.Frames);
+        var files = Directory.GetFiles(config.DataDir, "*", SearchOption.AllDirectories);
+        Assert.NotEmpty(files);
+        Assert.All(files, f => Assert.True(RecordingFile.IsEncrypted(f), Path.GetFileName(f)));
+        Assert.Single(files, f => f.EndsWith(".mp4"));
+    }
+
+    /// The migration leaves files that are not recordings alone (a Thumbs.db, a note someone put there).
+    [Fact]
+    public void TheMigrationOnlyTouchesRecordings()
+    {
+        using var db = new Database(config.DbPath, key, createEncrypted: true);
+        var dir = Path.Combine(config.DataDir, "2026-10-19");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "Thumbs.db"), "not a recording");
+        RecordingFile.Write(Path.Combine(dir, "12-00-00.jpg"), "picture"u8.ToArray(), null);
+        VaultMigration.Run(db, config.DataDir, key, encrypt: true, CancellationToken.None);
+        Assert.True(RecordingFile.IsEncrypted(Path.Combine(dir, "12-00-00.jpg")));
+        Assert.Equal("not a recording", File.ReadAllText(Path.Combine(dir, "Thumbs.db")));
+    }
 }
