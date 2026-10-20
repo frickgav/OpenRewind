@@ -107,7 +107,10 @@ final class GifWriter {
     }
 
     @inline(__always) private static func key(_ c: Int32) -> Int {
-        Int((((c >> 19) & 31) << 10) | (((c >> 11) & 31) << 5) | ((c >> 3) & 31))
+        let r: Int32 = (c >> 19) & 31
+        let g: Int32 = (c >> 11) & 31
+        let b: Int32 = (c >> 3) & 31
+        return Int((r << 10) | (g << 5) | b)
     }
 
     /// Image descriptor, palette and LZW data for one rectangle, after a leading byte with its transparent index.
@@ -167,7 +170,8 @@ final class GifWriter {
         func average(_ keys: [Int]) -> Int32 {
             var r: Int64 = 0, g: Int64 = 0, b: Int64 = 0, n: Int64 = 0
             for k in keys { r += sumR[k]; g += sumG[k]; b += sumB[k]; n += Int64(counts[k]) }
-            return (Int32(r / n) << 16) | (Int32(g / n) << 8) | Int32(b / n)
+            let ar = Int32(r / n), ag = Int32(g / n), ab = Int32(b / n)
+            return (ar << 16) | (ag << 8) | ab
         }
         if used.count <= maxColors {
             for k in used { lookup[k] = Int32(colors.count); colors.append(average([k])) }
@@ -347,8 +351,9 @@ extension GifWriter {
                 for x in 0..<w {
                     let c: (Int, Int, Int)
                     if f <= 2 {
-                        c = f >= 1 && x >= 10 && x < 40 && y >= 10 && y < 30
-                            ? (255, 255, 255) : (x * 255 / 319, y * 255 / 199, (x + y) * 255 / 518)
+                        let inBox = f >= 1 && x >= 10 && x < 40 && y >= 10 && y < 30
+                        let gr: Int = x * 255 / 319, gg: Int = y * 255 / 199, gb: Int = (x + y) * 255 / 518
+                        c = inBox ? (255, 255, 255) : (gr, gg, gb)
                     } else if f == 3 {
                         c = checker[(x / 8 + y / 8) % 3]
                     } else {

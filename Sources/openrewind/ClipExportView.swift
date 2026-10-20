@@ -2,6 +2,34 @@ import AppKit
 import Combine
 import SwiftUI
 
+/// Date and time down to the second, with steppers (SwiftUI's DatePicker has no seconds on the Mac).
+struct SecondsDatePicker: NSViewRepresentable {
+    @Binding var date: Date
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSDatePicker {
+        let p = NSDatePicker()
+        p.datePickerStyle = .textFieldAndStepper
+        p.datePickerElements = [.yearMonthDay, .hourMinuteSecond]
+        p.dateValue = date
+        p.target = context.coordinator
+        p.action = #selector(Coordinator.changed(_:))
+        return p
+    }
+
+    func updateNSView(_ p: NSDatePicker, context: Context) {
+        context.coordinator.parent = self
+        if p.dateValue != date { p.dateValue = date }
+    }
+
+    final class Coordinator: NSObject {
+        var parent: SecondsDatePicker
+        init(_ parent: SecondsDatePicker) { self.parent = parent }
+        @objc func changed(_ sender: NSDatePicker) { parent.date = sender.dateValue }
+    }
+}
+
 /// Export Clip…: pick the range, MP4 or GIF and a speed. Before exporting it says how long the clip is, how many
 /// frames, and roughly how big and how long it takes; while exporting it shows the frame it is on, the time so far
 /// and the time left, with Cancel. A card over the timeline, like the keyboard shortcuts.
@@ -47,13 +75,11 @@ struct ExportClipCard: View {
                 Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
                     GridRow {
                         label("From")
-                        DatePicker("", selection: $start, displayedComponents: [.date, .hourMinuteAndSecond])
-                            .labelsHidden().datePickerStyle(.stepperField)
+                        SecondsDatePicker(date: $start)
                     }
                     GridRow {
                         label("To")
-                        DatePicker("", selection: $end, displayedComponents: [.date, .hourMinuteAndSecond])
-                            .labelsHidden().datePickerStyle(.stepperField)
+                        SecondsDatePicker(date: $end)
                     }
                     GridRow {
                         label("Format")
