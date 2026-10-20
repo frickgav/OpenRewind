@@ -471,9 +471,9 @@ extension TimelineModel {
         panel.allowedContentTypes = [.png]
         panel.nameFieldStringValue = ClipPlan.fileName(f.time, ext: "png")
         panel.directoryURL = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first
-        // Above the timeline, which floats over everything.
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard Dialogs.run(panel) == .OK, let url = panel.url else { return }
+        // The timeline may have been closed (or locked) while the dialog was up.
+        guard isShown else { return }
         guard let cg = FrameImages.shared.current(db, id: f.id, f.source) else { show(notice: "The file for this moment was deleted"); return }
         do {
             try ImageTools.write(cg, to: url, type: .png, quality: 1)
