@@ -123,15 +123,40 @@ unencrypted.
 
 ## Use with Claude and other AI apps (MCP)
 
-Claude Desktop, Claude Code, Cursor and other apps that support the
+Claude Desktop, Claude Code, ChatGPT, Cursor and other apps that support the
 [Model Context Protocol](https://modelcontextprotocol.io) can look things up in your history
 with the same lookups as Ask AI (the table above). Ask them "what was I reading about
 databases yesterday?" and they search OpenRewind on your computer.
 
-It is **off by default**. Turn on **Settings → Allow AI Apps to Read My History (MCP)**, then
-open **Settings → Connect AI Apps…**: it shows the setup for Claude Desktop, Claude Code and
-Cursor with this copy's path filled in, each with a **Copy** button. For Claude Desktop it looks
-like this (Mac path shown; on Windows it is the path of your `OpenRewind.exe`):
+It is **off by default**. Open **Settings → Connect AI Apps…** and click the button for your app:
+
+| Button | What it changes |
+| --- | --- |
+| **Add to Claude** (Claude Desktop) | the `openrewind` entry in `claude_desktop_config.json` (Mac: `~/Library/Application Support/Claude/`; Windows: `%APPDATA%\Claude\`, or `%LOCALAPPDATA%\Packages\Claude_…\LocalCache\Roaming\Claude\` for the Microsoft Store version) |
+| **Add to Claude Code** | runs `claude mcp add --scope user openrewind -- <this app> mcp` when it finds the `claude` command; otherwise writes the same entry in `~/.claude.json` |
+| **Add to ChatGPT** | the `[mcp_servers.openrewind]` table in `~/.codex/config.toml` (Windows: `%USERPROFILE%\.codex\config.toml`; `CODEX_HOME` if you set it), which the ChatGPT desktop app and Codex read |
+| **Add to Cursor** | the `openrewind` entry in `~/.cursor/mcp.json` |
+
+Adding an app also turns on **Allow AI Apps to Read My History (MCP)**. Each row then says
+**Added**, offers **Restart Claude** (or ChatGPT, Cursor) when the app is open, since apps read
+their setup when they start, and **Remove**, which takes out exactly that entry. If the entry
+points at another copy of OpenRewind (you moved the app), the row says so and the button reads
+**Update**.
+
+- Only that one entry changes. Everything else in the file stays as it was, and the file is
+  replaced in one step, so it is never left half-written. The previous version is kept next to
+  it as `<file>.openrewind-backup`.
+- A file OpenRewind can't read safely (not valid JSON, or ChatGPT's file already sets up
+  `openrewind` some other way) is never changed: the row says what's wrong and you can set it up
+  by hand.
+- **ChatGPT**: OpenRewind works in **Work** chats in the ChatGPT desktop app (Mac and Windows) and
+  in Codex, which start local MCP servers from `config.toml`. Regular chats and chatgpt.com in a
+  browser only connect to MCP servers on the internet. OpenRewind does not put your history
+  online to make that work, so those can't use it.
+
+For other AI apps, the window also shows the lines to paste, with this copy's path filled in and
+a **Copy** button. For most apps they look like this (Mac path shown; on Windows it is the path of
+your `OpenRewind.exe`):
 
 ```json
 {
@@ -144,12 +169,18 @@ like this (Mac path shown; on Windows it is the path of your `OpenRewind.exe`):
 }
 ```
 
-That goes in `~/Library/Application Support/Claude/claude_desktop_config.json` (Windows:
-`%APPDATA%\Claude\claude_desktop_config.json`); Cursor uses the same lines in `~/.cursor/mcp.json`.
-For Claude Code, run once:
+Claude Code by hand, run once:
 
 ```bash
 claude mcp add --scope user openrewind /Applications/OpenRewind.app/Contents/MacOS/OpenRewind mcp
+```
+
+ChatGPT and Codex by hand, in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.openrewind]
+command = '/Applications/OpenRewind.app/Contents/MacOS/OpenRewind'
+args = ['mcp']
 ```
 
 How it works:
