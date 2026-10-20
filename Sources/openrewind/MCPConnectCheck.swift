@@ -72,7 +72,7 @@ enum MCPConnectCheck {
             let inArray = "x = [\n  \"\"\"\n[mcp_servers.openrewind]\n\"\"\",\n]\n"
             check(toml(inArray) == .notAdded, "toml: multiline string inside an array")
             let tArray = try MCPTOMLConfig.add(inArray, name: name, want: want)
-            check(tArray.hasPrefix(inArray) && (try MCPTOMLConfig.remove(tArray, name: name)) == inArray, "toml: array left alone")
+            check(try tArray.hasPrefix(inArray) && (MCPTOMLConfig.remove(tArray, name: name)) == inArray, "toml: array left alone")
 
             for header in ["[\"mcp_servers\".openrewind]", "['mcp_servers'.\"openrewind\"]"] {
                 let text = "\(header)\ncommand = 'old'\n"
@@ -114,7 +114,7 @@ enum MCPConnectCheck {
 
             var changed = false
             do { try MCPConfigFile.write(file, "{\"y\": 2}\n", expected: "{\"not\": \"this\"}\n") } catch is MCPConfigChanged { changed = true }
-            check(changed && (try MCPConfigFile.read(file)) == "{}\n", "files: a file changed meanwhile is left alone")
+            check(try changed && (MCPConfigFile.read(file)) == "{}\n", "files: a file changed meanwhile is left alone")
 
             try Data([0x7B, 0x22, 0x70, 0x22, 0x3A, 0x22, 0xE9, 0x22, 0x7D]).write(to: file)
             check(throwsConfigError { try MCPConfigFile.read(file) }, "files: text that isn't UTF-8 is refused")
@@ -127,7 +127,7 @@ enum MCPConnectCheck {
             try fm.createDirectory(at: second, withIntermediateDirectories: true)
             var message = ""
             do { try MCPConfigFile.change([first, second]) { try MCPJSONConfig.add($0, name: name, want: want) } } catch let e as MCPConfigError { message = e.message }
-            check(message.contains("put back") && (try MCPConfigFile.read(first)) == "{\"a\":1}", "files: the first file is put back when the second fails")
+            check(try message.contains("put back") && (MCPConfigFile.read(first)) == "{\"a\":1}", "files: the first file is put back when the second fails")
 
             let real = dir.appendingPathComponent("dotfiles/mcp.json")
             try fm.createDirectory(at: real.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -135,7 +135,7 @@ enum MCPConnectCheck {
             let link = dir.appendingPathComponent("link.json")
             try fm.createSymbolicLink(at: link, withDestinationURL: real)
             try MCPConfigFile.change([link]) { try MCPJSONConfig.add($0, name: name, want: want) }
-            check((try? fm.destinationOfSymbolicLink(atPath: link.path)) != nil && (try MCPConfigFile.read(real)).map(json) == .added, "files: a link stays a link")
+            check(try (try? fm.destinationOfSymbolicLink(atPath: link.path)) != nil && (MCPConfigFile.read(real)).map(json) == .added, "files: a link stays a link")
 
             let leftovers = (fm.enumerator(atPath: dir.path)?.allObjects as? [String] ?? []).filter { $0.hasSuffix(".tmp") }
             check(leftovers.isEmpty, "files: no temporary files left: \(leftovers)")
