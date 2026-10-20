@@ -56,9 +56,13 @@ enum MeetingStatus {
 }
 
 /// What the user said about taking notes for one meeting: "" (not asked or not answered yet),
-/// "take" (Take Notes) or "skip" (Not This Time).
+/// "take" (the user clicked Take Notes), "auto" (notes taken without asking: asking is off, or the
+/// user said Always for this app) or "skip" (Not This Time).
 enum MeetingChoice {
-    static let undecided = "", take = "take", skip = "skip"
+    static let undecided = "", take = "take", auto = "auto", skip = "skip"
+
+    /// Notes are taken for this meeting, asked or not.
+    static func takes(_ choice: String) -> Bool { choice == take || choice == auto }
 }
 
 enum MeetingAsk { case take, skip, ask }
@@ -75,7 +79,7 @@ enum MeetingPrompt {
     /// turned asking off. Blocked meetings are never offered (and are not found in the first place).
     static func decide(_ m: Meeting, askFirst: Bool, remembered: [String: String], blocked: Blocklist) -> MeetingAsk {
         if MeetingDetector.hides(blocked, m) { return .skip }
-        if m.choice == MeetingChoice.take { return .take }
+        if MeetingChoice.takes(m.choice) { return .take }
         if m.choice == MeetingChoice.skip { return .skip }
         if remembered[m.app] == always { return .take }
         if remembered[m.app] == never { return .skip }
@@ -89,7 +93,7 @@ enum MeetingPrompt {
         var decided: [(id: Int64, choice: String)] = [], ask: [Meeting] = []
         for m in meetings where m.choice == MeetingChoice.undecided {
             switch decide(m, askFirst: askFirst, remembered: remembered, blocked: blocked) {
-            case .take: decided.append((m.id, MeetingChoice.take))
+            case .take: decided.append((m.id, MeetingChoice.auto))
             case .skip: decided.append((m.id, MeetingChoice.skip))
             // Only while it is going on; a call found after the fact stays listed, without notes by AI.
             case .ask: if m.isLive { ask.append(m) }
@@ -141,30 +145,58 @@ enum MeetingApps {
                 return "Google Meet"
             }
             if ["teams.microsoft.com", "teams.live.com", "teams.cloud.microsoft"].contains(host) { return teamsView(w) ? nil : "Microsoft Teams" }
-            // A meeting in the web client (/wc/123/join, /j/123), not its home or chat (/wc/home).
+            // A meeting in the web client (/wc/123456789/join, /wc/join/…, /j/123), not its home,
+            // chat or settings (/wc/home, /wc/2fa/settings).
             if (host == "zoom.us" || host.hasSuffix(".zoom.us"))
-                && (path.hasPrefix("/j/") || (path.hasPrefix("/wc/") && (path.contains(where: \.isNumber) || path.contains("join")))) {
+                && (path.hasPrefix("/j/") || (path.hasPrefix("/wc/") && (path.contains("/join") || zoomMeetingId(path)))) {
                 return "Zoom"
             }
             if host == "webex.com" || host.hasSuffix(".webex.com") { return "Webex" }
             if host == "app.slack.com" && path.contains("/huddle") { return "Slack huddle" }
         }
-        // Browsers that do not give their address: Meet's tab title is "Meet - abc-defg-hij".
-        if meetTitle(w) != nil { return "Google Meet" }
+        // A browser that does not give its address: Meet's tab title is "Meet - abc-defg-hij".
+        // Only in a browser (an email or a document can be named "Meet - …"), and only when the
+        // address is unknown or Meet's own (a help page can be titled "Help: Meet - …").
+        let noAddress = url.trimmingCharacters(in: .whitespaces).isEmpty
+        if isBrowser(a) && (noAddress || URL(string: url)?.host?.lowercased() == "meet.google.com") && meetTitle(w) != nil {
+            return "Google Meet"
+        }
         return nil
     }
 
     /// "Meet - abc-defg-hij", "Meet – Weekly sync", also after a browser profile name ("Personal:
     /// Meet - Weekly sync" in Dia and Arc). Meet's start page is "Google Meet". Capture group 1 is
-    /// the title without the profile.
-    private static let meetRegex = try! NSRegularExpression(pattern: #"^(?:[^:|\-–—]{1,40}:\s+)?(meet\s+[-–—]\s+\S.*)$"#,
+    /// the profile, group 2 the title without it.
+    private static let meetRegex = try! NSRegularExpression(pattern: #"^(?:([^:|\-–—]{1,40}):\s+)?(meet\s+[-–—]\s+\S.*)$"#,
                                                             options: [.caseInsensitive])
+
+    /// Prefixes of email subjects and help pages, not browser profiles.
+    private static let notProfiles: Set<String> = [
+        "re", "fw", "fwd", "aw", "wg", "sv", "vs", "tr", "rv", "r", "antw", "help", "invitation", "updated invitation", "canceled",
+        "cancelled", "accepted", "declined",
+    ]
 
     /// The Meet tab title without a browser profile in front, or nil when it is not one.
     private static func meetTitle(_ title: String) -> String? {
-        let ns = title as NSString
-        guard let m = meetRegex.firstMatch(in: title, range: NSRange(location: 0, length: ns.length)) else { return nil }
-        return ns.substring(with: m.range(at: 1))
+        let t = title.trimmingCharacters(in: .whitespaces)
+        let ns = t as NSString
+        guard let m = meetRegex.firstMatch(in: t, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        if m.range(at: 1).location != NSNotFound,
+           notProfiles.contains(ns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespaces).lowercased()) { return nil }
+        return ns.substring(with: m.range(at: 2))
+    }
+
+    private static let browsers = [
+        "google chrome", "chrome", "chromium", "microsoft edge", "edge", "firefox", "mozilla firefox", "safari", "brave", "brave browser",
+        "opera", "opera internet browser", "vivaldi", "arc", "dia", "orion", "zen", "comet", "duckduckgo", "waterfox", "librewolf", "floorp", "thorium",
+    ]
+
+    /// A web browser, by its app name ("Google Chrome", "Safari Technology Preview", "Firefox Nightly").
+    private static func isBrowser(_ a: String) -> Bool { browsers.contains { a == $0 || a.hasPrefix($0 + " ") } }
+
+    /// A Zoom meeting number (9 to 11 digits) as one part of the path.
+    private static func zoomMeetingId(_ path: String) -> Bool {
+        path.split(separator: "/").contains { (9...11).contains($0.count) && $0.allSatisfy { $0.isASCII && $0.isNumber } }
     }
 
     /// Like match, but only for a window that is clearly a call by itself: a Meet meeting, Zoom's
@@ -180,18 +212,27 @@ enum MeetingApps {
             host = h
             path = u.path.lowercased()
         }
-        let web = host == "zoom.us" || host == "webex.com" || host.hasSuffix(".zoom.us") || host.hasSuffix(".webex.com")
+        let zoomWeb = host == "zoom.us" || host.hasSuffix(".zoom.us")
+        let webexWeb = (host == "webex.com" || host.hasSuffix(".webex.com"))
+            && !["help.", "www.", "blog.", "community."].contains { host.hasPrefix($0) }
         let yes: Bool
         switch label {
-        case "Google Meet", "Slack huddle": yes = true
+        case "Google Meet": yes = true
         // The web client, or the app's meeting window ("Zoom Meeting", "Zoom Webinar").
-        case "Zoom": yes = web || w.hasPrefix("zoom meeting") || w.hasPrefix("zoom webinar")
+        case "Zoom": yes = zoomWeb || w.hasPrefix("zoom meeting") || w.hasPrefix("zoom webinar")
         case "Microsoft Teams": yes = teamsCall(w) || path.contains("meetup-join") || (host == "teams.live.com" && path.hasPrefix("/meet/"))
+        // A meeting page on a company's Webex site, or the app's meeting window.
         case "Webex":
-            yes = web ? path.hasPrefix("/meet/") || path.contains("/join") || path.contains("meeting") || path.hasPrefix("/wbxmjs/")
-                      : !w.isEmpty && !webexHome.contains(w)
+            if !host.isEmpty && !app.lowercased().contains("webex") {
+                yes = webexWeb && (path.hasPrefix("/meet/") || path.hasPrefix("/wbxmjs/") || path.hasSuffix("/j.php")
+                                   || (path.hasPrefix("/webappng/sites/") && path.contains("/meeting/")))
+            } else {
+                yes = !webexHome.contains(w) && (w.contains("meeting") || w.contains("personal room"))
+            }
+        // The huddle window ("Huddle: #design", "Huddle with Sam Lee"), or a huddle page.
+        case "Slack huddle": yes = w.hasPrefix("huddle") || (host == "app.slack.com" && path.contains("/huddle"))
         // The main window is just "FaceTime"; a call's window is named after the people in it.
-        case "FaceTime": yes = !w.isEmpty && w != "facetime"
+        case "FaceTime": yes = !w.isEmpty && !faceTimeWindows.contains(w)
         default: yes = false
         }
         return yes ? label : nil
@@ -202,11 +243,15 @@ enum MeetingApps {
         "contacts", "teams", "vidcast", "whiteboards", "preferences",
     ]
 
+    /// FaceTime's own windows: the main one and its settings tabs.
+    private static let faceTimeWindows: Set<String> = ["facetime", "general", "calls", "settings", "preferences", "facetime settings"]
+
     /// Teams' call and meeting windows: "Meeting with Sam Lee | Microsoft Teams", "Call with Sam Lee | …",
-    /// "Meeting compact view | …".
+    /// "Meeting compact view | …", "Weekly sync (Meeting) | …".
     private static func teamsCall(_ w: String) -> Bool {
         let first = (w.components(separatedBy: " | ").first ?? "").trimmingCharacters(in: .whitespaces)
-        return first.hasPrefix("meeting") || first.hasPrefix("call with") || first.hasPrefix("calling ") || first.hasSuffix("(meeting)")
+        return first.hasPrefix("meeting with") || first.hasPrefix("meeting compact view") || first.hasPrefix("call with")
+            || first.hasPrefix("calling ") || first.hasSuffix("(meeting)")
     }
 
     /// Zoom's home, chat and settings windows: not a call.
@@ -311,7 +356,10 @@ enum MeetingDetector {
     }
 
     /// `frames` oldest first. Frames the block list hides never count as a meeting app.
-    static func detect(frames: [MeetingFrame], audio: [MeetingAudio], blocked: Blocklist, now: Date) -> [MeetingSpan] {
+    /// `confirmed`: times of meetings the user clicked Take Notes for; a call window in them counts
+    /// as a call even when nobody else was heard.
+    static func detect(frames: [MeetingFrame], audio: [MeetingAudio], blocked: Blocklist, now: Date,
+                       confirmed: [(start: Date, end: Date)] = []) -> [MeetingSpan] {
         // When a meeting app or site was in front.
         var seen: [Seen] = []
         for (i, f) in frames.enumerated() {
@@ -329,6 +377,14 @@ enum MeetingDetector {
         var othersEnd: [Date] = []
         for a in others { othersEnd.append(max(othersEnd.last ?? a.end, a.end)) }
         let seenStarts = seen.map(\.start), seenEnds = seen.map(\.end), otherStarts = others.map(\.start)
+
+        /// When others were first heard at the start of this frame, or soon after it began; else nil.
+        func heardAt(_ s: Seen) -> Date? {
+            let j = countUpTo(otherStarts, s.start) - 1
+            if j >= 0 && othersEnd[j] >= s.start.addingTimeInterval(-touch) { return s.start }
+            if j + 1 < others.count && others[j + 1].start <= s.end.addingTimeInterval(touch) { return others[j + 1].start }
+            return nil
+        }
 
         // What keeps a meeting going: the app in front, and sound for a while after it was.
         var alive: [(s: Date, e: Date)] = seen.map { (s: $0.start, e: $0.end) }
@@ -365,27 +421,36 @@ enum MeetingDetector {
                 let s = seen[i]
                 i += 1
                 if let best = start, s.start >= best { break }
-                // Others heard at the start of this frame, or soon after it began.
-                let j = countUpTo(otherStarts, s.start) - 1
-                var heard: Date?
-                if j >= 0 && othersEnd[j] >= s.start.addingTimeInterval(-touch) {
-                    heard = s.start
-                } else if j + 1 < others.count && others[j + 1].start <= s.end.addingTimeInterval(touch) {
-                    heard = others[j + 1].start
-                }
-                if let t = heard, start.map({ t < $0 }) ?? true { start = t }
+                if let t = heardAt(s), start.map({ t < $0 }) ?? true { start = t }
             }
             guard let begin = start, call || st.e.timeIntervalSince(begin) >= minLength else { continue }
+            // A call window where nobody else was ever heard (a lobby, a camera check, a page left
+            // open) counts only while it is in front, unless the user said Take Notes for it: sound
+            // after switching away is not taken as part of the call.
+            var end = st.e
+            if call && !confirmed.contains(where: { $0.start <= st.e && $0.end >= begin }) {
+                var heardAny = false
+                var h = countUpTo(seenStarts, st.s, strict: true)
+                while h < seen.count && seen[h].start <= st.e && !heardAny { heardAny = heardAt(seen[h]) != nil; h += 1 }
+                if !heardAny {
+                    var n = countUpTo(seenStarts, begin, strict: true)
+                    end = seen[n].end
+                    while n + 1 < seen.count && seen[n + 1].start.timeIntervalSince(end) <= endGap && seen[n + 1].start <= st.e {
+                        n += 1
+                        end = max(end, seen[n].end)
+                    }
+                }
+            }
             var inside: [Seen] = []
             var k = countUpTo(seenEnds, begin)
-            while k < seen.count && seen[k].start <= st.e { inside.append(seen[k]); k += 1 }
+            while k < seen.count && seen[k].start <= end { inside.append(seen[k]); k += 1 }
             if inside.isEmpty {
                 k = countUpTo(seenStarts, st.s, strict: true)
-                while k < seen.count && seen[k].start <= st.e { inside.append(seen[k]); k += 1 }
+                while k < seen.count && seen[k].start <= end { inside.append(seen[k]); k += 1 }
             }
             let label = longest(inside) { $0.label }
             let mine = inside.filter { $0.label == label }
-            spans.append(MeetingSpan(start: begin, end: st.e, app: label, appName: longest(mine) { $0.app },
+            spans.append(MeetingSpan(start: begin, end: end, app: label, appName: longest(mine) { $0.app },
                                      title: longest(mine) { $0.title }, url: longest(mine) { $0.url }, live: false,
                                      titles: joinTitles(mine.map(\.title))))
         }
@@ -599,7 +664,7 @@ enum MeetingNotes {
     /// Whether a meeting gets notes by itself: the setting is on, the meeting ended after it was turned
     /// on, the provider is the one the user agreed to, and nothing about the meeting is blocked.
     static func autoSummarizes(_ m: Meeting, on: Bool, since: Date?, consent: String?, ai: AISettings, blocked: Blocklist) -> Bool {
-        guard m.choice == MeetingChoice.take, on, let since, m.end >= since, consent == consentKey(ai), ai.isReady else { return false }
+        guard MeetingChoice.takes(m.choice), on, let since, m.end >= since, consent == consentKey(ai), ai.isReady else { return false }
         return !MeetingDetector.hides(blocked, m)
     }
 
@@ -702,8 +767,11 @@ enum MeetingTracker {
         if let cut = db.meetingsDeletedThrough(), cut > from { from = min(cut, now) }
         let frames = db.meetingFrames(from: from, to: now)
         let audio = db.meetingAudio(from: from, to: now, chunkSeconds: chunkSeconds, includePending: transcribing)
-        let spans = MeetingDetector.detect(frames: frames, audio: audio, blocked: blocked, now: now)
-        let done = db.meetings(overlapping: from.addingTimeInterval(-MeetingDetector.mergeGap), to: now).filter { !$0.isLive }
+        let stored = db.meetings(overlapping: from.addingTimeInterval(-MeetingDetector.mergeGap), to: now)
+        // Calls the user clicked Take Notes for go on with sound after they switch away.
+        let confirmed = stored.filter { $0.choice == MeetingChoice.take }.map { (start: $0.start, end: $0.end) }
+        let spans = MeetingDetector.detect(frames: frames, audio: audio, blocked: blocked, now: now, confirmed: confirmed)
+        let done = stored.filter { !$0.isLive }
 
         var ended: [Meeting] = []
         var kept = Set<Int64>()
@@ -725,7 +793,8 @@ enum MeetingTracker {
             // Looked at all of it again and it is not a call after all (the sound was noise): drop it.
             // Otherwise (the computer slept, the app was closed for a day, part of it was deleted)
             // it is over: keep it as it was last seen.
-            // A call the user said Take Notes for stays, whatever the recordings say now.
+            // A call the user clicked Take Notes for stays, whatever the recordings say now (notes
+            // taken without asking do not count: that noise is still dropped).
             let covered = m.start >= from
             let recorded = frames.contains { $0.time >= m.start && $0.time <= m.end } || audio.contains { $0.start <= m.end && $0.end >= m.start }
             if covered && recorded && m.choice != MeetingChoice.take { db.deleteMeeting(m.id); continue }
@@ -753,9 +822,12 @@ enum MeetingTracker {
         let frames = db.meetingFrames(from: from, to: now)
         // Without sound, only call windows make a meeting.
         guard var s = MeetingDetector.detect(frames: frames, audio: [], blocked: blocked, now: now).last else { return nil }
-        // Already stored (the full run found it, or this call was asked about before a short break).
+        // Already stored (the full run found it, or this call was asked about before a short
+        // break), or a meeting in another app is going on right before it: the full run decides
+        // whether this is the same call, so no second popup.
         let stored = db.meetings(overlapping: s.start.addingTimeInterval(-MeetingDetector.mergeGap), to: now)
-        if stored.contains(where: { ($0.start <= s.end && $0.end >= s.start) || $0.app == s.app }) { return nil }
+        if stored.contains(where: { ($0.start <= s.end && $0.end >= s.start) || $0.app == s.app
+                                    || ($0.isLive && $0.end >= s.start.addingTimeInterval(-MeetingDetector.endGap)) }) { return nil }
         s.live = true
         guard let id = db.insertMeeting(s, status: MeetingStatus.live) else { return nil }
         return db.meeting(id: id)
@@ -1103,6 +1175,8 @@ final class MeetingCenter: ObservableObject {
     /// within seconds), and every minute the full run.
     func start() {
         let t = Timer(timeInterval: MeetingTracker.spotEvery, repeats: true) { [weak self] _ in self?.tick() }
+        // Lets macOS group this wakeup with others.
+        t.tolerance = 2
         RunLoop.main.add(t, forMode: .common)
         timer = t
     }

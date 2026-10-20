@@ -60,6 +60,22 @@ public class MeetingDetectorTests
     }
 
     [Fact]
+    public void ACallPageNobodyWasHeardOnCountsOnlyWhileInFront()
+    {
+        // A Meet lobby for a minute, then an in-person talk on the microphone in another app.
+        var frames = Frames(0, 1, "Google Chrome", "Meet - abc-defg-hij", "https://meet.google.com/abc-defg-hij").Concat(Frames(1, 40, "Excel"));
+        var lobby = Assert.Single(Detect(frames, Sound(1, 25, mic: true), now: 60));
+        Assert.Equal(At(0), lobby.Start);
+        Assert.Equal(At(1), lobby.End);
+        // Others heard while it was in front: a real call, so the microphone keeps it going.
+        var call = Assert.Single(Detect(frames, Sound(0, 1).Concat(Sound(1, 25, mic: true)), now: 60));
+        Assert.Equal(At(24.5).AddSeconds(20), call.End);
+        // The user clicked Take Notes for it: the same.
+        var yes = Assert.Single(MeetingDetector.Detect(frames.ToList(), Sound(1, 25, mic: true).ToList(), None, At(60), new[] { (At(0), At(1)) }));
+        Assert.Equal(At(24.5).AddSeconds(20), yes.End);
+    }
+
+    [Fact]
     public void NeedsBothTheAppAndSound()
     {
         Assert.Empty(Detect(Frames(0, 30, "zoom.us"), Array.Empty<MeetingAudio>(), now: 60));
@@ -257,6 +273,24 @@ public class MeetingDetectorTests
     [InlineData("Microsoft Teams", "Chat | Sam Lee | Microsoft Teams", "", null)]
     [InlineData("Cisco Webex Meetings", "Webex", "", null)]
     [InlineData("FaceTime", "FaceTime", "", null)]
+    // Things merely named "Meet - …": an email, a note, a document, a help page.
+    [InlineData("OUTLOOK.EXE", "Re: Meet - Thursday budget - Message (HTML)", "", null)]
+    [InlineData("Microsoft Outlook", "Meet - Thursday budget", "", null)]
+    [InlineData("Notes", "Meet - the new hire plan", "", null)]
+    [InlineData("WINWORD.EXE", "Meet - the team.docx - Word", "", null)]
+    [InlineData("Google Chrome", "Help: Meet - how to join", "https://support.google.com/meet/answer/1", null)]
+    [InlineData("Google Chrome", "Re: Meet - Thursday budget", "", null)]
+    [InlineData("Google Chrome", "Meet - Thursday budget - Gmail", "https://mail.google.com/mail/u/0/#inbox/1", null)]
+    // Loose signals that are not a call by themselves.
+    [InlineData("Firefox", "x", "https://help.webex.com/en-us/article/nul0wut/Join-a-Webex-meeting", null)]
+    [InlineData("Cisco Webex Meetings", "Design team", "", null)]
+    [InlineData("Slack", "#huddle-planning (Channel) - Acme - Slack", "", null)]
+    [InlineData("FaceTime", "General", "", null)]
+    [InlineData("Microsoft Teams", "Meeting notes | Microsoft Teams", "", null)]
+    [InlineData("Arc", "Zoom", "https://app.zoom.us/wc/2fa/settings", null)]
+    [InlineData("Arc", "Zoom", "https://app.zoom.us/wc/81234567890/start", "Zoom")]
+    [InlineData("Firefox", "x", "https://acme.webex.com/acme/j.php", "Webex")]
+    [InlineData("Slack", "Huddle with Sam Lee - Acme - Slack", "", "Slack huddle")]
     public void KnowsWhichWindowsAreCalls(string app, string window, string url, string? label) =>
         Assert.Equal(label, MeetingApps.Call(app, window, url));
 
@@ -501,8 +535,8 @@ public class MeetingStoreTests : IDisposable
         Assert.True(m.IsLive);
         var plan = MeetingPrompt.PlanFor(db.MeetingsBetween(start.AddDays(-1), start.AddSeconds(10)), true, null, None);
         Assert.Equal(new[] { m.Id }, plan.Ask.Select(x => x.Id));
-        // Asking turned off: notes are taken without a popup.
-        Assert.Equal(new[] { (m.Id, MeetingChoice.Take) },
+        // Asking turned off: notes are taken without a popup ("auto", not a clicked Take Notes).
+        Assert.Equal(new[] { (m.Id, MeetingChoice.Auto) },
                      MeetingPrompt.PlanFor(new[] { m }, false, null, None).Decided);
 
         // One popup per call: later checks and the full run keep the same meeting.
@@ -558,6 +592,68 @@ public class MeetingStoreTests : IDisposable
         Assert.Equal(m.Id, ended.Id);
         Assert.Equal(MeetingStatus.Ended, ended.Status);
         Assert.Equal(start, ended.Start, TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public void AnEmailNamedMeetIsNotACall()
+    {
+        var start = DateTime.UtcNow.AddMinutes(-60);
+        Frame(start, "OUTLOOK.EXE", "Re: Meet - Thursday budget - Message (HTML)");
+        for (int i = 0; i < 50; i++) Frame(start.AddSeconds(20 + i * 30), "EXCEL.EXE", "Budget.xlsx - Excel");
+        for (int c = 0; c < 40; c++)
+        {
+            var at = start.AddSeconds(15 + c * 30);
+            var chunk = new AudioChunk(db.InsertChunk("", Time.Iso(at), "microphone", true), "", Time.Iso(at), "microphone", true, "pending");
+            db.SaveTranscripts(chunk, new[] { new Segment(0, 10, $"private talk {c}") });
+        }
+        Assert.Null(MeetingTracker.Spot(db, None, start.AddSeconds(10)));
+        MeetingTracker.Update(db, None, start.AddMinutes(5));
+        Assert.Empty(MeetingTracker.Update(db, None, start.AddMinutes(45)));
+        Assert.Empty(db.Meetings());
+    }
+
+    [Fact]
+    public void NotesTakenWithoutAskingAreStillDroppedWhenItWasNoise()
+    {
+        var start = DateTime.UtcNow.AddMinutes(-60);
+        // A Teams channel with a video playing: system audio waiting for Whisper.
+        var chunks = new List<AudioChunk>();
+        for (int i = 0; i < 6; i++) Frame(start.AddSeconds(i * 30), "Microsoft Teams", "General | Design | Microsoft Teams");
+        Frame(start.AddMinutes(3), "Code", "x");
+        for (int c = 0; c < 6; c++)
+        {
+            var at = start.AddSeconds(c * 30);
+            chunks.Add(new AudioChunk(db.InsertChunk("", Time.Iso(at), "system audio", false), "", Time.Iso(at), "system audio", false, "pending"));
+        }
+        MeetingTracker.Update(db, None, start.AddMinutes(4));
+        var m = Assert.Single(db.Meetings());
+        // Asking is off: notes are taken by themselves.
+        foreach (var (id, choice) in MeetingPrompt.PlanFor(new[] { m }, false, null, None).Decided) db.SetMeetingChoice(id, choice);
+        Assert.Equal(MeetingChoice.Auto, db.MeetingById(m.Id)!.Choice);
+        // Whisper finds no speech: it was not a call, and it goes.
+        foreach (var ch in chunks) db.SaveTranscripts(ch, Array.Empty<Segment>());
+        Assert.Empty(MeetingTracker.Update(db, None, start.AddMinutes(5)));
+        Assert.Empty(db.Meetings());
+    }
+
+    [Fact]
+    public void ACallWindowOfAnotherAppDuringAMeetingIsNotASecondPopup()
+    {
+        var start = DateTime.UtcNow.AddMinutes(-60);
+        for (int i = 0; i < 6; i++) Frame(start.AddSeconds(i * 30), "Microsoft Teams", "Weekly sync | Microsoft Teams");
+        for (int c = 0; c < 12; c++)
+        {
+            var at = start.AddSeconds(c * 30);
+            var chunk = new AudioChunk(db.InsertChunk("", Time.Iso(at), "system audio", false), "", Time.Iso(at), "system audio", false, "pending");
+            db.SaveTranscripts(chunk, new[] { new Segment(0, 10, $"they said {c}") });
+        }
+        MeetingTracker.Update(db, None, start.AddMinutes(3));
+        var teams = Assert.Single(db.Meetings());
+        // The user opens the Meet link posted in the Teams chat.
+        Frame(start.AddMinutes(4), "Google Chrome", "Meet - abc-defg-hij", "https://meet.google.com/abc-defg-hij");
+        Assert.Null(MeetingTracker.Spot(db, None, start.AddMinutes(4).AddSeconds(10)));
+        MeetingTracker.Update(db, None, start.AddMinutes(5));
+        Assert.Equal(teams.Id, Assert.Single(db.Meetings()).Id);
     }
 
     [Fact]

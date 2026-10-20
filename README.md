@@ -268,21 +268,23 @@ Cancel.
 ## Meetings
 
 OpenRewind finds your calls in what it already records; nothing extra runs during a call.
-A meeting starts as soon as a call is on your screen: a Google Meet meeting (not Meet's start page),
-Zoom's meeting window or a Zoom meeting in the browser (not Zoom's home), a Teams call or meeting
-window, a Webex meeting, a FaceTime call or a Slack huddle. Another window of these apps (say, Zoom or
-Teams with no meeting name in its title) counts only once other people can be heard (system audio) for
-a minute. A meeting goes on while its window or page is in front; after you switch away, your
-microphone keeps it going for up to 30 minutes (say, while you share slides) and other sound for up
-to 15. It ends after 3 minutes with none of these, and calls in the same app less than 10 minutes apart
-(a dropped call, a rejoin) become one. Blocked apps, sites and private windows never become meetings.
-Without Whisper, audio waiting to be transcribed does not count as sound.
+A meeting starts as soon as a call is on your screen: a Google Meet meeting in your browser (not
+Meet's start page), Zoom's meeting window or a Zoom meeting in the browser (not Zoom's home), a Teams
+call or meeting window, a Webex meeting, a FaceTime call or a Slack huddle. Another window of these
+apps (say, Zoom or Teams with no meeting name in its title) counts only once other people can be heard
+(system audio) for a minute. A meeting goes on while its window or page is in front. Once other people
+have been heard on it, or you said Take Notes, switching away does not end it: your microphone keeps
+it going for up to 30 minutes (say, while you share slides) and other sound for up to 15. A call page
+where nobody else was heard and you did not say Take Notes (a lobby, a camera check) counts only while
+it is in front. A meeting ends after 3 minutes with none of these, and calls in the same app less than
+10 minutes apart (a dropped call, a rejoin) become one. Blocked apps, sites and private windows never
+become meetings. Without Whisper, audio waiting to be transcribed does not count as sound.
 
 **Take notes?** Within about 10 seconds of a call coming to the front, even before anyone speaks, a
 small popup asks "Meeting detected in Google Meet. Take notes?" in the corner of the screen. It does
-not take focus from the call, and it stays while you switch to other windows (until a while after
-the call ends). It asks only once per call. If you say Take Notes, the call is kept with its transcript from the moment
-you joined, even if you spend the call in other windows.
+not take focus from the call, and it stays while you switch to other windows (until a while after the
+call ends). It asks only once per call. If you say Take Notes, the call is kept with its transcript
+from the moment you joined, even if you spend the call in other windows.
 
 - **Take Notes** keeps the call in Meetings with its transcript and, if summaries are on (below),
   sends it for a summary when it ends.

@@ -31,10 +31,14 @@ public static class MeetingStatus
 }
 
 /// What the user said about taking notes for one meeting: "" (not asked or not answered yet),
-/// "take" (Take Notes) or "skip" (Not This Time).
+/// "take" (the user clicked Take Notes), "auto" (notes taken without asking: asking is off, or the
+/// user said Always for this app) or "skip" (Not This Time).
 public static class MeetingChoice
 {
-    public const string Undecided = "", Take = "take", Skip = "skip";
+    public const string Undecided = "", Take = "take", Auto = "auto", Skip = "skip";
+
+    /// Notes are taken for this meeting, asked or not.
+    public static bool Takes(string choice) => choice == Take || choice == Auto;
 }
 
 public enum MeetingAsk { Take, Skip, Ask }
@@ -53,7 +57,7 @@ public static class MeetingPrompt
     public static MeetingAsk Decide(Meeting m, bool askFirst, IReadOnlyDictionary<string, string>? remembered, Blocklist blocked)
     {
         if (MeetingDetector.Hides(blocked, m)) return MeetingAsk.Skip;
-        if (m.Choice == MeetingChoice.Take) return MeetingAsk.Take;
+        if (MeetingChoice.Takes(m.Choice)) return MeetingAsk.Take;
         if (m.Choice == MeetingChoice.Skip) return MeetingAsk.Skip;
         if (remembered != null && remembered.TryGetValue(m.App, out var r))
         {
@@ -73,7 +77,7 @@ public static class MeetingPrompt
         foreach (var m in meetings.Where(m => m.Choice == MeetingChoice.Undecided))
             switch (Decide(m, askFirst, remembered, blocked))
             {
-                case MeetingAsk.Take: plan.Decided.Add((m.Id, MeetingChoice.Take)); break;
+                case MeetingAsk.Take: plan.Decided.Add((m.Id, MeetingChoice.Auto)); break;
                 case MeetingAsk.Skip: plan.Decided.Add((m.Id, MeetingChoice.Skip)); break;
                 // Only while it is going on; a call found after the fact stays listed, without notes by AI.
                 default: if (m.IsLive) plan.Ask.Add(m); break;
@@ -120,22 +124,52 @@ public static class MeetingApps
             // A meeting code like /abc-defg-hij, not Meet's start page.
             if (host == "meet.google.com" && path.Length > 1 && path.Trim('/').Contains('-')) return "Google Meet";
             if (host is "teams.microsoft.com" or "teams.live.com" or "teams.cloud.microsoft") return TeamsView(w) ? null : "Microsoft Teams";
-            // A meeting in the web client (/wc/123/join, /j/123), not its home or chat (/wc/home).
+            // A meeting in the web client (/wc/123456789/join, /wc/join/…, /j/123), not its home,
+            // chat or settings (/wc/home, /wc/2fa/settings).
             if ((host == "zoom.us" || host.EndsWith(".zoom.us"))
-                && (path.StartsWith("/j/") || (path.StartsWith("/wc/") && (path.Any(char.IsDigit) || path.Contains("join"))))) return "Zoom";
+                && (path.StartsWith("/j/") || (path.StartsWith("/wc/") && (path.Contains("/join") || ZoomMeetingId(path))))) return "Zoom";
             if (host == "webex.com" || host.EndsWith(".webex.com")) return "Webex";
             if (host == "app.slack.com" && path.Contains("/huddle")) return "Slack huddle";
         }
-        // Browsers that do not give their address: Meet's tab title is "Meet - abc-defg-hij".
-        if (MeetTitle.IsMatch(w)) return "Google Meet";
+        // A browser that does not give its address: Meet's tab title is "Meet - abc-defg-hij".
+        // Only in a browser (an email or a document can be named "Meet - …"), and only when the
+        // address is unknown or Meet's own (a help page can be titled "Help: Meet - …").
+        if (IsBrowser(a) && (url.Trim().Length == 0 || HostOf(url) == "meet.google.com") && MeetTitleOnly(w) != null) return "Google Meet";
         return null;
     }
 
     /// "Meet - abc-defg-hij", "Meet – Weekly sync", also after a browser profile name ("Personal:
-    /// Meet - Weekly sync" in Dia and Arc). Meet's start page is "Google Meet". Group 1 is the title
-    /// without the profile.
+    /// Meet - Weekly sync" in Dia and Arc). Meet's start page is "Google Meet". Group 1 is the
+    /// profile, group 2 the title without it.
     static readonly System.Text.RegularExpressions.Regex MeetTitle =
-        new(@"^(?:[^:|\-–—]{1,40}:\s+)?(meet\s+[-–—]\s+\S.*)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        new(@"^(?:([^:|\-–—]{1,40}):\s+)?(meet\s+[-–—]\s+\S.*)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    /// Prefixes of email subjects and help pages, not browser profiles.
+    static readonly HashSet<string> NotProfiles = new(StringComparer.OrdinalIgnoreCase)
+        { "re", "fw", "fwd", "aw", "wg", "sv", "vs", "tr", "rv", "r", "antw", "help", "invitation", "updated invitation", "canceled", "cancelled", "accepted", "declined" };
+
+    /// The Meet title without a browser profile in front, or null when it is not one.
+    static string? MeetTitleOnly(string title)
+    {
+        var m = MeetTitle.Match(title.Trim());
+        if (!m.Success || (m.Groups[1].Success && NotProfiles.Contains(m.Groups[1].Value.Trim()))) return null;
+        return m.Groups[2].Value;
+    }
+
+    static readonly string[] Browsers =
+    {
+        "google chrome", "chrome", "chromium", "microsoft edge", "edge", "firefox", "mozilla firefox", "safari", "brave", "brave browser",
+        "opera", "opera internet browser", "vivaldi", "arc", "dia", "orion", "zen", "comet", "duckduckgo", "waterfox", "librewolf", "floorp", "thorium",
+    };
+
+    /// A web browser, by its app name ("Google Chrome", "Safari Technology Preview", "Firefox Nightly").
+    static bool IsBrowser(string a) => Browsers.Any(b => a == b || a.StartsWith(b + " "));
+
+    static string HostOf(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var u) ? u.Host.ToLowerInvariant() : "";
+
+    /// A Zoom meeting number (9 to 11 digits) as one part of the path.
+    static bool ZoomMeetingId(string path) => path.Split('/').Any(p => p.Length >= 9 && p.Length <= 11 && p.All(char.IsDigit));
 
     /// Like Match, but only for a window that is clearly a call by itself: a Meet meeting, Zoom's
     /// meeting window or web client, a Teams call or meeting window, a Webex meeting, a FaceTime call
@@ -152,21 +186,30 @@ public static class MeetingApps
             host = u.Host.ToLowerInvariant();
             path = u.AbsolutePath.ToLowerInvariant();
         }
-        var web = host is "zoom.us" or "webex.com" || host.EndsWith(".zoom.us") || host.EndsWith(".webex.com");
+        var zoomWeb = host == "zoom.us" || host.EndsWith(".zoom.us");
+        var webexWeb = (host == "webex.com" || host.EndsWith(".webex.com")) && !host.StartsWith("help.") && !host.StartsWith("www.")
+                       && !host.StartsWith("blog.") && !host.StartsWith("community.");
         var yes = label switch
         {
-            "Google Meet" or "Slack huddle" => true,
+            "Google Meet" => true,
             // The web client, or the app's meeting window ("Zoom Meeting", "Zoom Webinar").
-            "Zoom" => web || w.StartsWith("zoom meeting") || w.StartsWith("zoom webinar"),
+            "Zoom" => zoomWeb || w.StartsWith("zoom meeting") || w.StartsWith("zoom webinar"),
             "Microsoft Teams" => TeamsCall(w) || path.Contains("meetup-join") || (host == "teams.live.com" && path.StartsWith("/meet/")),
-            "Webex" => web ? path.StartsWith("/meet/") || path.Contains("/join") || path.Contains("meeting") || path.StartsWith("/wbxmjs/")
-                           : w.Length > 0 && !WebexHome.Contains(w),
+            // A meeting page on a company's Webex site, or the app's meeting window.
+            "Webex" => host.Length > 0 && !IsWebexApp(app)
+                ? webexWeb && (path.StartsWith("/meet/") || path.StartsWith("/wbxmjs/") || path.EndsWith("/j.php")
+                               || (path.StartsWith("/webappng/sites/") && path.Contains("/meeting/")))
+                : !WebexHome.Contains(w) && (w.Contains("meeting") || w.Contains("personal room")),
+            // The huddle window ("Huddle: #design", "Huddle with Sam Lee"), or a huddle page.
+            "Slack huddle" => w.StartsWith("huddle") || (host == "app.slack.com" && path.Contains("/huddle")),
             // The main window is just "FaceTime"; a call's window is named after the people in it.
-            "FaceTime" => w.Length > 0 && w != "facetime",
+            "FaceTime" => w.Length > 0 && !FaceTimeWindows.Contains(w),
             _ => false,
         };
         return yes ? label : null;
     }
+
+    static bool IsWebexApp(string app) => app.Contains("webex", StringComparison.OrdinalIgnoreCase);
 
     static readonly HashSet<string> WebexHome = new()
     {
@@ -174,12 +217,16 @@ public static class MeetingApps
         "contacts", "teams", "vidcast", "whiteboards", "preferences",
     };
 
+    /// FaceTime's own windows: the main one and its settings tabs.
+    static readonly HashSet<string> FaceTimeWindows = new() { "facetime", "general", "calls", "settings", "preferences", "facetime settings" };
+
     /// Teams' call and meeting windows: "Meeting with Sam Lee | Microsoft Teams", "Call with Sam Lee | …",
-    /// "Meeting compact view | …".
+    /// "Meeting compact view | …", "Weekly sync (Meeting) | …".
     static bool TeamsCall(string w)
     {
         var first = w.Split(" | ")[0].Trim();
-        return first.StartsWith("meeting") || first.StartsWith("call with") || first.StartsWith("calling ") || first.EndsWith("(meeting)");
+        return first.StartsWith("meeting with") || first.StartsWith("meeting compact view") || first.StartsWith("call with")
+            || first.StartsWith("calling ") || first.EndsWith("(meeting)");
     }
 
     /// Zoom's home, chat and settings windows: not a call.
@@ -218,7 +265,7 @@ public static class MeetingApps
             t = t[..cut].Trim();
         }
         // "Personal: Meet - Weekly sync": the browser profile is not part of the name.
-        if (MeetTitle.Match(t) is { Success: true } meet) t = meet.Groups[1].Value;
+        if (MeetTitleOnly(t) is string meet) t = meet;
         // Titles that only name the app say nothing.
         return t.ToLowerInvariant() is "zoom" or "zoom meeting" or "zoom workplace" or "microsoft teams" or "webex" or "facetime" or "meet" ? "" : t;
     }
@@ -261,8 +308,12 @@ public static class MeetingDetector
     sealed record Seen(DateTime Start, DateTime End, string Label, string App, string Title, string Url, bool Call);
 
     /// `frames` oldest first. Frames the block list hides never count as a meeting app.
-    public static List<MeetingSpan> Detect(IReadOnlyList<MeetingFrame> frames, IReadOnlyList<MeetingAudio> audio, Blocklist blocked, DateTime now)
+    /// `confirmed`: times of meetings the user clicked Take Notes for; a call window in them counts
+    /// as a call even when nobody else was heard.
+    public static List<MeetingSpan> Detect(IReadOnlyList<MeetingFrame> frames, IReadOnlyList<MeetingAudio> audio, Blocklist blocked, DateTime now,
+                                           IReadOnlyList<(DateTime Start, DateTime End)>? confirmed = null)
     {
+        confirmed ??= Array.Empty<(DateTime, DateTime)>();
         // When a meeting app or site was in front.
         var seen = new List<Seen>();
         for (int i = 0; i < frames.Count; i++)
@@ -313,20 +364,32 @@ public static class MeetingDetector
             {
                 var s = seen[i];
                 if (start is DateTime best && s.Start >= best) break;
-                // Others heard at the start of this frame, or soon after it began.
-                var j = CountUpTo(others, a => a.Start, s.Start) - 1;
-                DateTime? t = j >= 0 && othersEnd[j] >= s.Start - Touch ? s.Start
-                    : j + 1 < others.Count && others[j + 1].Start <= s.End + Touch ? others[j + 1].Start : null;
-                if (t is DateTime heard && (start == null || heard < start)) start = heard;
+                if (Heard(s, others, othersEnd) is DateTime heard && (start == null || heard < start)) start = heard;
             }
             if (start is not DateTime begin || (!call && e0 - begin < MinLength)) continue;
+            // A call window where nobody else was ever heard (a lobby, a camera check, a page left
+            // open) counts only while it is in front, unless the user said Take Notes for it: sound
+            // after switching away is not taken as part of the call.
+            var end = e0;
+            if (call && !confirmed.Any(c => c.Start <= e0 && c.End >= begin))
+            {
+                var heardAny = false;
+                for (int i = CountUpTo(seen, s => s.Start, s0, strict: true); i < seen.Count && seen[i].Start <= e0 && !heardAny; i++)
+                    heardAny = Heard(seen[i], others, othersEnd) != null;
+                if (!heardAny)
+                {
+                    var k = CountUpTo(seen, s => s.Start, begin, strict: true);
+                    end = seen[k].End;
+                    while (k + 1 < seen.Count && seen[k + 1].Start - end <= EndGap && seen[k + 1].Start <= e0) end = Max(end, seen[++k].End);
+                }
+            }
             var inside = new List<Seen>();
-            for (int i = CountUpTo(seen, s => s.End, begin); i < seen.Count && seen[i].Start <= e0; i++) inside.Add(seen[i]);
+            for (int i = CountUpTo(seen, s => s.End, begin); i < seen.Count && seen[i].Start <= end; i++) inside.Add(seen[i]);
             if (inside.Count == 0)
-                for (int i = CountUpTo(seen, s => s.Start, s0, strict: true); i < seen.Count && seen[i].Start <= e0; i++) inside.Add(seen[i]);
+                for (int i = CountUpTo(seen, s => s.Start, s0, strict: true); i < seen.Count && seen[i].Start <= end; i++) inside.Add(seen[i]);
             var label = Longest(inside, s => s.Label);
             var mine = inside.Where(s => s.Label == label).ToList();
-            spans.Add(new MeetingSpan(begin, e0, label, Longest(mine, s => s.App), Longest(mine, s => s.Title),
+            spans.Add(new MeetingSpan(begin, end, label, Longest(mine, s => s.App), Longest(mine, s => s.Title),
                                       Longest(mine, s => s.Url), false, JoinTitles(mine.Select(s => s.Title))));
         }
 
@@ -343,6 +406,14 @@ public static class MeetingDetector
             else merged.Add(m);
         }
         return merged.Select(m => m with { Live = now - m.End < MergeGap }).ToList();
+    }
+
+    /// When others were first heard at the start of this frame, or soon after it began; else null.
+    static DateTime? Heard(Seen s, List<MeetingAudio> others, DateTime[] othersEnd)
+    {
+        var j = CountUpTo(others, a => a.Start, s.Start) - 1;
+        return j >= 0 && othersEnd[j] >= s.Start - Touch ? s.Start
+             : j + 1 < others.Count && others[j + 1].Start <= s.End + Touch ? others[j + 1].Start : null;
     }
 
     static string JoinTitles(IEnumerable<string> titles) =>
@@ -526,7 +597,7 @@ public static class MeetingNotes
     /// turned asking off), the setting is on, the meeting ended after it was turned on, the provider
     /// is the one the user agreed to, and nothing about the meeting is blocked.
     public static bool AutoSummarizes(Meeting m, bool on, DateTime? since, string? consent, AiSettings ai, Blocklist blocked) =>
-        m.Choice == MeetingChoice.Take && on && since is DateTime s && m.End >= s && consent == ConsentKey(ai) && ai.IsReady
+        MeetingChoice.Takes(m.Choice) && on && since is DateTime s && m.End >= s && consent == ConsentKey(ai) && ai.IsReady
         && !MeetingDetector.Hides(blocked, m);
 
     /// "2:00 PM–2:45 PM" style times are left to the UI; Markdown uses 24-hour local times.
@@ -587,8 +658,11 @@ public static class MeetingTracker
             if (db.MeetingsDeletedThrough() is DateTime cut && cut > from) from = cut < now ? cut : now;
             var frames = db.MeetingFrames(from, now);
             var audio = db.MeetingAudio(from, now, chunkSeconds, includePending: transcribing);
-            var spans = MeetingDetector.Detect(frames, audio, blocked, now);
-            var done = db.MeetingsBetween(from - MeetingDetector.MergeGap, now).Where(m => !m.IsLive).ToList();
+            var stored = db.MeetingsBetween(from - MeetingDetector.MergeGap, now);
+            // Calls the user clicked Take Notes for go on with sound after they switch away.
+            var confirmed = stored.Where(m => m.Choice == MeetingChoice.Take).Select(m => (m.Start, m.End)).ToList();
+            var spans = MeetingDetector.Detect(frames, audio, blocked, now, confirmed);
+            var done = stored.Where(m => !m.IsLive).ToList();
 
             var ended = new List<Meeting>();
             var kept = new HashSet<long>();
@@ -614,7 +688,8 @@ public static class MeetingTracker
                 // Looked at all of it again and it is not a call after all (the sound was noise): drop it.
                 // Otherwise (the computer slept, the app was closed for a day, part of it was deleted)
                 // it is over: keep it as it was last seen.
-                // A call the user said Take Notes for stays, whatever the recordings say now.
+                // A call the user clicked Take Notes for stays, whatever the recordings say now (notes
+                // taken without asking do not count: that noise is still dropped).
                 var covered = m.Start >= from;
                 var recorded = frames.Any(f => f.Time >= m.Start && f.Time <= m.End) || audio.Any(a => a.Start <= m.End && a.End >= m.Start);
                 if (covered && recorded && m.Choice != MeetingChoice.Take) { db.DeleteMeeting(m.Id); continue; }
@@ -645,9 +720,12 @@ public static class MeetingTracker
             var frames = db.MeetingFrames(from, now);
             // Without sound, only call windows make a meeting.
             if (MeetingDetector.Detect(frames, Array.Empty<MeetingAudio>(), blocked, now).LastOrDefault() is not MeetingSpan s) return null;
-            // Already stored (the full run found it, or this call was asked about before a short break).
+            // Already stored (the full run found it, or this call was asked about before a short
+            // break), or a meeting in another app is going on right before it: the full run decides
+            // whether this is the same call, so no second popup.
             if (db.MeetingsBetween(s.Start - MeetingDetector.MergeGap, now)
-                  .Any(m => (m.Start <= s.End && m.End >= s.Start) || m.App == s.App)) return null;
+                  .Any(m => (m.Start <= s.End && m.End >= s.Start) || m.App == s.App
+                            || (m.IsLive && m.End >= s.Start - MeetingDetector.EndGap))) return null;
             return db.MeetingById(db.InsertMeeting(s with { Live = true }, MeetingStatus.Live));
         }
     }
