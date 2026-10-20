@@ -103,7 +103,7 @@ faster when you are away. The line under the switch shows how far it has got.
 
 Once it is on, the timeline's search box has a **Keyword | Meaning** switch. Meaning shows the
 closest moments first; click one to go there, as with keyword search. The browser search page and
-Ask AI (`search_by_meaning`) can use it too.
+Ask AI (`search_by_meaning`) can use it too, and so can AI apps connected through MCP.
 
 How it works:
 
@@ -113,7 +113,10 @@ How it works:
   that comes with macOS, so nothing is downloaded. Windows downloads one model the first time
   (all-MiniLM-L6-v2, about 90 MB, from Hugging Face), checks it against a fixed SHA-256, and runs
   it with ONNX Runtime. Your recordings are never uploaded.
-- Vectors are stored in the same database (table `meaning_moments`, about 0.5 KB per moment).
+- The index is stored in the same database. Each moment keeps a copy of its text (up to about
+  1,500 characters of screen text or transcript) with its app, window title and web address
+  (table `meaning_moments`), and its vector (table `meaning_vectors`): up to about 2 KB per moment.
+  So the index holds screen text too, not only numbers, and is deleted with it.
 - Blocked apps, sites and windows are never indexed, and are hidden from results if you block
   them later. As with Ask AI, audio is not filtered by app. Apps you unblock are only indexed from
   then on.

@@ -147,10 +147,16 @@ async function load(reset) {
   if (meaning) p.set('mode', 'meaning');
   $('prev').textContent = meaning ? '← Better match' : '← Newer';
   $('next').textContent = meaning ? 'Next match →' : 'Older →';
-  const r = await fetch('/search?' + p).then(r => r.json());
+  let r;
+  try { r = await fetch('/search?' + p).then(r => r.json()); }
+  catch (e) { r = { error: 'OpenRewind did not answer. Is it still running?' }; }
   if (my !== seq) return;  // a newer search started; drop this result
   if (reset) { rows = []; $('grid').innerHTML = ''; }
-  if (r.error) { $('meta').textContent = r.error; return; }
+  if (r.error || !Array.isArray(r.data)) {
+    $('meta').textContent = r.error || 'Search failed.';
+    if (meaning) health();  // Search by Meaning may have been turned off: switch back to keywords
+    return;
+  }
   total = r.pagination.total;
   const start = rows.length;
   rows = rows.concat(r.data.map(d => Object.assign({ kind: d.type }, d.content)));
