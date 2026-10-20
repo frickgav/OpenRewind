@@ -201,7 +201,7 @@ struct ConnectAIAppsView: View {
         ask.informativeText = "OpenRewind will quit \(app) and open it again, so it loads OpenRewind. If \(app) is still writing a reply, or you have a message you haven't sent, it may be lost."
         ask.addButton(withTitle: "Restart")
         ask.addButton(withTitle: "Cancel")
-        guard ask.runModal() == .alertFirstButtonReturn else { return }
+        guard Dialogs.run(ask) == .alertFirstButtonReturn else { return }
         link.restart()
         done(link, message: "Restarting \(app)…", failed: false)
     }

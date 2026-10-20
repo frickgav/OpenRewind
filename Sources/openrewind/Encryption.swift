@@ -62,7 +62,7 @@ final class Encryption {
         a.informativeText = "\(failed.formatted()) recordings could not be \(on ? "encrypted" : "decrypted"); they may be damaged or encrypted with another key. Stop trying? They stay as they are, and OpenRewind no longer tries them at every launch."
         a.addButton(withTitle: "Stop Retrying")
         a.addButton(withTitle: "Cancel")
-        guard a.runModal() == .alertFirstButtonReturn else { return }
+        guard Dialogs.run(a) == .alertFirstButtonReturn else { return }
         log("stopped retrying \(failed) recordings that could not be converted")
         failed = 0
         defaults.set(true, forKey: Self.doneKey)
@@ -84,7 +84,7 @@ final class Encryption {
         """
         a.addButton(withTitle: "Encrypt")
         a.addButton(withTitle: "Cancel")
-        guard a.runModal() == .alertFirstButtonReturn else { return }
+        guard Dialogs.run(a) == .alertFirstButtonReturn else { return }
 
         // Never make a new key over one that could not be read (a locked or denied Keychain): the
         // old key may still be needed for recordings encrypted with it.
@@ -125,7 +125,7 @@ final class Encryption {
         a.alertStyle = .warning
         a.addButton(withTitle: "Stop Encrypting")
         a.addButton(withTitle: "Cancel")
-        guard a.runModal() == .alertFirstButtonReturn else { return }
+        guard Dialogs.run(a) == .alertFirstButtonReturn else { return }
         RecordingFile.encryptNew = false
         defaults.set(false, forKey: Self.onKey)
         defaults.set(false, forKey: Self.doneKey)
@@ -176,7 +176,7 @@ final class Encryption {
         p.nameFieldStringValue = "OpenRewind Recovery Key.txt"
         p.allowedContentTypes = [.plainText]
         p.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        guard p.runModal() == .OK, let url = p.url else { return false }
+        guard Dialogs.run(p) == .OK, let url = p.url else { return false }
         do {
             try RecoveryKey.file(key).write(to: url, atomically: true, encoding: .utf8)
             // Only this user can read it (the folder chosen may be shared).
@@ -194,7 +194,7 @@ final class Encryption {
         let a = NSAlert()
         a.messageText = title
         a.informativeText = text
-        a.runModal()
+        Dialogs.run(a)
     }
 
     // MARK: - at launch
@@ -241,14 +241,14 @@ final class Encryption {
             a.addButton(withTitle: "Quit")
             a.addButton(withTitle: "Open File…")
             a.window.initialFirstResponder = field
-            switch a.runModal() {
+            switch Dialogs.run(a) {
             case .alertSecondButtonReturn:
                 return nil
             case .alertThirdButtonReturn:
                 let p = NSOpenPanel()
                 p.title = "Open Recovery Key"
                 p.allowedContentTypes = [.plainText]
-                if p.runModal() == .OK, let url = p.url {
+                if Dialogs.run(p) == .OK, let url = p.url {
                     do { field.stringValue = try String(contentsOf: url, encoding: .utf8) } catch {
                         problem("Could not open the file: \(error.localizedDescription)")
                     }
@@ -285,6 +285,6 @@ final class Encryption {
         a.messageText = "OpenRewind"
         a.informativeText = text
         a.alertStyle = .warning
-        a.runModal()
+        Dialogs.run(a)
     }
 }
