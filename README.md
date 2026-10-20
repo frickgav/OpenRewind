@@ -137,8 +137,9 @@ Every page has a part worked out on your computer, with no AI and nothing sent a
 - when audio was recorded (microphone, system audio or both)
 
 Apps, sites and windows on your block list are never shown: a blocked app is left out of every
-list, and a blocked site or window keeps only its app name. Click a time to open that moment in the
-timeline.
+list, and a blocked site or window keeps only its app name. Screenshots saved while a blocked window
+or site was in front are left out of every list too (their time still counts as active). Click a
+time to open that moment in the timeline.
 
 **Recap**: with an AI provider set up in **AI Settings**, **Write Recap** asks your model for a
 short recap: what you worked on, who you talked to, and open loops to follow up. It sends that
