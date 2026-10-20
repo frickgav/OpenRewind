@@ -101,7 +101,7 @@ final class AIChatModel: ObservableObject {
                     let tools = self.tools
                     let result = await Task.detached { tools.execute(call) }.value
                     try Task.checkCancellation()
-                    seenURLs.formUnion(Self.webAddresses(in: result.text))
+                    if AITools.suppliesLinks(call.name) { seenURLs.formUnion(Self.webAddresses(in: result.text)) }
                     history.append(AIMessage(role: .tool, text: result.text, toolCallId: call.id, toolName: call.name, image: result.image))
                     let detail = result.image.map { "\(result.text)\n\n[+ the screenshot as a JPEG image, \($0.count / 1024) KB]" } ?? result.text
                     items.append(ChatItem(kind: .tool, text: AITools.describe(call), detail: detail, args: AITools.arguments(call)))
@@ -164,7 +164,7 @@ final class AIChatModel: ObservableObject {
         Now: \(AITime.label(now)) local time (\(TimeZone.current.identifier)), \(day).
 
         - Always look things up with the tools instead of guessing. For "what did I do / work on" questions, call \
-        activity_summary first, then search_screen or get_screen_text for details.
+        activity_summary first, then search_screen or get_screen_text for details. For meetings and calls, call list_meetings first.
         - Times in tool answers are local. Write times the way people say them (2:15 PM).
         - When you mention a moment, link it with the link from the tool answer, e.g. [2:15 PM](openrewind://t/1760000000). \
         The link opens that moment in the user's timeline.

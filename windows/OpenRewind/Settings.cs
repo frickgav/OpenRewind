@@ -58,6 +58,18 @@ sealed class Settings
     public Dictionary<string, double[]> AiListedPrices { get; set; } = new();
     /// Everything used per provider (by AiProviders.Id) since the user last reset it.
     public Dictionary<string, AiTotal> AiTotals { get; set; } = new();
+    /// Send each meeting's transcript to the AI provider when it ends, for a summary and action items.
+    /// Off unless the user turns it on: it spends their tokens and sends what was said.
+    public bool SummarizeMeetings { get; set; }
+    /// When it was turned on (UTC). Only meetings that end after this are summarized by themselves.
+    public DateTime? SummarizeMeetingsSince { get; set; }
+    /// The provider and server the user agreed to send transcripts to (MeetingNotes.ConsentKey).
+    /// Summaries pause, and the user is asked again, when AI Settings point somewhere else.
+    public string? SummarizeMeetingsProvider { get; set; }
+    /// Show "Meeting detected. Take notes?" when a call starts. On by default.
+    public bool AskBeforeMeetingNotes { get; set; } = true;
+    /// Answers remembered per meeting app ("Zoom" → "always" or "never"), from the popup.
+    public Dictionary<string, string> MeetingChoices { get; set; } = new();
 
     string path = "";
 
