@@ -133,6 +133,7 @@ static class Program
                 return 0;
 
             case "record":
+                _ = Database.BuildSlowIndexesInBackground(config.DbPath);
                 engine.StartServer();
                 engine.SetScreen(true);
                 if (config.RecordMic || config.RecordSystemAudio) engine.SetAudio(true);

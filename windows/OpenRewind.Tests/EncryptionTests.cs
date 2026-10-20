@@ -360,6 +360,20 @@ public class EncryptionTests : IDisposable
     }
 
     [Fact]
+    public void TheInsightsIndexIsBuiltInAnEncryptedDatabase()
+    {
+        using (var db = new Database(config.DbPath, key, createEncrypted: true))
+            db.Insert(new Frame(0, Time.Now(), "A", "", true, "", "hello", "ocr", 0));
+        Database.BuildSlowIndexesInBackground(config.DbPath, key).Wait();
+        using var c = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={config.DbPath};Pooling=False");
+        c.Open();
+        using (var k = c.CreateCommand()) { k.CommandText = $"PRAGMA key = \"x'{System.Convert.ToHexString(Database.DbKey(key))}'\";"; k.ExecuteNonQuery(); }
+        using var q = c.CreateCommand();
+        q.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_frames_insights'";
+        Assert.Equal(1L, (long)q.ExecuteScalar()!);
+    }
+
+    [Fact]
     public void ARecoveryKeyIsCheckedAgainstARecording()
     {
         var day = Path.Combine(config.DataDir, "2026-10-19");

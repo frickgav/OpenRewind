@@ -54,6 +54,7 @@ sealed class TrayApp : ApplicationContext
         resumeTimer.Tick += (_, _) => CheckPause();
         retention = new RetentionJob(engine.Db, settings.Screen, settings.Audio);
         retention.Start();
+        _ = Database.BuildSlowIndexesInBackground(engine.Config.DbPath);
 
         updater = new Updater(settings) { QuitApp = Quit };
         updater.Changed += () => { if (overlay.Visible) overlay.Invalidate(); };
@@ -121,6 +122,15 @@ sealed class TrayApp : ApplicationContext
     /// The chat for the overlay; the same one the Ask AI window shows.
     AiChatPanel AiChat() => AiChatPanel.Get(settings, aiTools, aiConversation, OpenMoment, OpenAiSettings);
 
+    /// Where the time went (app names and hours, so it is history too); a click shows that app or
+    /// moment in the timeline, behind App Lock as well.
+    void ShowInsights() => appLock.Run("Unlock OpenRewind to see your insights", () => InsightsForm.ShowFor(settings, engine.Db, (at, app) =>
+        appLock.Run("Unlock OpenRewind to see your timeline", () =>
+        {
+            if (!overlay.Visible) overlay.ShowOverlay();
+            timeline.OpenAt(at, app);
+        })));
+
     /// A moment link in Ask AI. Goes through App Lock too: the chat window may have been left open.
     void OpenMoment(DateTime at) => appLock.Run("Unlock OpenRewind to see your timeline", () =>
     {
@@ -181,6 +191,7 @@ sealed class TrayApp : ApplicationContext
             if (engine.ServerOn) Open($"http://127.0.0.1:{engine.Config.Port}/"); else overlay.ShowSearch();
         })));
         menu.Items.Add(Item("Ask AI…", ShowAiChat));
+        menu.Items.Add(Item("Insights…", ShowInsights));
         menu.Items.Add(Item("Show Data Folder", () => appLock.Run("Unlock OpenRewind to open its data folder", () => Open(engine.Config.Home))));
         foreach (var line in StorageLines()) menu.Items.Add(new ToolStripMenuItem("   " + line) { Enabled = false });
         MeasureStorage();

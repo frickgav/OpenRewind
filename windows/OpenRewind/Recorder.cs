@@ -70,13 +70,15 @@ sealed class Recorder
         Redactor.Apply(image, screen.Bounds, wins);
         // A blocked window in front: keep the app name for the timeline, but not its title or text.
         if (list.BlocksWindow(Blocklist.IdFor(win.ExePath), win.AppName, win.WindowName) || siteWindows.Blocks(win.Hwnd, list))
-            Ingest(image, win with { WindowName = "" }, readWindowText: false);
+            Ingest(image, win with { WindowName = "" }, blocked: true);
         else
             Ingest(image, win);
     }
 
     /// Dedup, extract text, store snapshot, insert row. Returns the new frame id, or null if skipped.
-    public long? Ingest(Bitmap image, ActiveWindow window, bool readWindowText = true)
+    /// `blocked`: a blocked window or site is in front; its text is not read and the frame is marked,
+    /// so Insights leaves it out.
+    public long? Ingest(Bitmap image, ActiveWindow window, bool blocked = false)
     {
         var hash = ImageTools.DHash(image);
         var thumb = ImageTools.Thumbnail(image);
@@ -89,7 +91,7 @@ sealed class Recorder
         var text = "";
         var source = "ocr";
         var url = "";
-        if (config.UseAccessibility && readWindowText)
+        if (config.UseAccessibility && !blocked)
         {
             var w = UiaText.FocusedWindow(window.Hwnd, UiaText.IsBrowser(window.ExePath));
             if (w.Text is string ax) { text = ax; source = "accessibility"; }
@@ -120,7 +122,7 @@ sealed class Recorder
         var file = Path.Combine(dayDir, ts.Replace(':', '-') + ".jpg");
         using (var small = ImageTools.Scaled(image, config.SnapshotScale)) ImageTools.WriteJpeg(small, file);
 
-        var id = db.Insert(new Frame(0, ts, window.AppName, window.WindowName, true, file, text, source, unchecked((long)hash), url));
+        var id = db.Insert(new Frame(0, ts, window.AppName, window.WindowName, true, file, text, source, unchecked((long)hash), url, blocked));
         lastThumb = thumb; lastText = text; lastKey = key; lastWrite = DateTime.UtcNow;
         // The log is a plain file: with Encrypt Recordings on, it does not name the app.
         Log.Write(RecordingFile.EncryptNew ? $"frame {id} — {text.Length} chars via {source}" : $"frame {id} {window.AppName} — {text.Length} chars via {source}");

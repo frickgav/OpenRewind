@@ -102,6 +102,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let until = pausedUntil { schedulePause(until) } else { applyRecordingPrefs() }
         retention = RetentionJob(db: engine.db, screen: keep(keepScreenKey), audio: keep(keepAudioKey))
         retention.start()
+        Database.buildSlowIndexesInBackground(path: engine.config.dbPath)
 
         // ⌥⌘T (or the shortcut picked in Settings) opens the timeline from anywhere.
         registerHotKey(Shortcut.load(defaults))
@@ -138,6 +139,16 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             chat.reloadSettings()
             SetupWindows.shared.show("ai", title: "Ask OpenRewind", size: NSSize(width: 560, height: 720), resizable: true) {
                 AIChatView(model: chat)
+            }
+        }
+    }
+
+    /// Where the time went (app names and hours, so it is history too); a click opens the timeline.
+    @objc private func showInsights() {
+        appLock.run("see your insights") { [weak self] in
+            guard let self else { return }
+            InsightsWindow.shared.show(db: self.engine.db) { [weak self] date, app in
+                self?.appLock.run("see your timeline") { self?.overlay.show(at: date, app: app) }
             }
         }
     }
@@ -216,6 +227,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(tl)
         menu.addItem(action("Search…", #selector(openSearch)))
         menu.addItem(action("Ask AI…", #selector(showAIChat)))
+        menu.addItem(action("Insights…", #selector(showInsights)))
         menu.addItem(action("Show Data Folder", #selector(openData)))
         for line in storageLines() {
             let i = NSMenuItem(title: "  " + line, action: nil, keyEquivalent: "")
