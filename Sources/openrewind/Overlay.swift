@@ -84,6 +84,11 @@ final class OverlayController {
     /// `restoreFocus: false` when another app is about to come to the front (Open tab).
     func hide(restoreFocus: Bool = true) {
         model.stopAudio()
+        model.exportClip = nil
+        // Marks and a text selection belong to this visit: next time the bar opens on now, where they can't be
+        // seen, and Esc would clear them instead of closing.
+        model.clearMarks()
+        _ = model.clearTextSelection()
         model.tutorialStep = nil
         if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
         guard let p = panel else { return }
@@ -136,6 +141,11 @@ final class OverlayController {
         let cmd = e.modifierFlags.contains(.command)
         let typing = panel?.firstResponder is NSTextView  // the search box is focused
 
+        // The Export Clip card has the keyboard for its fields; esc closes it (and stops an export).
+        if model.exportClip != nil {
+            if Int(e.keyCode) == kVK_Escape { model.exportClip = nil; return true }
+            return false
+        }
         if cmd && e.keyCode == UInt16(kVK_ANSI_F) { model.focusSearchToken += 1; model.showResults = !model.query.isEmpty; return true }
         if cmd && e.keyCode == UInt16(kVK_ANSI_G) { model.nextHit(older: !shift); return true }
         if typing {
@@ -149,6 +159,9 @@ final class OverlayController {
             default: return false  // let the text field have it
             }
         }
+        if cmd && e.keyCode == UInt16(kVK_ANSI_C) { model.copy(); return true }
+        if cmd && e.keyCode == UInt16(kVK_ANSI_S) { model.saveFrame(); return true }
+        if cmd && e.keyCode == UInt16(kVK_ANSI_E) { model.openExport(); return true }
         if !cmd && e.characters == "?" { model.showHelp.toggle(); return true }
         if !cmd && e.charactersIgnoringModifiers == "/" { model.focusSearchToken += 1; return true }
         switch Int(e.keyCode) {
@@ -156,6 +169,8 @@ final class OverlayController {
             if model.showHelp { model.showHelp = false }
             else if model.showResults { model.showResults = false }
             else if model.showAI { model.showAI = false }
+            else if model.clearTextSelection() {}
+            else if model.hasMarks { model.clearMarks() }
             else { hide() }
         case kVK_LeftArrow: shift ? model.jump(to: model.playhead.addingTimeInterval(-60)) : model.step(-1)
         case kVK_RightArrow: shift ? model.jump(to: model.playhead.addingTimeInterval(60)) : model.step(1)
@@ -165,6 +180,8 @@ final class OverlayController {
         case kVK_ANSI_N, kVK_End: model.jumpToNow()
         case kVK_ANSI_O where !cmd: model.openCurrent()
         case kVK_ANSI_A where !cmd: model.toggleAppFilter()
+        case kVK_ANSI_LeftBracket where !cmd: model.markStart()
+        case kVK_ANSI_RightBracket where !cmd: model.markEnd()
         case kVK_ANSI_Equal, kVK_ANSI_KeypadPlus: model.span = max(60, model.span / 2)
         case kVK_ANSI_Minus, kVK_ANSI_KeypadMinus: model.span = min(12 * 3600, model.span * 2)
         default: return false

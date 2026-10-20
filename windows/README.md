@@ -34,6 +34,14 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   shown screenshot) limits the timeline to the moments when one app was in front. Time spent in
   other apps shrinks to breaks on the bar, ← → skip straight between that app's screenshots, and
   search only finds that app's screen text (and speech heard while it was in front).
+- **Copy and export**: drag across text on a screenshot (Windows OCR reads it when you stop on it)
+  and **Ctrl+C** copies it; with nothing selected **Ctrl+C** copies the screenshot, **Ctrl+S** saves
+  it as a PNG, **[** and **]** mark a clip and **Ctrl+E** exports it as an MP4 (H.264, with the encoder
+  built into Windows) or an animated GIF, at real time or sped up. It shows the size and time to
+  expect first, then the frame it is on and the time left, with Cancel.
+  Right-click the screenshot or use the share button at the top for the same, plus **Copy All Text**.
+  Clips use only the screenshots already saved and the app filter, and leave out blocked apps and
+  sites; see [Copy and export](../README.md#copy-and-export).
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
 - **Ask AI…** answers questions about your history with your own key, and **Meetings…** lists your

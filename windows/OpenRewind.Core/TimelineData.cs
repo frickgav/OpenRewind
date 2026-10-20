@@ -2,7 +2,8 @@ namespace OpenRewind;
 
 /// Url is the browser tab's address in this frame, or "".
 /// End is set only while the timeline shows one app: when the next screenshot (of any app) was taken.
-public record TimelineFrame(long Id, DateTime Time, string AppName, string WindowName, string Path, string Url = "", DateTime? End = null);
+/// Blocked: saved while a blocked window or site was in front; never copied or exported.
+public record TimelineFrame(long Id, DateTime Time, string AppName, string WindowName, string Path, string Url = "", DateTime? End = null, bool Blocked = false);
 
 public record TimelineAudio(long Id, DateTime Start, double Duration, string Device, bool IsInput, string Path)
 {
@@ -18,12 +19,35 @@ public sealed partial class Database
     {
         lock (gate)
         {
-            using var cmd = Cmd("SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url FROM frames WHERE timestamp >= ? ORDER BY timestamp ASC", Time.Iso(since));
+            using var cmd = Cmd("SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url, blocked FROM frames WHERE timestamp >= ? ORDER BY timestamp ASC", Time.Iso(since));
             using var r = cmd.ExecuteReader();
             var out_ = new List<TimelineFrame>();
             while (r.Read())
                 if (Time.ParseIso(r.GetString(1)) is DateTime t)
-                    out_.Add(new TimelineFrame(r.GetInt64(0), t, r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5)));
+                    out_.Add(new TimelineFrame(r.GetInt64(0), t, r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5), Blocked: r.GetInt64(6) != 0));
+            return out_;
+        }
+    }
+
+    /// Screenshots taken from `from` to `to` (inclusive), plus the first one after `to`, which says how long the
+    /// last one lasted. Export Clip reads only this, however much history there is.
+    public List<TimelineFrame> TimelineFrames(DateTime from, DateTime to)
+    {
+        lock (gate)
+        {
+            var out_ = new List<TimelineFrame>();
+            foreach (var (sql, args) in new[]
+            {
+                ("SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url, blocked FROM frames WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC", new object[] { Time.Iso(from), Time.Iso(to) }),
+                ("SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url, blocked FROM frames WHERE timestamp > ? ORDER BY timestamp ASC LIMIT 1", new object[] { Time.Iso(to) }),
+            })
+            {
+                using var cmd = Cmd(sql, args);
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                    if (Time.ParseIso(r.GetString(1)) is DateTime t)
+                        out_.Add(new TimelineFrame(r.GetInt64(0), t, r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5), Blocked: r.GetInt64(6) != 0));
+            }
             return out_;
         }
     }
