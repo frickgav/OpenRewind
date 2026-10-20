@@ -102,7 +102,7 @@ enum Journal {
         return (start, cal.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86_400))
     }
 
-    /// Works out the page from the day's frames and audio clips. `appBlocked` drops a row from every
+    /// Works out the page from the day's frames and audio clips. `appBlocked`, like the recorder's blocked mark, drops a row from every
     /// list (its time still counts as active); `rowBlocked` keeps the app but hides the row's window
     /// title and web address. `end` is when the day ends, or now for today. Clips last `clipSeconds`.
     static func compute(day: Date, rows: [ActivityRow], clips: [(time: Date, isInput: Bool)],
@@ -116,7 +116,7 @@ enum Journal {
             let next = i + 1 < rows.count ? rows[i + 1].time : min(end, r.time.addingTimeInterval(30))
             let secs = max(0, min(AIActivity.maxGap, next.timeIntervalSince(r.time)))
             total += secs
-            if appBlocked(r.app) { continue }
+            if r.blocked || appBlocked(r.app) { continue }
             if !r.app.isEmpty { apps[r.app, default: 0] += secs }
             if rowBlocked(r) { continue }
             let title = r.window.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -593,12 +593,29 @@ extension Database {
     func journalStats(day: Date, tools: AITools, now: Date = Date()) -> JournalStats {
         let (start, dayEnd) = Journal.bounds(day)
         let end = min(dayEnd, now)
-        // activityRows includes `end`; the next day's first frame belongs to the next day.
-        let rows = activityRows(from: start, to: dayEnd).filter { $0.time < dayEnd }
-        return Journal.compute(day: day, rows: rows, clips: audioClipTimes(from: start, to: dayEnd),
+        // A frame saved while a blocked window or site was in front (`blocked`) counts as active time
+        // but shows in no list, like a blocked app.
+        return Journal.compute(day: day, rows: journalRows(from: start, to: dayEnd), clips: audioClipTimes(from: start, to: dayEnd),
                                appBlocked: { tools.hidesApp($0) },
                                rowBlocked: { tools.hides(app: $0.app, window: $0.window, url: $0.url) },
                                end: end > start ? end : dayEnd)
+    }
+
+    /// The day's frames, oldest first, with the recorder's blocked mark.
+    private func journalRows(from start: Date, to end: Date) -> [ActivityRow] {
+        lock.lock(); defer { lock.unlock() }
+        var st: OpaquePointer?
+        let sql = "SELECT timestamp, app_name, window_name, browser_url, blocked FROM frames WHERE timestamp >= ? AND timestamp < ? ORDER BY timestamp ASC"
+        guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); return [] }
+        defer { sqlite3_finalize(st) }
+        bind(st, 1, Time.iso.string(from: start))
+        bind(st, 2, Time.iso.string(from: end))
+        var out: [ActivityRow] = []
+        while sqlite3_step(st) == SQLITE_ROW {
+            guard let t = Time.iso.date(from: col(st, 0)) else { continue }
+            out.append(ActivityRow(time: t, app: col(st, 1), window: col(st, 2), url: col(st, 3), blocked: sqlite3_column_int(st, 4) != 0))
+        }
+        return out
     }
 }
 

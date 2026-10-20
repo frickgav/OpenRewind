@@ -91,6 +91,19 @@ public class JournalTests : IDisposable
     }
 
     [Fact]
+    public void FramesTheRecorderMarkedBlockedAreNeverListed()
+    {
+        AddStretch(At(9, 0), 10, "Code", "journal.cs");
+        // Saved while a since-unblocked site was in front: the recorder marked them.
+        for (int i = 0; i < 20; i++)
+            db.Insert(new Frame(0, Time.Iso(At(9, 10).AddSeconds(30 * i)), "Safari", "Old Bank", true, "", "", "ocr", 0, "https://oldbank.example.com/", Blocked: true));
+        var s = db.JournalStats(Day, Tools(db));
+        var page = string.Join("\n", Journal.Sections(s).SelectMany(x => x.Lines).Select(l => l.Text));
+        foreach (var hidden in new[] { "Safari", "Old Bank", "oldbank" }) Assert.DoesNotContain(hidden, page);
+        Assert.Equal(20 * 60, s.ActiveSeconds, 0);
+    }
+
+    [Fact]
     public void OnlyTheDaysOwnRecordingsCount()
     {
         AddStretch(At(-1, 50), 5, "Late", "yesterday");

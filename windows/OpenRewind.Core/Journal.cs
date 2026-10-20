@@ -62,7 +62,7 @@ public static class Journal
         return (d.ToUniversalTime(), d.AddDays(1).ToUniversalTime());
     }
 
-    /// Works out the page from the day's frames and audio clips. `appBlocked` drops a row from every
+    /// Works out the page from the day's frames and audio clips. `appBlocked`, like the recorder's blocked mark, drops a row from every
     /// list (its time still counts as active); `rowBlocked` keeps the app but hides the row's window
     /// title and web address. `end` is when the day ends, or now for today. Clips last `clipSeconds`.
     public static JournalStats Compute(DateTime day, IReadOnlyList<ActivityRow> rows, IReadOnlyList<(DateTime Time, bool IsInput)> clips,
@@ -79,7 +79,7 @@ public static class Journal
             var next = i + 1 < rows.Count ? rows[i + 1].Time : (r.Time.AddSeconds(30) < end ? r.Time.AddSeconds(30) : end);
             var secs = Math.Max(0, Math.Min(AiActivity.MaxGap.TotalSeconds, (next - r.Time).TotalSeconds));
             total += secs;
-            if (appBlocked(r.App)) continue;
+            if (r.Blocked || appBlocked(r.App)) continue;
             if (r.App.Length > 0) apps[r.App] = apps.GetValueOrDefault(r.App) + secs;
             if (rowBlocked(r)) continue;
             if (r.Window.Trim().Length > 0) titles[(r.App, r.Window.Trim())] = titles.GetValueOrDefault((r.App, r.Window.Trim())) + secs;
@@ -456,8 +456,26 @@ public sealed partial class Database
         var (start, dayEnd) = Journal.Bounds(day);
         var now = nowUtc ?? DateTime.UtcNow;
         var end = dayEnd < now ? dayEnd : now;
-        // ActivityRows includes `end`; the next day's first frame belongs to the next day.
-        var rows = ActivityRows(start, dayEnd).Where(r => r.Time < dayEnd).ToList();
-        return Journal.Compute(day, rows, AudioClipTimes(start, dayEnd), tools.BlocksAppName, r => tools.Hides(r.App, r.Window, r.Url), end > start ? end : dayEnd);
+        var rows = JournalRows(start, dayEnd);
+        // A frame saved while a blocked window or site was in front (`blocked`) counts as active time
+        // but shows in no list, like a blocked app.
+        return Journal.Compute(day, rows, AudioClipTimes(start, dayEnd), tools.BlocksAppName,
+                               r => tools.Hides(r.App, r.Window, r.Url), end > start ? end : dayEnd);
+    }
+
+    /// The day's frames, oldest first, with the recorder's blocked mark.
+    List<ActivityRow> JournalRows(DateTime start, DateTime end)
+    {
+        lock (gate)
+        {
+            using var cmd = Cmd("SELECT timestamp, app_name, window_name, browser_url, blocked FROM frames WHERE timestamp >= ? AND timestamp < ? ORDER BY timestamp ASC",
+                                Time.Iso(start), Time.Iso(end));
+            using var r = cmd.ExecuteReader();
+            var out_ = new List<ActivityRow>();
+            while (r.Read())
+                if (Time.ParseIso(r.GetString(0)) is DateTime t)
+                    out_.Add(new ActivityRow(t, r.GetString(1), r.GetString(2), r.GetString(3), r.GetInt64(4) != 0));
+            return out_;
+        }
     }
 }
