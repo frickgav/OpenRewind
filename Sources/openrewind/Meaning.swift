@@ -276,6 +276,11 @@ extension Database {
         END;
         CREATE TABLE IF NOT EXISTS meaning_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         """)
+        // Earlier Mac builds saved no vector at all (a missing value) while the cursors still moved on.
+        // With no vectors there is nothing to lose: start the cursors over so the past gets indexed.
+        if scalarInt("SELECT COUNT(*) FROM meaning_vectors", []) == 0 {
+            try exec("DELETE FROM meaning_moments; DELETE FROM meaning_state WHERE key IN ('\(Self.frameCursor)', '\(Self.chunkCursor)');")
+        }
     }
 
     /// True when this database has the Search by Meaning tables (an older app may not have made them yet).
@@ -294,14 +299,26 @@ extension Database {
 
     private static let stateUpsert = "INSERT INTO meaning_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
 
-    /// Runs one statement; the caller holds `lock`. False on an error (logged).
+    /// Runs one statement; the caller holds `lock`. `blob` is the last "?", after `args`. False on an
+    /// error (logged), and when the statement has a different number of "?" than values given, so a
+    /// value is never left out (it would be saved as NULL).
     @discardableResult
-    private func runHeld(_ sql: String, _ args: [Arg], blob: (index: Int32, data: Data)? = nil) -> Bool {
+    private func runHeld(_ sql: String, _ args: [Arg], blob: Data? = nil) -> Bool {
         var st: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); return false }
         defer { sqlite3_finalize(st) }
+        let given = args.count + (blob == nil ? 0 : 1)
+        guard sqlite3_bind_parameter_count(st) == Int32(given) else {
+            log("sql error: \(sqlite3_bind_parameter_count(st)) placeholders but \(given) values in: \(sql.prefix(80))")
+            return false
+        }
         bindAll(st, args)
-        if let blob { _ = blob.data.withUnsafeBytes { sqlite3_bind_blob(st, blob.index, $0.baseAddress, Int32($0.count), SQLITE_TRANSIENT) } }
+        if let blob {
+            // An empty Data has no address, which SQLite would store as NULL: bind a zero-length blob instead.
+            let rc = blob.isEmpty ? sqlite3_bind_zeroblob(st, Int32(given), 0)
+                : blob.withUnsafeBytes { sqlite3_bind_blob(st, Int32(given), $0.baseAddress, Int32($0.count), SQLITE_TRANSIENT) }
+            guard rc == SQLITE_OK else { log("sql error: \(errmsg)"); return false }
+        }
         guard sqlite3_step(st) == SQLITE_DONE else { log("sql error: \(errmsg)"); return false }
         return true
     }
@@ -391,11 +408,13 @@ extension Database {
     /// Store a moment and move the cursor past it, together. The moment is left out (the cursor still
     /// moves) when its screenshots or clip were deleted while the vector was being made: its first or
     /// last frame is gone, or fewer frames are left between them than it was made from. With `keep`
-    /// false (the indexer was stopped meanwhile) nothing is written.
-    func saveMoment(_ m: Moment, model: String, vector: Data, cursorKey: String, cursor: Int64, keep: (() -> Bool)? = nil) {
+    /// false (the indexer was stopped meanwhile) nothing is written. False when the write failed
+    /// (logged, rolled back, the cursor stays put).
+    @discardableResult
+    func saveMoment(_ m: Moment, model: String, vector: Data, cursorKey: String, cursor: Int64, keep: (() -> Bool)? = nil) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        if let keep, !keep() { return }
-        guard sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); return }
+        if let keep, !keep() { return true }
+        guard sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); return false }
         let exists: String, ids: [Arg]
         if m.isAudio {
             exists = "EXISTS (SELECT 1 FROM audio_chunks WHERE id = ?)"; ids = [.int(m.firstId)]
@@ -417,10 +436,13 @@ extension Database {
                 INSERT INTO meaning_vectors (id, kind, timestamp, end_time, app_name, window_name, browser_url, model, vector)
                 VALUES (last_insert_rowid(), ?, ?, ?, ?, ?, ?, ?, ?)
                 """, [.text(kind), .text(m.start), .text(m.end), .text(m.appName), .text(m.windowName), .text(m.url), .text(model)],
-                blob: (9, vector))
+                blob: vector)
         }
         if ok { ok = runHeld(Self.stateUpsert, [.text(cursorKey), .text(String(cursor))]) }
-        sqlite3_exec(db, ok ? "COMMIT" : "ROLLBACK", nil, nil, nil)
+        if ok, sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK { return true }
+        if ok { log("sql error: \(errmsg)") }
+        sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+        return false
     }
 
     /// Every stored vector of `model` in the time range, without the text (that is read for the best
@@ -651,14 +673,31 @@ final class MeaningService {
     }
 
     private struct Stopped: Error {}
+    /// A moment could not be stored (the database said why in the log). The cursor stays put.
+    struct SaveFailed: Error, CustomStringConvertible {
+        var description: String { "a moment could not be saved" }
+    }
+
+    /// Rounds in a row that ended in an error. Each one doubles the wait (1 minute up to 1 hour), so a
+    /// write that keeps failing is tried, and logged, a few times an hour instead of over and over.
+    private var failures = 0
+
+    static func backoff(failures: Int) -> TimeInterval { min(3600, 60 * pow(2, Double(max(0, min(failures, 7) - 1)))) }
 
     private func loop(_ gen: Int) {
         while !isCancelled {
             var pause: TimeInterval
             if embedder == nil { pause = 5 } else {
-                do { let worked = try autoreleasepool { try step(gen: gen) }; pause = worked ? 0 : 30 }
-                catch is Stopped { return }
-                catch { log("search by meaning: \(error)"); pause = 60 }
+                do {
+                    let worked = try autoreleasepool { try step(gen: gen) }
+                    failures = 0
+                    pause = worked ? 0 : 30
+                } catch is Stopped { return }
+                catch {
+                    failures += 1
+                    pause = Self.backoff(failures: failures)
+                    log("search by meaning: \(error); trying again in \(Int(pause / 60)) min")
+                }
             }
             if pause > 0, rest(pause) { return }
         }
@@ -701,7 +740,11 @@ final class MeaningService {
         if !keep() { throw Stopped() }
         let t0 = Date()
         if let v = e.embed(MomentChunker.embedText(m)) {
-            db.saveMoment(m, model: e.modelId, vector: Vectors.quantize(v), cursorKey: cursorKey, cursor: cursor, keep: keep)
+            // Stop this round on a failed write: the rest of the batch would fail the same way, and
+            // the cursor must not move past moments that were never stored.
+            guard db.saveMoment(m, model: e.modelId, vector: Vectors.quantize(v), cursorKey: cursorKey, cursor: cursor, keep: keep) else {
+                throw SaveFailed()
+            }
         } else {
             db.setMeaningState(cursorKey, String(cursor), keep: keep)  // nothing the model can read: move on
         }

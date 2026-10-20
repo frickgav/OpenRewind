@@ -56,6 +56,10 @@ if command == "selftest-encryption" {
     print(problems.isEmpty ? "encryption self-test passed" : "encryption self-test failed (\(problems.count))")
     exit(problems.isEmpty ? 0 : 1)
 }
+// Hidden: Search by Meaning end to end with a made-up model (MeaningSelfTest.swift), run by the Mac CI.
+if command == "meaning-check" {
+    exit(MeaningSelfTest.run(encrypted: false) && MeaningSelfTest.run(encrypted: true) ? 0 : 1)
+}
 
 let config = Config.load(arguments: args)
 // Hidden: writes a test GIF with the clip exporter's GIF encoder, for scripts/gif-check.py in CI.
