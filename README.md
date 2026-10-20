@@ -278,20 +278,31 @@ It is **off by default**. Open **Settings → Connect AI Apps…** and click the
 
 Adding an app also turns on **Allow AI Apps to Read My History (MCP)**. Each row then says
 **Added**, offers **Restart Claude** (or ChatGPT, Cursor) when the app is open, since apps read
-their setup when they start, and **Remove**, which takes out exactly that entry. If the entry
-points at another copy of OpenRewind (you moved the app), the row says so and the button reads
-**Update**.
+their setup when they start, and **Remove**, which takes out exactly that entry. Restart asks
+first, then quits the app the normal way and opens it again; a reply it is still writing, or a
+message you haven't sent, may be lost. If the entry points at another copy of OpenRewind (you
+moved the app) or has options you added, the row says so and the button reads **Update**. If you
+turned OpenRewind off in the app (`"disabled": true`, or `enabled = false` for ChatGPT), the row
+says **Turned off** and **Turn On** switches it back on.
 
-- Only that one entry changes. Everything else in the file stays as it was, and the file is
-  replaced in one step, so it is never left half-written. The previous version is kept next to
-  it as `<file>.openrewind-backup`.
-- A file OpenRewind can't read safely (not valid JSON, or ChatGPT's file already sets up
-  `openrewind` some other way) is never changed: the row says what's wrong and you can set it up
-  by hand.
+- Only that one entry changes. Everything else in the file stays as it was. The new version goes
+  to a private temporary file next to it and replaces the file in one step, only if the app
+  didn't change the file in the meantime (otherwise OpenRewind starts over with what the app
+  wrote), so it is never left half-written. Claude Desktop with both a Store and a classic
+  install has two files: both change, or neither.
+- The previous version is kept as one `<file>.openrewind-backup` next to it, readable only by
+  you, and **Remove** deletes it. If the file is a link into a folder you keep in git (dotfiles),
+  the backup is created in that folder: add `*.openrewind-backup` to its `.gitignore`.
+- It is best to quit Claude Desktop before adding: it may write its own settings back when it
+  quits. Claude Code is set up with its own `claude` command when OpenRewind finds it (also when
+  installed with nvm, Volta, asdf, fnm, Bun or Homebrew).
+- A file OpenRewind can't read safely (not valid JSON, not saved as UTF-8, or ChatGPT's file
+  already sets up `openrewind` some other way) is never changed: the row says what's wrong and
+  you can set it up by hand.
 - **ChatGPT**: OpenRewind works in **Work** chats in the ChatGPT desktop app (Mac and Windows) and
-  in Codex, which start local MCP servers from `config.toml`. Regular chats and chatgpt.com in a
-  browser only connect to MCP servers on the internet. OpenRewind does not put your history
-  online to make that work, so those can't use it.
+  in Codex, which start local MCP servers from `config.toml`. What OpenRewind returns there goes
+  to OpenAI like anything else in the chat. Regular chats and chatgpt.com in a browser can't reach
+  it: they only connect to MCP servers on the internet.
 
 For other AI apps, the window also shows the lines to paste, with this copy's path filled in and
 a **Copy** button. For most apps they look like this (Mac path shown; on Windows it is the path of

@@ -78,7 +78,10 @@ on older recordings and on how time is counted). Click an app, site
   **Settings → Connect AI Apps…** has one button per app (**Add to Claude**, **Add to Claude Code**,
   **Add to ChatGPT**, **Add to Cursor**) that adds OpenRewind to its setup with the path of your
   `OpenRewind.exe`, and **Remove** to take it out again. It finds the Microsoft Store version of
-  Claude Desktop too. Other apps get the lines to paste, with a Copy button. The app starts
+  Claude Desktop too. **Restart** asks first, closes the app's window, and only ends it if it is
+  still open after 5 seconds; for ChatGPT it restarts only the ChatGPT desktop app, never Codex in
+  a terminal or an editor. Files that aren't saved as UTF-8 (Notepad's old "ANSI") are left alone.
+  Other apps get the lines to paste, with a Copy button. The app starts
   `OpenRewind.exe mcp` itself, with no tray icon, and reads the database read-only, so OpenRewind
   does not have to be running. See
   [Use with Claude and other AI apps (MCP)](../README.md#use-with-claude-and-other-ai-apps-mcp).
