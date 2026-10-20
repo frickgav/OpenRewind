@@ -216,15 +216,19 @@ final class AVCodec: VideoCodec {
 
     func writeStill(_ frame: FrameSource, to path: String) throws {
         guard let decoded = FrameImages.shared.image(frame, cache: false) else { throw Self.error("the frame could not be read") }
-        // Drawn into plain 8-bit sRGB first, like the screenshots the recorder saves: a decoded video frame
-        // carries the video's color space (BT.709), which a JPEG would not show the same.
-        guard let ctx = CGContext(data: nil, width: decoded.width, height: decoded.height, bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+        // The encoder took the screenshot's sRGB pixel values as they were and tagged the video BT.709; the
+        // decoder hands the same values back tagged BT.709. Keep the values and tag them sRGB again (converting
+        // BT.709 to sRGB would shift them away from the screenshot). Drawn into 8-bit first, in the frame's
+        // own color space so nothing is converted.
+        let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+        let own = decoded.colorSpace?.model == .rgb ? decoded.colorSpace! : sRGB
+        guard let ctx = CGContext(data: nil, width: decoded.width, height: decoded.height, bitsPerComponent: 8, bytesPerRow: 0, space: own,
                                   bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
             throw Self.error("cannot draw the frame")
         }
         ctx.draw(decoded, in: CGRect(x: 0, y: 0, width: decoded.width, height: decoded.height))
-        guard let img = ctx.makeImage(), let data = ImageTools.jpegData(img, quality: 0.95) else { throw Self.error("the frame could not be saved as JPEG") }
+        guard let drawn = ctx.makeImage(), let img = drawn.copy(colorSpace: sRGB),
+              let data = ImageTools.jpegData(img, quality: 0.95) else { throw Self.error("the frame could not be saved as JPEG") }
         try data.write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 
