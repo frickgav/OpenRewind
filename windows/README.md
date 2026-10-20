@@ -36,6 +36,12 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   search only finds that app's screen text (and speech heard while it was in front).
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
+- **Ask AI…** answers questions about your history with your own key, and **Meetings…** lists your
+  calls with their transcripts (see [Ask AI](../README.md#ask-ai) and [Meetings](../README.md#meetings)).
+  When a call starts, a popup above the tray asks whether to take notes (**Settings → Ask Before Taking
+  Meeting Notes**, on by default). **Settings → Summarize Meetings with AI** (off by default) sends the
+  transcript of each call you take notes for to your AI provider when it ends, for a summary and
+  action items.
 - **Insights…** shows where your time went today or this week: active time, time per app and
   website, when you were active, focus sessions and app switches, compared with the day or week
   before. Worked out on your PC without AI; blocked apps and sites are left out (see the notes there

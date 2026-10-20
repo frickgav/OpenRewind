@@ -166,6 +166,7 @@ public sealed partial class Database : IDisposable
         if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'blocked'") == 0)
             Exec("ALTER TABLE frames ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0");
         MigrateVideo();
+        MigrateMeetings();
     }
 
     /// Indexes that take a while on a big database (the whole frames table is read, screen text and

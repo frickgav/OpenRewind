@@ -38,6 +38,8 @@ extension Database {
         let (whereSQL, args) = Self.range("timestamp", from, to)
         let and = whereSQL.isEmpty ? "WHERE" : whereSQL + " AND"
         var n = 0, stills: [String] = [], emptied: [String] = [], partial = false
+        // Meeting titles taken from these frames' windows go first (its own statement: it takes the lock).
+        if scalarInt("SELECT COUNT(*) FROM frames \(whereSQL)", args) > 0 { forgetMeetingWindows(from: from, to: to) }
         // Held throughout, so a compaction cannot commit a new video for these frames halfway through.
         videoGate.lock()
         lock.lock()
@@ -74,9 +76,11 @@ extension Database {
         return n
     }
 
-    /// Delete audio chunks with `from <= timestamp < to`, their transcripts and WAV files.
+    /// Delete audio chunks with `from <= timestamp < to`, their transcripts and WAV files, and the
+    /// meeting notes made from them.
     @discardableResult
     func deleteAudio(from: Date?, to: Date?) -> Int {
+        deleteMeetings(from: from, to: to)
         let (whereSQL, args) = Self.range("timestamp", from, to)
         let paths = strings("SELECT file_path FROM audio_chunks \(whereSQL)", args)
         guard !paths.isEmpty else { return 0 }

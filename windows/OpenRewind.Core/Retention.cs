@@ -47,6 +47,8 @@ public sealed partial class Database
         int n;
         lock (gate)
         {
+            // Meeting titles taken from these frames' windows go first (outside the transaction: its own statement).
+            if (ScalarLong($"SELECT COUNT(*) FROM frames {where}", args) > 0) ForgetMeetingWindows(from, to);
             using var tx = conn.BeginTransaction();
             n = (int)TxScalar(tx, $"SELECT COUNT(*) FROM frames {where}", args);
             if (n == 0) { tx.Rollback(); return 0; }
@@ -74,9 +76,11 @@ public sealed partial class Database
         return n;
     }
 
-    /// Delete audio chunks with `from <= timestamp < to`, their transcripts and WAV files.
+    /// Delete audio chunks with `from <= timestamp < to`, their transcripts and WAV files, and the
+    /// meeting notes made from them.
     public int DeleteAudio(DateTime? from, DateTime? to)
     {
+        DeleteMeetings(from, to);
         var (where, args) = Range("timestamp", from, to);
         var paths = Strings($"SELECT file_path FROM audio_chunks {where}", args);
         if (paths.Count == 0) return 0;
