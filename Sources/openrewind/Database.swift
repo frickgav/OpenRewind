@@ -44,6 +44,11 @@ final class Database {
     let path: URL
     /// Set by `init` and `convert(key:)` (Vault.swift).
     var isEncrypted = false
+    /// The master key the open connection was opened with (nil for a plain database).
+    var openKey: Data?
+    /// `isConverting` (Vault.swift), read by the menu without waiting on `lock`.
+    let convertState = NSLock()
+    var converting = false
 
     /// `key` opens an encrypted database; `createEncrypted` makes a new one encrypted with it.
     init(path: URL, key: Data? = nil, createEncrypted: Bool = false) throws {
@@ -53,6 +58,7 @@ final class Database {
         if encrypted && key == nil { throw DBError.locked("the database is encrypted and the key is not on this Mac") }
         db = try Database.connect(path, key: encrypted ? key : nil)
         isEncrypted = encrypted
+        openKey = encrypted ? key : nil
         try exec("PRAGMA journal_mode=WAL;")
         try exec("PRAGMA busy_timeout=5000;")
         try migrate()
@@ -61,11 +67,15 @@ final class Database {
     }
 
     /// For the MCP server: reads while the app records, and never changes the database
-    /// (no schema changes and no home move, which are the recording app's job).
-    init(readOnly path: URL) throws {
-        if sqlite3_open_v2(path.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) != SQLITE_OK {
-            throw DBError.open(String(cString: sqlite3_errmsg(db)))
-        }
+    /// (no schema changes and no home move, which are the recording app's job). `key` (the data
+    /// key from the Keychain) opens it when Encrypt Recordings is on; without it that throws `.locked`.
+    init(readOnly path: URL, key: Data?) throws {
+        self.path = path
+        let encrypted = Database.isEncryptedFile(path)
+        if encrypted && key == nil { throw DBError.locked("the database is encrypted and the key is not on this Mac") }
+        db = try Database.connect(path, key: encrypted ? key : nil, readOnly: true)
+        isEncrypted = encrypted
+        openKey = encrypted ? key : nil
         try exec("PRAGMA busy_timeout=5000;")
     }
 
@@ -139,13 +149,20 @@ final class Database {
     /// in the background, so the app starts at once and reads keep working meanwhile. A failure (full
     /// disk, another process writing) is logged and tried again next launch; Insights still works,
     /// only slower. Windows does the same.
+    /// With Encrypt Recordings on, the connection opens with the data key (`RecordingFile.key`).
     static func buildSlowIndexesInBackground(path: URL) {
         DispatchQueue.global(qos: .utility).async {
-            var c: OpaquePointer?
-            defer { sqlite3_close(c) }
-            guard sqlite3_open_v2(path.path, &c, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
-                log("could not build the Insights index (will try again next launch): cannot open the database"); return
+            let c: OpaquePointer
+            do {
+                guard FileManager.default.fileExists(atPath: path.path) else { throw DBError.open("no database") }
+                let encrypted = Database.isEncryptedFile(path)
+                let key = encrypted ? RecordingFile.key : nil
+                if encrypted && key == nil { throw DBError.locked("the data key is not loaded") }
+                c = try Database.connect(path, key: key)
+            } catch {
+                log("could not build the Insights index (will try again next launch): cannot open the database (\(error))"); return
             }
+            defer { sqlite3_close(c) }
             func run(_ sql: String) -> Bool {
                 var err: UnsafeMutablePointer<CChar>?
                 guard sqlite3_exec(c, sql, nil, nil, &err) == SQLITE_OK else {

@@ -354,6 +354,8 @@ final class SetupWindows: NSObject, NSWindowDelegate {
 
     func close(_ key: String) { windows[key]?.close() }
 
+    func isOpen(_ key: String) -> Bool { windows[key]?.isVisible == true }
+
     func windowWillClose(_ note: Notification) {
         guard let key = (note.object as? NSWindow)?.identifier?.rawValue else { return }
         windows[key] = nil

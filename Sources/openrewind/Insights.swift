@@ -407,6 +407,10 @@ final class InsightsWindow: NSObject, NSWindowDelegate {
         w.makeKeyAndOrderFront(nil)
     }
 
+    var isOpen: Bool { window?.isVisible == true }
+
+    func close() { window?.close() }
+
     func windowWillClose(_ note: Notification) {
         window = nil
         model = nil

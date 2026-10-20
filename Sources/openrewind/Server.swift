@@ -116,6 +116,9 @@ struct API {
         switch req.path {
         case "/", "/index.html":
             return HTTPResponse(contentType: "text/html; charset=utf-8", body: Data(WebUI.html.utf8))
+        case "/health" where locked():
+            // Locked: no counts, times or folder, only that it is running.
+            return .json(["status": "healthy", "locked": true])
         case "/health":
             let s = db.stats()
             let a = db.audioStats()

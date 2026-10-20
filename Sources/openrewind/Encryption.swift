@@ -25,7 +25,9 @@ final class Encryption {
     private let queue = DispatchQueue(label: "openrewind.encryption", qos: .utility)
     private var cancel: Cancel?
     /// Files the last run could not convert (it tries again next launch).
-    private var failed = 0
+    private(set) var failed = 0
+    /// The last run could not convert the database (it is left as it was and tried again next launch).
+    private var dbFailed = false
 
     init(engine: Engine) { self.engine = engine }
 
@@ -36,16 +38,34 @@ final class Encryption {
         if !Self.isDone { migrate(Self.isOn) }
     }
 
-    /// The grey line under the switch.
+    /// The grey line under the switch. Read from what is on disk, not only from the setting.
     func status() -> String {
         let verb = on ? "Encrypting" : "Decrypting"
+        if engine.db.isConverting { return "\(verb) the database… (recording waits until it is done)" }
         let s = VaultMigration.status
         if s.running {
             return s.total == 0 ? "\(verb) the database…" : "\(verb) recordings… \(s.done.formatted()) of \(s.total.formatted())"
         }
+        if dbFailed { return "The database could not be \(on ? "encrypted" : "decrypted"); trying again next launch" }
         if failed > 0 { return "\(failed.formatted()) files could not be \(on ? "encrypted" : "decrypted"); trying again next launch" }
-        if !Self.isDone { return "\(verb) recordings…" }
+        if !Self.isDone || engine.db.isEncrypted != on { return "\(verb) recordings…" }
         return on ? "Recordings and the database are encrypted" : "Recordings are stored as plain files"
+    }
+
+    /// Files that keep failing (damaged, or encrypted with another key) would be tried at every
+    /// launch. The menu offers to stop: they stay as they are and the switch counts as done.
+    func skipFailed() {
+        guard failed > 0 else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let a = NSAlert()
+        a.messageText = "Stop retrying?"
+        a.informativeText = "\(failed.formatted()) recordings could not be \(on ? "encrypted" : "decrypted"); they may be damaged or encrypted with another key. Stop trying? They stay as they are, and OpenRewind no longer tries them at every launch."
+        a.addButton(withTitle: "Stop Retrying")
+        a.addButton(withTitle: "Cancel")
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        log("stopped retrying \(failed) recordings that could not be converted")
+        failed = 0
+        defaults.set(true, forKey: Self.doneKey)
     }
 
     var hasKey: Bool { RecordingFile.key != nil }
@@ -66,14 +86,24 @@ final class Encryption {
         a.addButton(withTitle: "Cancel")
         guard a.runModal() == .alertFirstButtonReturn else { return }
 
-        var key = RecordingFile.key ?? DataKeyStore.load()
+        // Never make a new key over one that could not be read (a locked or denied Keychain): the
+        // old key may still be needed for recordings encrypted with it.
+        var key = RecordingFile.key
         if key == nil {
-            let k = RecordingFile.newKey()
-            guard DataKeyStore.save(k) else {
-                alert("Encrypt Recordings", "OpenRewind could not save the encryption key to the Keychain. Nothing was encrypted.")
+            switch DataKeyStore.read() {
+            case .found(let k):
+                key = k
+            case .failed(let status):
+                alert("Encrypt Recordings", "OpenRewind could not read its encryption key from the Keychain (error \(status)). Nothing was changed. Unlock the Keychain or allow access, then try again.")
                 return
+            case .missing:
+                let k = RecordingFile.newKey()
+                guard DataKeyStore.store(k) else {
+                    alert("Encrypt Recordings", "OpenRewind could not save the encryption key to the Keychain. Nothing was encrypted.")
+                    return
+                }
+                key = k
             }
-            key = k
         }
         RecordingFile.key = key
         RecordingFile.encryptNew = true
@@ -110,14 +140,17 @@ final class Encryption {
         let c = Cancel()
         cancel = c
         failed = 0
+        dbFailed = false
         let db = engine.db, dir = engine.config.dataDir
         queue.async { [weak self] in
             if c.isSet { return }
-            guard let key = RecordingFile.key else { log("cannot convert recordings: the encryption key is not loaded"); return }
+            guard let key = RecordingFile.key ?? DataKeyStore.load() else { log("cannot convert recordings: the encryption key is not loaded"); return }
+            RecordingFile.key = key
             let r = VaultMigration.run(db: db, dataDir: dir, key: key, encrypt: encrypt, cancelled: { c.isSet })
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.failed = r.failed
+                self.dbFailed = r.databaseFailed
                 if r.finished && Self.isOn == encrypt { self.defaults.set(true, forKey: Self.doneKey) }
             }
         }
@@ -138,6 +171,8 @@ final class Encryption {
         guard p.runModal() == .OK, let url = p.url else { return false }
         do {
             try RecoveryKey.file(key).write(to: url, atomically: true, encoding: .utf8)
+            // Only this user can read it (the folder chosen may be shared).
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
             log("recovery key saved")
             alert("Recovery key saved", "Keep this file somewhere safe and private, like a password manager or a USB stick in a drawer. Anyone with it and a copy of your recordings can read them.")
             return true
@@ -159,12 +194,14 @@ final class Encryption {
     /// The data key, loaded before the database (which may be encrypted with it). Nil when nothing
     /// is encrypted. When recordings are encrypted and the Keychain has no key for them, the app asks
     /// for the recovery key; the command line, or a user who quits that prompt, gets `.locked`.
+    /// Also while a switch off is still decrypting (`isDone` false): some files are still encrypted.
     static func loadKey(config: Config, interactive: Bool) throws -> Data? {
         let dbEncrypted = Database.isEncryptedFile(config.dbPath)
         // Read the Keychain only when it matters, so nobody who never turned this on sees a prompt.
         guard isOn || !isDone || dbEncrypted else { return nil }
         if let key = DataKeyStore.load() { return key }
-        guard isOn || dbEncrypted else { return nil }
+        // A switch off with nothing encrypted left: carry on without a key.
+        if !isOn && !dbEncrypted && RecordingFile.firstEncrypted(in: config.dataDir) == nil { return nil }
         if interactive, let key = askForRecoveryKey(config: config) { return key }
         throw DBError.locked("the recordings are encrypted and the key is not in this Mac's Keychain; open OpenRewind.app to enter the recovery key")
     }
@@ -213,11 +250,20 @@ final class Encryption {
                 problem("That is not a whole recovery key. It has 72 letters and digits in 9 groups; check for a missing or mistyped group.")
                 continue
             }
-            if Database.isEncryptedFile(config.dbPath) && !Database.keyOpens(config.dbPath, key: key) {
+            // Check it against the database, or (with a plain database) against an encrypted recording.
+            let opens: Bool
+            if Database.isEncryptedFile(config.dbPath) {
+                opens = Database.keyOpens(config.dbPath, key: key)
+            } else if let sample = RecordingFile.firstEncrypted(in: config.dataDir) {
+                opens = RecordingFile.keyOpens(sample, key: key)
+            } else {
+                opens = true
+            }
+            if !opens {
                 problem("This recovery key does not open these recordings. It may belong to another computer or an older key.")
                 continue
             }
-            DataKeyStore.save(key)
+            DataKeyStore.replace(key)
             log("encryption key restored from the recovery key")
             return key
         }

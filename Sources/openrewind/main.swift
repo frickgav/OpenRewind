@@ -18,6 +18,8 @@ Usage:
   openrewind doctor          Check and request permissions
   openrewind mcp             MCP server for AI apps, over stdin/stdout (also --mcp).
                              Turn on Settings → Allow AI Apps to Read My History first
+  openrewind selftest-encryption
+                             Check the encryption against the shared test vectors
 
 Options:
   --port N        API port (default 3031)
@@ -44,16 +46,28 @@ if args.contains("-h") || args.contains("--help") || command == "help" {
     print(usage); exit(0)
 }
 
+// Checks the file format and SQLCipher against the vectors the Windows tests use (run by the Mac CI).
+if command == "selftest-encryption" {
+    let problems = RecordingFile.selfTest()
+    for p in problems { print("FAIL: \(p)") }
+    print(problems.isEmpty ? "encryption self-test passed" : "encryption self-test failed (\(problems.count))")
+    exit(problems.isEmpty ? 0 : 1)
+}
+
 let config = Config.load(arguments: args)
 // Started by an AI app with stdin/stdout as pipes: no menu bar icon, no recording, read-only.
 if command == "mcp" { MCPServer.serveStdio(config: config) }
 if command == "app" { openLogFile(in: config.home) }
+// Plain copies of encrypted audio handed to Whisper, left behind by a crash.
+if command == "app" || command == "record" { RecordingFile.cleanTempCopies() }
 let db: Database
 do {
     // Encrypt Recordings: load the data key before the database, which may be encrypted with it.
     let key = try Encryption.loadKey(config: config, interactive: command == "app")
     RecordingFile.key = key
     RecordingFile.encryptNew = Encryption.isOn && key != nil
+    // An encrypted file found later (a switch off still decrypting) loads the key then.
+    RecordingFile.keyLoader = { DataKeyStore.load() }
     db = try Database(path: config.dbPath, key: key, createEncrypted: RecordingFile.encryptNew)
 } catch {
     log("cannot open database at \(config.dbPath.path): \(error)"); exit(1)

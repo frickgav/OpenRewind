@@ -214,7 +214,9 @@ final class Recorder {
                                      focused: true, snapshotPath: file.path, text: text, textSource: source,
                                      hash: Int64(bitPattern: hash), browserUrl: url, blocked: blocked))
         lastThumb = thumb; lastText = text; lastKey = key; lastWrite = Date()
-        log("frame \(id) \(window.appName) — \(text.count) chars via \(source)")
+        // With Encrypt Recordings on, the log (a plain file) does not name the app.
+        log(RecordingFile.encryptNew ? "frame \(id) — \(text.count) chars via \(source)"
+                                     : "frame \(id) \(window.appName) — \(text.count) chars via \(source)")
         return id
     }
 }

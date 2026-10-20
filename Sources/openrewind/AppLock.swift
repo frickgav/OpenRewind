@@ -3,8 +3,12 @@ import LocalAuthentication
 
 /// Settings → Encryption & Lock → Require Touch ID or Password to Open Timeline. The timeline,
 /// search, Ask AI and the windows that show your history ask for Touch ID or your Mac password
-/// first. An unlock lasts until the Mac locks or sleeps, or until the chosen time has passed since
-/// any of them was last opened. Recording keeps going while locked. Same as AppLock.cs on Windows.
+/// first. An unlock lasts until the Mac locks or sleeps, or until the chosen time has passed with
+/// none of them in use; then they close. Recording keeps going while locked. Same as AppLock.cs on Windows.
+///
+/// This guards against someone using the Mac while you are away from it. It is not a wall against
+/// programs running as you: they could change the setting with `defaults write` or run
+/// `OpenRewind serve` themselves. The Mac password always works, so it never locks you out.
 final class AppLock {
     static let enabledKey = "requireUnlock", minutesKey = "lockAfterMinutes"
     /// Minutes an unlock lasts; 0 = until the Mac locks.
@@ -60,6 +64,15 @@ final class AppLock {
     private func touch() {
         guard enabled else { return }
         state.lock(); lastUsed = Date(); state.unlock()
+    }
+
+    /// Called every few seconds by the menu bar app. A guarded window in use keeps the unlock going;
+    /// once the time has passed with none in use, everything that shows history closes.
+    func tick(historyInUse: Bool) {
+        guard enabled else { return }
+        state.lock(); let open = lastUsed != nil; state.unlock()
+        guard open else { return }
+        if isUnlocked { if historyInUse { touch() } } else { lock() }
     }
 
     /// Run `action` once the user has unlocked (right away when the lock is off or still open).

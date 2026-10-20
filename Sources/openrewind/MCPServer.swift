@@ -41,6 +41,8 @@ struct MCPServer {
 
     let version: String
     let state: () -> MCPState
+    /// Called after each message is answered (serveStdio closes the database there).
+    var afterMessage: (() -> Void)? = nil
 
     /// Answers each line from stdin until it closes. Nothing but replies goes to stdout; the log goes to stderr.
     func run() {
@@ -56,6 +58,7 @@ struct MCPServer {
             else { reply = handle(line) }
             tooLong = false
             if let reply, let data = (reply + "\n").data(using: .utf8) { FileHandle.standardOutput.write(data) }
+            afterMessage?()
         }
         while true {
             let chunk = input.availableData  // waits for data; empty when the AI app closes stdin
@@ -205,15 +208,24 @@ struct MCPServer {
 
     /// `OpenRewind mcp` (or --mcp): no menu bar icon, no windows, no recording. It only reads the
     /// database, so it works whether or not the app is running.
+    /// With Encrypt Recordings on, the key comes from the Keychain, the same as in the app (this is
+    /// the same executable, so the Keychain lets it read the item without asking). The database is
+    /// opened for each message and closed after it, so the app can switch encryption meanwhile.
     static func serveStdio(config: Config) -> Never {
         var db: Database?
+        RecordingFile.keyLoader = { DataKeyStore.load() }
         let state: () -> MCPState = {
             guard MCPSetup.enabled else { return MCPState(enabled: false) }
             if db == nil {
                 guard FileManager.default.fileExists(atPath: config.dbPath.path) else {
                     return MCPState(enabled: true, problem: "OpenRewind has not recorded anything yet (no history in \(config.home.path)). Open OpenRewind and let it record first.")
                 }
-                do { db = try Database(readOnly: config.dbPath) } catch {
+                if RecordingFile.key == nil && (Encryption.isOn || !Encryption.isDone || Database.isEncryptedFile(config.dbPath)) {
+                    RecordingFile.key = DataKeyStore.load()
+                }
+                do { db = try Database(readOnly: config.dbPath, key: RecordingFile.key) } catch DBError.locked(_) {
+                    return MCPState(enabled: true, problem: "OpenRewind's history is encrypted and its key is not available here. Open OpenRewind once (it asks for the recovery key), then try again.")
+                } catch {
                     log("mcp: cannot open \(config.dbPath.path): \(error)")
                     return MCPState(enabled: true, problem: "OpenRewind cannot read its history (\(error)).")
                 }
@@ -226,7 +238,7 @@ struct MCPServer {
         }
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
         log("mcp: OpenRewind \(version) serving \(config.home.path)")
-        MCPServer(version: version, state: state).run()
+        MCPServer(version: version, state: state, afterMessage: { db = nil }).run()
         exit(0)
     }
 }

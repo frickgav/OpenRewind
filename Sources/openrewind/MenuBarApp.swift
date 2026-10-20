@@ -29,11 +29,14 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     private var isPaused: Bool { pausedUntil != nil }
     private let appLock = AppLock()
+    /// Checks every 15 s whether the unlock has run out, so open history windows close.
+    private var lockTimer: Timer?
     private var encryption: Encryption!
     /// The AI chat keeps its conversation while its window is closed.
     private lazy var aiChat: AIChatModel = {
         let m = AIChatModel(db: engine.db)
-        m.openMoment = { [weak self] d in self?.overlay.show(at: d) }
+        // A moment link goes through App Lock too: the chat window may have been left open.
+        m.openMoment = { [weak self] d in self?.appLock.run("see your timeline") { self?.overlay.show(at: d) } }
         // AI Settings is a normal window, which would sit under the overlay.
         m.openSettings = { [weak self] in
             if self?.overlay.isVisible == true { self?.overlay.hide() }
@@ -88,6 +91,14 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         overlay = OverlayController(db: engine.db)
         overlay.chat = { [unowned self] in self.aiChat }
         appLock.onLock = { [weak self] in self?.hideHistory() }
+        let t = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            // In use: OpenRewind is in front with a window that shows history.
+            let open = self.overlay.isVisible || SetupWindows.shared.isOpen("ai") || InsightsWindow.shared.isOpen
+            self.appLock.tick(historyInUse: NSApp.isActive && open)
+        }
+        RunLoop.main.add(t, forMode: .common)
+        lockTimer = t
         engine.serverLocked = { [appLock] in !appLock.isUnlocked }
         encryption = Encryption(engine: engine)
         encryption.resume()
@@ -163,6 +174,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if overlay.isVisible { overlay.hide(restoreFocus: false) }
         SetupWindows.shared.close("ai")
         SetupWindows.shared.close("blocked")
+        InsightsWindow.shared.close()
     }
 
     @objc private func showAISettings() {
@@ -513,6 +525,9 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let status = NSMenuItem(title: "   " + encryption.status(), action: nil, keyEquivalent: "")
         status.isEnabled = false
         sub.addItem(status)
+        if encryption.failed > 0 {
+            sub.addItem(action("Stop Retrying \(encryption.failed.formatted()) Files…", #selector(skipFailedFiles)))
+        }
         let export = action("Export Recovery Key…", #selector(exportRecoveryKey))
         export.isEnabled = encryption.hasKey
         sub.addItem(export)
@@ -542,6 +557,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         else { appLock.run("stop encrypting recordings") { [weak self] in self?.encryption.turnOff() } }
     }
 
+    @objc private func skipFailedFiles() { encryption.skipFailed() }
+
     @objc private func exportRecoveryKey() {
         appLock.run("save the recovery key") { [weak self] in _ = self?.encryption.exportKey() }
     }
@@ -550,7 +567,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleAppLock() {
         if appLock.enabled {
-            // Turning it off is a change only the person it protects should make.
+            // Turning it off from the menu asks first, so someone at the unlocked Mac can't just
+            // switch it off. (A program running as you could still use `defaults write`; see AppLock.)
             appLock.unlock("stop asking for Touch ID or your password") { [weak self] ok in
                 guard ok, let self else { return }
                 self.appLock.enabled = false
@@ -623,7 +641,12 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return item
     }
 
+    /// Deleting is behind App Lock too: someone at the Mac could otherwise erase the history.
     @objc private func setKeep(_ sender: NSMenuItem) {
+        appLock.run("change how long recordings are kept") { [weak self] in self?.setKeepNow(sender) }
+    }
+
+    private func setKeepNow(_ sender: NSMenuItem) {
         guard let pair = sender.representedObject as? [String], pair.count == 2,
               let k = KeepFor(rawValue: pair[1]) else { return }
         let key = pair[0]
@@ -639,6 +662,10 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func deleteRecent(_ sender: NSMenuItem) {
+        appLock.run("delete recordings") { [weak self] in self?.deleteRecentNow(sender) }
+    }
+
+    private func deleteRecentNow(_ sender: NSMenuItem) {
         let now = Date()
         let from: Date
         switch sender.tag {
@@ -657,6 +684,10 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func deleteAll(_ sender: NSMenuItem) {
+        appLock.run("delete recordings") { [weak self] in self?.deleteAllNow(sender) }
+    }
+
+    private func deleteAllNow(_ sender: NSMenuItem) {
         let screen = sender.tag != 2, audio = sender.tag != 1
         let what = screen && audio ? "all screenshots and audio" : (screen ? "all screenshots" : "all audio recordings")
         guard confirm("Delete \(what)?", "This removes \(what) from this Mac. This cannot be undone.",
@@ -740,7 +771,10 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func storageLines() -> [String] {
         let size = dataSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "measuring…"
         var lines = ["Using \(size)"]
-        if let oldest = engine.db.oldestRecording() {
+        // While the database is being converted every query waits for it; don't hang the menu.
+        if engine.db.isConverting {
+            lines.append("Encrypting or decrypting the database…")
+        } else if let oldest = engine.db.oldestRecording() {
             let f = DateFormatter()
             f.dateStyle = .medium; f.timeStyle = .short
             let rel = RelativeDateTimeFormatter()
@@ -772,6 +806,9 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func statusLine() -> String {
+        if engine.db.isConverting {
+            return (encryption?.on == true ? "Encrypting" : "Decrypting") + " the database… (recording waits until it is done)"
+        }
         let s = engine.db.stats(), a = engine.db.audioStats()
         var parts: [String] = []
         if let until = pausedUntil { let t = pauseText(until); return t.prefix(1).uppercased() + t.dropFirst() + "  —  \(s.count) frames, \(a.segments) audio" }

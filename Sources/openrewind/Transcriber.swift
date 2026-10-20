@@ -58,14 +58,17 @@ final class Transcriber {
     func run() async {
         while !Task.isCancelled {
             if let chunk = db.nextPendingChunk() {
-                transcribe(chunk)
+                // An encrypted clip and no key yet (the Keychain is locked): wait, without using up its tries.
+                if !transcribe(chunk) { try? await Task.sleep(nanoseconds: 60_000_000_000) }
             } else {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
             }
         }
     }
 
-    func transcribe(_ chunk: AudioChunk) {
+    /// False when the clip is encrypted and the key is not loaded; the chunk is left as it was.
+    @discardableResult
+    func transcribe(_ chunk: AudioChunk) -> Bool {
         let started = Date()
         do {
             // whisper-cli needs a file: an encrypted clip is decrypted to a private temp file for the run.
@@ -73,10 +76,14 @@ final class Transcriber {
             try db.saveTranscripts(chunk: chunk, segments: segments)
             let words = segments.reduce(0) { $0 + $1.text.split(separator: " ").count }
             log("transcribed chunk \(chunk.id): \(segments.count) segments, \(words) words in \(String(format: "%.1f", Date().timeIntervalSince(started)))s")
+        } catch let error where RecordingFile.isNoKey(error) {
+            log("transcribe chunk \(chunk.id) waits: the encryption key is not loaded")
+            return false
         } catch {
             log("transcribe chunk \(chunk.id) failed: \(error.localizedDescription)")
             db.markChunk(chunk.id, status: "pending", reason: error.localizedDescription)
         }
+        return true
     }
 
     private func whisper(_ path: String) throws -> [(start: Double, end: Double, text: String)] {
