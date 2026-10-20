@@ -754,12 +754,12 @@ final class JournalModel: ObservableObject {
         panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
         panel.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
         NSApp.activate(ignoringOtherApps: true)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard Dialogs.run(panel) == .OK, let url = panel.url else { return }
         do { try md.write(to: url, atomically: true, encoding: .utf8) } catch {
             let a = NSAlert()
             a.messageText = "Could not save the journal"
             a.informativeText = error.localizedDescription
-            a.runModal()
+            Dialogs.run(a)
         }
     }
 }

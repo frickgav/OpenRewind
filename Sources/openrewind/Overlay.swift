@@ -4,6 +4,8 @@ import SwiftUI
 
 /// Borderless panel that can still take keyboard focus.
 final class OverlayPanel: NSPanel {
+    /// Over everything, the menu bar and Dock included. Dialogs.swift steps it down while a dialog is up.
+    static let topLevel = NSWindow.Level.screenSaver
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 }
@@ -43,6 +45,9 @@ final class OverlayController {
         Updater.shared.checkIfStale()
 
         let p = panel ?? makePanel()
+        // Opened while a Save dialog or alert is up: stay under it (Dialogs raises it again when it closes).
+        let dialogUp = Dialogs.isShowing
+        p.level = dialogUp ? .floating : OverlayPanel.topLevel
         p.appearance = OverlayLook.current.appearance
         p.setFrame(screen.frame, display: true)
         panel = p
@@ -61,6 +66,9 @@ final class OverlayController {
         p.makeFirstResponder(nil)
         DispatchQueue.main.async { p.makeFirstResponder(nil) }
         installMonitor()
+        model.isShown = true
+        // Keep the keyboard on the dialog that is waiting for an answer.
+        if dialogUp { NSApp.modalWindow?.makeKeyAndOrderFront(nil) }
     }
 
     /// Open the timeline at a moment (links in the AI chat).
@@ -83,6 +91,7 @@ final class OverlayController {
 
     /// `restoreFocus: false` when another app is about to come to the front (Open tab).
     func hide(restoreFocus: Bool = true) {
+        model.isShown = false
         model.stopAudio()
         model.exportClip = nil
         // Marks and a text selection belong to this visit: next time the bar opens on now, where they can't be
@@ -103,7 +112,7 @@ final class OverlayController {
     private func makePanel() -> OverlayPanel {
         let p = OverlayPanel(contentRect: .zero, styleMask: [.borderless],
                              backing: .buffered, defer: false)
-        p.level = .screenSaver
+        p.level = OverlayPanel.topLevel
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         p.isOpaque = false
         p.backgroundColor = .clear
@@ -118,6 +127,10 @@ final class OverlayController {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .scrollWheel]) { [weak self] e in
             guard let self, self.isVisible else { return e }
+            // A Save dialog or alert over the timeline (or any other window) gets its own keys and scrolling:
+            // Return, Esc, arrows and typing a file name must not move the timeline under it.
+            if NSApp.modalWindow != nil { return e }
+            if let w = e.window, w !== self.panel { return e }
             return self.handle(e) ? nil : e
         }
     }

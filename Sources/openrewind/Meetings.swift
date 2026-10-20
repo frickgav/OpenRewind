@@ -1482,7 +1482,7 @@ struct MeetingsView: View {
         panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
         panel.canCreateDirectories = true
         let text = model.markdown(m)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard Dialogs.run(panel) == .OK, let url = panel.url else { return }
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
             model.note = "Saved to \(url.path)."

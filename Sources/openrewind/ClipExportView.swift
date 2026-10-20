@@ -209,9 +209,9 @@ struct ExportClipCard: View {
         panel.allowedContentTypes = [f.type]
         panel.nameFieldStringValue = ClipPlan.fileName(start, ext: f.rawValue)
         panel.directoryURL = FileManager.default.urls(for: f == .gif ? .picturesDirectory : .moviesDirectory, in: .userDomainMask).first
-        // Above the timeline, which floats over everything.
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard Dialogs.run(panel) == .OK, let url = panel.url else { return }
+        // The timeline may have been closed (or locked) while the dialog was up.
+        guard model.isShown, model.exportClip != nil else { return }
         // Something on screen right away, before anything is read.
         let job = ClipExporter()
         exporter = job
