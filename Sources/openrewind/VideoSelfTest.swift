@@ -64,7 +64,8 @@ enum VideoSelfTest {
             // A capture wider than every encoder takes is scaled down to fit.
             let ww = 5000, wh = 1000
             let wide = try addStills(db, config, start: Compaction.windowStart(now.addingTimeInterval(-3 * 3600)), count: 3, w: ww, h: wh, display: "wide")
-            let r4 = compactor.runOnce(compress: true, now: now)
+            // A new compactor, as after a restart: this one already went past these older times.
+            let r4 = VideoCompactor(db: db, codec: codec, dataDir: config.dataDir).runOnce(compress: true, now: now)
             let fit = Compaction.fit(ww, wh)
             print("wide capture: \(r4.frames) frames of \(ww)x\(wh) into \(r4.videos) video(s) of \(fit.width)x\(fit.height), \(r4.failed) failed")
             guard r4.frames == 3, r4.failed == 0, checkAll(db, wide, fit.width, fit.height) else { return false }

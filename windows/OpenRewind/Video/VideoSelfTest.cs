@@ -77,7 +77,8 @@ static class VideoSelfTest
                 using var still = FrameImages.Load(new FrameSource(file))!;
                 wide[id] = FrameImages.Comparable(still);
             }
-            var r3 = compactor.RunOnce(compress: true, now);
+            // A new compactor, as after a restart: this one already went past these older times.
+            var r3 = new VideoCompactor(db, codec, config.DataDir).RunOnce(compress: true, now);
             var (fw, fh) = Compaction.Fit(ww, wh);
             log.WriteLine($"wide capture: {r3.Frames} frames of {ww}x{wh} into {r3.Videos} video(s) of {fw}x{fh}, {r3.Failed} failed");
             if (r3.Frames != 3 || r3.Failed != 0) return false;
