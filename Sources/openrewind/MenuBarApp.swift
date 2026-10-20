@@ -17,7 +17,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The local HTTP API + browser search page. Off unless the user turns it on in Settings.
     private let serverKey = "localSearchServer"
     /// Search by Meaning: index moments in the background to find them by meaning. Off unless the user turns it on.
-    private let meaningKey = "searchByMeaning"
+    private let meaningKey = MeaningService.settingKey
     private var retention: RetentionJob!
     /// Last measured size of the data folder; measured in the background when the menu opens.
     private var dataSize: Int64?
@@ -323,6 +323,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if defaults.bool(forKey: meaningKey) {
             let line = NSMenuItem(title: "  " + meaningStatus(), action: nil, keyEquivalent: "")
             line.isEnabled = false
+            meaningLine = line
             m.addItem(line)
         }
         m.addItem(.separator())
@@ -767,11 +768,37 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         engine.meaning.start()
     }
 
+    // The index counts run several COUNT(*) queries, so they are worked out in the background and
+    // the menu shows the last answer, updating the line when a new one is ready.
+    private weak var meaningLine: NSMenuItem?
+    private var meaningCache: String?
+    private var meaningCacheAt = Date.distantPast
+    private var meaningRefreshing = false
+
+    /// The line under the switch. Never touches the database on the main thread.
     private func meaningStatus() -> String {
         guard engine.meaning.embedder != nil else { return "⚠︎ Not available: macOS has no sentence model for your language" }
-        let p = engine.meaning.progress()
-        let n = NumberFormatter.localizedString(from: NSNumber(value: p.moments), number: .decimal)
-        return p.upToDate ? "Up to date · \(n) moments" : "Indexing in the background… \(p.percent)% · \(n) moments"
+        if meaningCache == nil || Date().timeIntervalSince(meaningCacheAt) > 5 { refreshMeaningStatus() }
+        return meaningCache ?? "Checking the index…"
+    }
+
+    private func refreshMeaningStatus() {
+        guard !meaningRefreshing else { return }
+        meaningRefreshing = true
+        let service = engine.meaning
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let p = service.progress()
+            let n = NumberFormatter.localizedString(from: NSNumber(value: p.moments), number: .decimal)
+            let text = p.upToDate ? "Up to date · \(n) moments" : "Indexing in the background… \(p.percent)% · \(n) moments"
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.meaningRefreshing = false
+                guard self.defaults.bool(forKey: self.meaningKey) else { return }
+                self.meaningCache = text
+                self.meaningCacheAt = Date()
+                self.meaningLine?.title = "  " + text
+            }
+        }
     }
 
     @objc private func toggleMeaning() {
@@ -799,6 +826,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             engine.meaning.stop()
             engine.meaning.embedder = nil
             engine.db.clearMeaning()
+            meaningCache = nil
             overlay.model.setByMeaning(false)
             log("search by meaning off")
         }

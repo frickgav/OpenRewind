@@ -20,6 +20,8 @@ struct MomentFrame {
     var windowName: String
     var url: String
     var text: String
+    /// Saved while a blocked window or site was in front (frames.blocked); never indexed.
+    var blocked = false
 }
 
 /// One transcript line as the indexer sees it.
@@ -41,6 +43,9 @@ struct Moment {
     var windowName: String
     var url: String
     var text: String
+    /// Screen moments: how many frames firstId…lastId held when the moment was made. A save is
+    /// refused if that changed (some were deleted meanwhile), so deleted text is never kept.
+    var frames = 0
 }
 
 /// Cuts recordings into moments worth one vector each. The screen holds the same text for many
@@ -55,6 +60,8 @@ enum MomentChunker {
     private struct Stretch {
         var first: MomentFrame
         var last: MomentFrame
+        var firstIndex: Int
+        var lastIndex: Int
         var seen = Set<String>()
         var text = ""
     }
@@ -71,8 +78,8 @@ enum MomentChunker {
             if let c = cur, !c.text.isEmpty { moments.append(toMoment(c)) }
             cur = nil
         }
-        for f in frames {
-            if blocked(f) { close(); continue }
+        for (i, f) in frames.enumerated() {
+            if f.blocked || blocked(f) { close(); continue }
             let ls = lines(f.text)
             if ls.isEmpty { continue }
             if let c = cur, breaks(c, f) { close() }
@@ -81,8 +88,9 @@ enum MomentChunker {
                 close()
                 fresh = ls
             }
-            var c = cur ?? Stretch(first: f, last: f)
+            var c = cur ?? Stretch(first: f, last: f, firstIndex: i, lastIndex: i)
             c.last = f
+            c.lastIndex = i
             for l in fresh {
                 guard c.seen.insert(l).inserted, c.text.count < textBudget else { continue }
                 let room = textBudget - c.text.count
@@ -110,7 +118,8 @@ enum MomentChunker {
         var text = s.text
         while text.hasSuffix("\n") { text.removeLast() }
         return Moment(isAudio: false, start: s.first.timestamp, end: s.last.timestamp, firstId: s.first.id, lastId: s.last.id,
-                      appName: s.first.appName, windowName: s.first.windowName, url: s.first.url, text: text)
+                      appName: s.first.appName, windowName: s.first.windowName, url: s.first.url, text: text,
+                      frames: s.lastIndex - s.firstIndex + 1)
     }
 
     /// Trimmed lines with single spaces, without empty ones and stray single characters.
@@ -221,12 +230,21 @@ struct MeaningProgress {
     var percent: Int { total == 0 ? 100 : min(99, done * 100 / total) }
 }
 
-/// The `meaning_moments` table: one row per moment with its vector, and `meaning_state` for how
-/// far the indexer got. Same schema as the Windows app (MeaningStore.cs).
+/// Search by Meaning storage. Same schema as the Windows app (MeaningStore.cs):
+/// - `meaning_moments`: one row per moment with its text, read only for the few results shown.
+/// - `meaning_vectors`: the same ids with the vector and the columns a search filters on, kept narrow
+///   so a search reads little, page by page.
+/// - `meaning_state`: how far the indexer got, and with which model.
 extension Database {
     static let frameCursor = "frame_cursor", chunkCursor = "chunk_cursor"
+    /// Rows a search reads per page. The database lock is let go between pages, so recording never waits long.
+    static let scanPage = 4000
 
     func migrateMeaning() throws {
+        // A test build of this feature kept the vector in meaning_moments. Start that index over.
+        if scalarInt("SELECT COUNT(*) FROM pragma_table_info('meaning_moments') WHERE name = 'vector'", []) > 0 {
+            try exec("DROP TABLE meaning_moments; DROP TABLE IF EXISTS meaning_state;")
+        }
         try exec("""
         CREATE TABLE IF NOT EXISTS meaning_moments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -238,14 +256,31 @@ extension Database {
             app_name TEXT NOT NULL DEFAULT '',
             window_name TEXT NOT NULL DEFAULT '',
             browser_url TEXT NOT NULL DEFAULT '',
-            text TEXT NOT NULL DEFAULT '',
-            model TEXT NOT NULL,
-            vector BLOB NOT NULL
+            text TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS idx_meaning_ts ON meaning_moments(timestamp);
         CREATE INDEX IF NOT EXISTS idx_meaning_first ON meaning_moments(kind, first_id);
+        CREATE TABLE IF NOT EXISTS meaning_vectors (
+            id INTEGER PRIMARY KEY,
+            kind TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            end_time TEXT NOT NULL,
+            app_name TEXT NOT NULL DEFAULT '',
+            window_name TEXT NOT NULL DEFAULT '',
+            browser_url TEXT NOT NULL DEFAULT '',
+            model TEXT NOT NULL,
+            vector BLOB NOT NULL
+        );
+        CREATE TRIGGER IF NOT EXISTS meaning_moments_ad AFTER DELETE ON meaning_moments BEGIN
+            DELETE FROM meaning_vectors WHERE id = old.id;
+        END;
         CREATE TABLE IF NOT EXISTS meaning_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         """)
+    }
+
+    /// True when this database has the Search by Meaning tables (an older app may not have made them yet).
+    var hasMeaningIndex: Bool {
+        scalarInt("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'meaning_vectors'", []) > 0
     }
 
     func meaningState(_ key: String) -> String? {
@@ -257,38 +292,64 @@ extension Database {
         return sqlite3_step(st) == SQLITE_ROW ? col(st, 0) : nil
     }
 
-    func setMeaningState(_ key: String, _ value: String) {
-        run("INSERT INTO meaning_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [.text(key), .text(value)])
+    private static let stateUpsert = "INSERT INTO meaning_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+
+    /// Runs one statement; the caller holds `lock`. False on an error (logged).
+    @discardableResult
+    private func runHeld(_ sql: String, _ args: [Arg], blob: (index: Int32, data: Data)? = nil) -> Bool {
+        var st: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); return false }
+        defer { sqlite3_finalize(st) }
+        bindAll(st, args)
+        if let blob { _ = blob.data.withUnsafeBytes { sqlite3_bind_blob(st, blob.index, $0.baseAddress, Int32($0.count), SQLITE_TRANSIENT) } }
+        guard sqlite3_step(st) == SQLITE_DONE else { log("sql error: \(errmsg)"); return false }
+        return true
+    }
+
+    /// `keep`: checked under the database lock; false (the indexer was stopped meanwhile) writes nothing.
+    func setMeaningState(_ key: String, _ value: String, keep: (() -> Bool)? = nil) {
+        lock.lock(); defer { lock.unlock() }
+        if let keep, !keep() { return }
+        runHeld(Self.stateUpsert, [.text(key), .text(value)])
     }
 
     private func meaningCursor(_ key: String) -> Int64 { meaningState(key).flatMap { Int64($0) } ?? 0 }
 
     /// Vectors from another model can't be compared with this one's: start over when it changed.
-    func meaningUseModel(_ model: String) {
+    func meaningUseModel(_ model: String, keep: (() -> Bool)? = nil) {
         guard meaningState("model") != model else { return }
-        clearMeaning()
-        setMeaningState("model", model)
+        lock.lock()
+        if let keep, !keep() { lock.unlock(); return }
+        clearMeaningHeld()
+        runHeld(Self.stateUpsert, [.text("model"), .text(model)])
+        lock.unlock()
         log("search by meaning: indexing with \(model)")
     }
 
-    /// Forget every vector (Search by Meaning turned off, or a new model).
+    /// Forget every vector and moment (Search by Meaning turned off, or a new model).
     func clearMeaning() {
-        run("DELETE FROM meaning_moments", [])
-        run("DELETE FROM meaning_state", [])
+        lock.lock(); defer { lock.unlock() }
+        clearMeaningHeld()
+    }
+
+    private func clearMeaningHeld() {
+        runHeld("DELETE FROM meaning_vectors", [])
+        runHeld("DELETE FROM meaning_moments", [])
+        runHeld("DELETE FROM meaning_state", [])
     }
 
     /// Screenshots after `after` (id) taken before `before` (ISO), oldest first, without the picture.
     func meaningFrames(after: Int64, before: String, limit: Int) -> [MomentFrame] {
         lock.lock(); defer { lock.unlock() }
         var st: OpaquePointer?
-        let sql = "SELECT id, timestamp, app_name, window_name, browser_url, text FROM frames WHERE id > ? AND timestamp < ? ORDER BY id LIMIT ?"
+        let sql = "SELECT id, timestamp, app_name, window_name, browser_url, text, blocked FROM frames WHERE id > ? AND timestamp < ? ORDER BY id LIMIT ?"
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); return [] }
         defer { sqlite3_finalize(st) }
         bindAll(st, [.int(after), .text(before), .int(Int64(limit))])
         var out: [MomentFrame] = []
         while sqlite3_step(st) == SQLITE_ROW {
             out.append(MomentFrame(id: sqlite3_column_int64(st, 0), timestamp: col(st, 1), appName: col(st, 2),
-                                   windowName: col(st, 3), url: col(st, 4), text: col(st, 5)))
+                                   windowName: col(st, 3), url: col(st, 4), text: col(st, 5), blocked: sqlite3_column_int(st, 6) != 0))
         }
         return out
     }
@@ -327,55 +388,87 @@ extension Database {
         return (segs, done)
     }
 
-    /// Store a moment and move the cursor past it, together. Nothing is stored when its
-    /// screenshots or clip were deleted while the vector was being made.
-    func saveMoment(_ m: Moment, model: String, vector: Data, cursorKey: String, cursor: Int64) {
+    /// Store a moment and move the cursor past it, together. The moment is left out (the cursor still
+    /// moves) when its screenshots or clip were deleted while the vector was being made: its first or
+    /// last frame is gone, or fewer frames are left between them than it was made from. With `keep`
+    /// false (the indexer was stopped meanwhile) nothing is written.
+    func saveMoment(_ m: Moment, model: String, vector: Data, cursorKey: String, cursor: Int64, keep: (() -> Bool)? = nil) {
         lock.lock(); defer { lock.unlock() }
+        if let keep, !keep() { return }
         guard sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); return }
-        let exists = m.isAudio
-            ? "EXISTS (SELECT 1 FROM audio_chunks WHERE id = ?)"
-            : "EXISTS (SELECT 1 FROM frames WHERE id = ?) AND EXISTS (SELECT 1 FROM frames WHERE id = ?)"
-        let sql = """
-        INSERT INTO meaning_moments (kind, timestamp, end_time, first_id, last_id, app_name, window_name, browser_url, text, model, vector)
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE \(exists)
-        """
-        var ok = false
-        var st: OpaquePointer?
-        if sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK {
-            bindAll(st, [.text(m.isAudio ? "audio" : "screen"), .text(m.start), .text(m.end), .int(m.firstId), .int(m.lastId),
-                         .text(m.appName), .text(m.windowName), .text(m.url), .text(m.text), .text(model)])
-            _ = vector.withUnsafeBytes { sqlite3_bind_blob(st, 11, $0.baseAddress, Int32($0.count), SQLITE_TRANSIENT) }
-            sqlite3_bind_int64(st, 12, m.firstId)
-            if !m.isAudio { sqlite3_bind_int64(st, 13, m.lastId) }
-            ok = sqlite3_step(st) == SQLITE_DONE
+        let exists: String, ids: [Arg]
+        if m.isAudio {
+            exists = "EXISTS (SELECT 1 FROM audio_chunks WHERE id = ?)"; ids = [.int(m.firstId)]
+        } else if m.frames > 0 {
+            exists = "EXISTS (SELECT 1 FROM frames WHERE id = ?) AND EXISTS (SELECT 1 FROM frames WHERE id = ?) AND (SELECT COUNT(*) FROM frames WHERE id BETWEEN ? AND ?) = ?"
+            ids = [.int(m.firstId), .int(m.lastId), .int(m.firstId), .int(m.lastId), .int(Int64(m.frames))]
+        } else {
+            exists = "EXISTS (SELECT 1 FROM frames WHERE id = ?) AND EXISTS (SELECT 1 FROM frames WHERE id = ?)"
+            ids = [.int(m.firstId), .int(m.lastId)]
         }
-        sqlite3_finalize(st)
-        if ok, sqlite3_prepare_v2(db, "INSERT INTO meaning_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                                  -1, &st, nil) == SQLITE_OK {
-            bindAll(st, [.text(cursorKey), .text(String(cursor))])
-            ok = sqlite3_step(st) == SQLITE_DONE
-            sqlite3_finalize(st)
-        } else { ok = false }
-        if !ok { log("sql error: \(errmsg)") }
+        let kind = m.isAudio ? "audio" : "screen"
+        var ok = runHeld("""
+            INSERT INTO meaning_moments (kind, timestamp, end_time, first_id, last_id, app_name, window_name, browser_url, text)
+            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE \(exists)
+            """, [.text(kind), .text(m.start), .text(m.end), .int(m.firstId), .int(m.lastId),
+                  .text(m.appName), .text(m.windowName), .text(m.url), .text(m.text)] + ids)
+        if ok, sqlite3_changes(db) > 0 {
+            ok = runHeld("""
+                INSERT INTO meaning_vectors (id, kind, timestamp, end_time, app_name, window_name, browser_url, model, vector)
+                VALUES (last_insert_rowid(), ?, ?, ?, ?, ?, ?, ?, ?)
+                """, [.text(kind), .text(m.start), .text(m.end), .text(m.appName), .text(m.windowName), .text(m.url), .text(model)],
+                blob: (9, vector))
+        }
+        if ok { ok = runHeld(Self.stateUpsert, [.text(cursorKey), .text(String(cursor))]) }
         sqlite3_exec(db, ok ? "COMMIT" : "ROLLBACK", nil, nil, nil)
     }
 
-    /// Every stored vector of `model` in the time range, without the text (that is read for the best few only).
+    /// Every stored vector of `model` in the time range, without the text (that is read for the best
+    /// few only). Read a page at a time; the lock is let go between pages and `each` runs outside it.
     func scanMoments(model: String, start: String?, end: String?,
                      _ each: (_ id: Int64, _ audio: Bool, _ app: String, _ window: String, _ url: String, _ vector: UnsafeBufferPointer<Int8>) -> Void) {
-        var parts = ["model = ?"], args: [Arg] = [.text(model)]
-        if let start { parts.append("end_time >= ?"); args.append(.text(start)) }
-        if let end { parts.append("timestamp <= ?"); args.append(.text(end)) }
-        lock.lock(); defer { lock.unlock() }
-        var st: OpaquePointer?
-        let sql = "SELECT id, kind, app_name, window_name, browser_url, vector FROM meaning_moments WHERE \(parts.joined(separator: " AND "))"
-        guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); return }
-        defer { sqlite3_finalize(st) }
-        bindAll(st, args)
-        while sqlite3_step(st) == SQLITE_ROW {
-            let n = Int(sqlite3_column_bytes(st, 5))
-            let p = sqlite3_column_blob(st, 5)?.assumingMemoryBound(to: Int8.self)
-            each(sqlite3_column_int64(st, 0), col(st, 1) == "audio", col(st, 2), col(st, 3), col(st, 4), UnsafeBufferPointer(start: p, count: p == nil ? 0 : n))
+        var parts = ["id > ?", "model = ?"]
+        if start != nil { parts.append("end_time >= ?") }
+        if end != nil { parts.append("timestamp <= ?") }
+        let sql = "SELECT id, kind, app_name, window_name, browser_url, vector FROM meaning_vectors WHERE \(parts.joined(separator: " AND ")) ORDER BY id LIMIT \(Self.scanPage)"
+        struct Row { var id: Int64; var audio: Bool; var app: String; var window: String; var url: String; var offset: Int; var count: Int }
+        var rows: [Row] = []
+        rows.reserveCapacity(Self.scanPage)
+        var vecs: [Int8] = []
+        var dim = 0
+        var after: Int64 = 0
+        while true {
+            rows.removeAll(keepingCapacity: true)
+            lock.lock()
+            var st: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); lock.unlock(); return }
+            var args: [Arg] = [.int(after), .text(model)]
+            if let start { args.append(.text(start)) }
+            if let end { args.append(.text(end)) }
+            bindAll(st, args)
+            while sqlite3_step(st) == SQLITE_ROW {
+                let n = Int(sqlite3_column_bytes(st, 5))
+                if dim == 0 { dim = max(1, n); vecs = [Int8](repeating: 0, count: Self.scanPage * dim) }
+                let i = rows.count
+                var count = -1  // not this model's size: never matches
+                if n == dim, let p = sqlite3_column_blob(st, 5) {
+                    vecs.withUnsafeMutableBytes { dst in dst.baseAddress!.advanced(by: i * dim).copyMemory(from: p, byteCount: dim) }
+                    count = dim
+                }
+                rows.append(Row(id: sqlite3_column_int64(st, 0), audio: col(st, 1) == "audio", app: col(st, 2), window: col(st, 3),
+                                url: col(st, 4), offset: i * dim, count: count))
+            }
+            sqlite3_finalize(st)
+            lock.unlock()
+            vecs.withUnsafeBufferPointer { all in
+                for r in rows {
+                    let v = r.count < 0 ? UnsafeBufferPointer<Int8>(start: nil, count: 0)
+                        : UnsafeBufferPointer(rebasing: all[r.offset..<(r.offset + r.count)])
+                    each(r.id, r.audio, r.app, r.window, r.url, v)
+                }
+            }
+            guard rows.count == Self.scanPage, let last = rows.last else { return }
+            after = last.id
         }
     }
 
@@ -406,10 +499,11 @@ extension Database {
                 SELECT COUNT(*) FROM audio_chunks WHERE id > ? AND status = 'transcribed'
                 AND id < COALESCE((SELECT MIN(id) FROM audio_chunks WHERE id > ? AND status = 'pending'), 9223372036854775807)
                 """, [.int(cc), .int(cc)])
-        return MeaningProgress(moments: scalarInt("SELECT COUNT(*) FROM meaning_moments", []), done: done, total: total, waiting: waiting)
+        return MeaningProgress(moments: scalarInt("SELECT COUNT(*) FROM meaning_vectors", []), done: done, total: total, waiting: waiting)
     }
 
-    /// Retention and Delete Recordings: vectors go with the screenshots they were made from.
+    /// Retention and Delete Recordings: vectors go with the screenshots they were made from
+    /// (the trigger meaning_moments_ad removes the vector rows).
     func forgetScreenMoments(from: Date?, to: Date?) {
         var parts = ["kind = 'screen'"], args: [Arg] = []
         if let from { parts.append("end_time >= ?"); args.append(.text(Time.iso.string(from: from))) }
@@ -510,9 +604,13 @@ final class MeaningService {
     private var thread: Thread?
     private let wake = NSCondition()
     private var cancelled = false
+    /// Bumped by stop(). An indexer from before writes nothing more, even one stop() gave up waiting for.
+    private var generation = 0
 
     /// Screenshots newer than this are left for the next round: the window may still be changing.
     static let settle: TimeInterval = 120
+    /// The Settings switch (UserDefaults), read by the menu bar app and by `OpenRewind mcp`.
+    static let settingKey = "searchByMeaning"
     static let frameBatch = 400, chunkBatch = 100
 
     init(db: Database) { self.db = db }
@@ -521,8 +619,8 @@ final class MeaningService {
 
     func start() {
         guard thread == nil else { return }
-        wake.lock(); cancelled = false; wake.unlock()
-        let t = Thread { [weak self] in self?.loop() }
+        wake.lock(); cancelled = false; let gen = generation; wake.unlock()
+        let t = Thread { [weak self] in self?.loop(gen) }
         t.qualityOfService = .background
         t.name = "Search by Meaning"
         thread = t
@@ -532,10 +630,12 @@ final class MeaningService {
 
     /// Stops the indexer and waits for it, so nothing is written after this returns.
     func stop() {
+        wake.lock(); generation += 1; wake.unlock()
         guard let t = thread else { return }
         wake.lock(); cancelled = true; wake.broadcast(); wake.unlock()
         let until = Date().addingTimeInterval(10)
         while t.isExecuting && !t.isFinished && Date() < until { usleep(10_000) }
+        if !t.isFinished { log("search by meaning: indexer still busy; it will write nothing more") }
         thread = nil
         log("search by meaning: indexer off")
     }
@@ -552,11 +652,11 @@ final class MeaningService {
 
     private struct Stopped: Error {}
 
-    private func loop() {
+    private func loop(_ gen: Int) {
         while !isCancelled {
             var pause: TimeInterval
             if embedder == nil { pause = 5 } else {
-                do { let worked = try autoreleasepool { try step() }; pause = worked ? 0 : 30 }
+                do { let worked = try autoreleasepool { try step(gen: gen) }; pause = worked ? 0 : 30 }
                 catch is Stopped { return }
                 catch { log("search by meaning: \(error)"); pause = 60 }
             }
@@ -566,9 +666,16 @@ final class MeaningService {
 
     /// Index one batch of screenshots and one of audio. False when there was nothing to do.
     @discardableResult
-    func step(now: Date = Date()) throws -> Bool {
+    func step(now: Date = Date(), gen: Int? = nil) throws -> Bool {
         guard let e = embedder else { return false }
-        db.meaningUseModel(e.modelId)
+        wake.lock(); let g = gen ?? generation; wake.unlock()
+        // Checked under the database lock before every write.
+        let keep: () -> Bool = { [weak self] in
+            guard let self else { return false }
+            self.wake.lock(); defer { self.wake.unlock() }
+            return self.generation == g && !self.cancelled
+        }
+        db.meaningUseModel(e.modelId, keep: keep)
         let list = blocked()
         var worked = false
 
@@ -578,26 +685,27 @@ final class MeaningService {
             let (moments, done) = MomentChunker.screen(frames, complete: frames.count < Self.frameBatch) {
                 Self.hides(list, app: $0.appName, window: $0.windowName, url: $0.url)
             }
-            for m in moments { try save(e, m, cursorKey: Database.frameCursor, cursor: m.lastId); worked = true }
-            if done > fc { db.setMeaningState(Database.frameCursor, String(done)); worked = true }
+            for m in moments { try save(e, m, cursorKey: Database.frameCursor, cursor: m.lastId, keep: keep); worked = true }
+            if done > fc { db.setMeaningState(Database.frameCursor, String(done), keep: keep); worked = true }
         }
 
         let cc = db.meaningState(Database.chunkCursor).flatMap { Int64($0) } ?? 0
         let (segments, doneChunks) = db.meaningAudio(after: cc, limit: Self.chunkBatch)
-        for m in MomentChunker.audio(segments) { try save(e, m, cursorKey: Database.chunkCursor, cursor: m.lastId); worked = true }
-        if doneChunks > cc { db.setMeaningState(Database.chunkCursor, String(doneChunks)); worked = true }
+        for m in MomentChunker.audio(segments) { try save(e, m, cursorKey: Database.chunkCursor, cursor: m.lastId, keep: keep); worked = true }
+        if doneChunks > cc { db.setMeaningState(Database.chunkCursor, String(doneChunks), keep: keep); worked = true }
         return worked
     }
 
     /// Make and store one vector, then rest a multiple of the time it took (more while the user is busy or on battery).
-    private func save(_ e: Embedder, _ m: Moment, cursorKey: String, cursor: Int64) throws {
-        if isCancelled { throw Stopped() }
+    private func save(_ e: Embedder, _ m: Moment, cursorKey: String, cursor: Int64, keep: @escaping () -> Bool) throws {
+        if !keep() { throw Stopped() }
         let t0 = Date()
         if let v = e.embed(MomentChunker.embedText(m)) {
-            db.saveMoment(m, model: e.modelId, vector: Vectors.quantize(v), cursorKey: cursorKey, cursor: cursor)
+            db.saveMoment(m, model: e.modelId, vector: Vectors.quantize(v), cursorKey: cursorKey, cursor: cursor, keep: keep)
         } else {
-            db.setMeaningState(cursorKey, String(cursor))  // nothing the model can read: move on
+            db.setMeaningState(cursorKey, String(cursor), keep: keep)  // nothing the model can read: move on
         }
+        if !keep() { throw Stopped() }
         let factor: Double
         switch pace() { case .idle: factor = 1; case .active: factor = 4; case .battery: factor = 9 }
         if rest(Date().timeIntervalSince(t0) * factor + 0.02) { throw Stopped() }
