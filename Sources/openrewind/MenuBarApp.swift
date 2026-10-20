@@ -41,6 +41,16 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         return m
     }()
+    /// The journal keeps the day it shows while its window is closed.
+    private lazy var journal: JournalModel = {
+        let m = JournalModel(db: engine.db)
+        m.openMoment = { [weak self] d in self?.overlay.show(at: d) }
+        m.openSettings = { [weak self] in self?.showAISettings() }
+        return m
+    }()
+    /// Checks every few minutes whether yesterday's recap is due (Write Each Day's Recap Automatically).
+    private var recapTimer: Timer?
+    private var writingRecap = false
 
     /// Finds meetings once a minute; the Meetings window and the AI notes read what it stores.
     private lazy var meetings = MeetingCenter(db: engine.db, chunkSeconds: engine.config.audioChunkSeconds,
@@ -113,6 +123,55 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Updater.shared.start()
         updateIcon()
         if !BlocklistStore.shared.onboardingDone { showSetup() }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in self?.writeDueRecap() }
+        recapTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in self?.writeDueRecap() }
+    }
+
+    @objc private func showJournal() {
+        let j = journal
+        j.reload()
+        SetupWindows.shared.show("journal", title: "Journal", size: NSSize(width: 620, height: 800), resizable: true) {
+            JournalView(model: j)
+        }
+    }
+
+    /// Write Each Day's Recap Automatically: yesterday's recap, the first time the app runs after
+    /// the day ended, for the AI provider it was turned on for. A failed try is retried on the next
+    /// check, up to `Journal.autoAttempts` times. Days with nothing recorded, or with a recap of the
+    /// whole day already, are skipped; a recap written by hand partway through the day is replaced.
+    private func writeDueRecap() {
+        let s = AISettings.load()
+        guard !writingRecap, s.isReady, JournalSettings.isOn(for: s),
+              let key = Journal.autoRecapDue(now: Date(), lastDone: JournalSettings.lastAutoDay,
+                                             attemptDay: JournalSettings.attemptDay, attempts: JournalSettings.attempts),
+              let day = Journal.date(fromKey: key) else { return }
+        let db = engine.db, j = journal
+        guard !j.writing.contains(key) else { return }
+        if let r = db.recap(day: key), !r.partial { JournalSettings.lastAutoDay = key; return }
+        writingRecap = true
+        let tools = JournalModel.tools(db), price = AISettings.price(for: s.model)
+        Task { @MainActor [weak self] in
+            defer { self?.writingRecap = false }
+            let stats = await Task.detached { db.journalStats(day: day, tools: tools) }.value
+            guard !stats.isEmpty else { JournalSettings.lastAutoDay = key; return }
+            // Counted before the request, so one that never comes back still counts.
+            JournalSettings.attempts = JournalSettings.attemptDay == key ? JournalSettings.attempts + 1 : 1
+            JournalSettings.attemptDay = key
+            guard let r = await j.writeRecap(for: day, auto: true) else { return }
+            if let e = r.error {
+                log("automatic journal recap for \(key) failed (try \(JournalSettings.attempts) of \(Journal.autoAttempts)): \(e)")
+                return
+            }
+            JournalSettings.lastAutoDay = key
+            log("wrote the journal recap for \(key) (\(r.usage.describe(price)))")
+        }
+    }
+
+    @objc private func toggleAutoRecap() {
+        let s = AISettings.load()
+        JournalSettings.set(!JournalSettings.isOn(for: s), for: s)
+        journal.autoRecap = JournalSettings.isOn(for: s)
     }
 
     /// The first-run setup; ends in the guided tour if the user asks for it.
@@ -221,6 +280,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         SetupWindows.shared.show("aiSettings", title: "AI Settings", size: NSSize(width: 560, height: 840)) {
             AISettingsView { [weak self] in
                 self?.aiChat.reloadSettings()
+                self?.journal.reload()
                 self?.recheckMeetingConsent()
             }
         }
@@ -282,6 +342,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(tl)
         menu.addItem(action("Search…", #selector(openSearch)))
         menu.addItem(action("Ask AI…", #selector(showAIChat)))
+        menu.addItem(action("Journal…", #selector(showJournal)))
         menu.addItem(action("Meetings…", #selector(showMeetings)))
         menu.addItem(action("Insights…", #selector(showInsights)))
         menu.addItem(action("Show Data Folder", #selector(openData)))
@@ -369,6 +430,11 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let m = NSMenu()
         m.addItem(action("Blocked Apps & Sites…", #selector(showBlockedApps)))
         m.addItem(action("AI Settings…", #selector(showAISettings)))
+        let autoRecap = action("Write Each Day's Recap Automatically", #selector(toggleAutoRecap))
+        let ai = AISettings.load()
+        autoRecap.state = JournalSettings.isOn(for: ai) ? .on : .off
+        autoRecap.toolTip = Journal.autoRecapInfo(ai.kind.title)
+        m.addItem(autoRecap)
         let ask = action("Ask Before Taking Meeting Notes", #selector(toggleAskBeforeMeetingNotes))
         ask.state = MeetingCenter.askFirst ? .on : .off
         ask.toolTip = "When a call starts, ask whether to take notes for it. Off: notes are taken for every call (except apps you said Never for)."
@@ -666,12 +732,13 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func deleteAll(_ sender: NSMenuItem) {
         let screen = sender.tag != 2, audio = sender.tag != 1
         let what = screen && audio ? "all screenshots and audio" : (screen ? "all screenshots" : "all audio recordings")
-        guard confirm("Delete \(what)?", "This removes \(what) from this Mac. This cannot be undone.",
+        guard confirm("Delete \(what)?", "This removes \(what) from this Mac, and every journal recap. This cannot be undone.",
                       button: "Delete Everything") else { return }
         let db = engine.db, now = Date()
         DispatchQueue.global(qos: .userInitiated).async {
             let f = screen ? db.deleteFrames(from: nil, to: now) : 0
             let a = audio ? db.deleteAudio(from: nil, to: now) : 0
+            db.deleteRecaps(from: nil, to: nil)  // each one was written from both
             db.compact()
             log("deleted \(f) screenshots, \(a) audio clips (all)")
         }

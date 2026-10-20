@@ -60,6 +60,19 @@ sealed class Settings
     public Dictionary<string, double[]> AiListedPrices { get; set; } = new();
     /// Everything used per provider (by AiProviders.Id) since the user last reset it.
     public Dictionary<string, AiTotal> AiTotals { get; set; } = new();
+    /// Journal: write each day's AI recap by itself. Off by default because it spends tokens.
+    public bool JournalAutoRecap { get; set; }
+    /// The day (yyyy-MM-dd) the automatic recap last ran for, so each day is written once.
+    public string? JournalLastAutoDay { get; set; }
+    /// The AI provider it was turned on for (Journal.ProviderKey); it only runs while that is still the one in AI Settings.
+    public string? JournalAutoProvider { get; set; }
+    /// Failed automatic tries for JournalAutoAttemptDay (at most Journal.AutoAttempts).
+    public string? JournalAutoAttemptDay { get; set; }
+    public int JournalAutoAttempts { get; set; }
+
+    /// "Write Each Day's Recap Automatically" is on, for the AI provider set up now.
+    public bool JournalAutoRecapOn(AiSettings ai) => JournalAutoRecap && JournalAutoProvider == Journal.ProviderKey(ai);
+
     /// Send each meeting's transcript to the AI provider when it ends, for a summary and action items.
     /// Off unless the user turns it on: it spends their tokens and sends what was said.
     public bool SummarizeMeetings { get; set; }
@@ -135,6 +148,20 @@ sealed class Settings
         t.Cost += cost ?? 0;
         if (cost == null) t.Unpriced = true;
         AiTotals[k.Id()] = t;
+        Save();
+    }
+
+    /// Turns it on for the AI provider set up now, or off. Turning it on starts with today: the days
+    /// before were not asked for.
+    public void SetJournalAutoRecap(bool on)
+    {
+        var ai = Ai();
+        if (on == JournalAutoRecapOn(ai)) return;
+        JournalAutoRecap = on;
+        JournalAutoProvider = on ? Journal.ProviderKey(ai) : null;
+        if (on) JournalLastAutoDay = Journal.Key(DateTime.Today.AddDays(-1));
+        JournalAutoAttemptDay = null;
+        JournalAutoAttempts = 0;
         Save();
     }
 

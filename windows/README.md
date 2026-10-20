@@ -44,6 +44,10 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   sites; see [Copy and export](../README.md#copy-and-export).
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
+- **Journal…** shows one page per day: top apps, sites and windows worked out on this PC, plus an
+  AI recap when you ask for one (see [Journal](../README.md#journal)).
+  **Settings → Write Each Day's Recap Automatically** is off by default, since it spends tokens;
+  when on, it sends yesterday's history to the AI provider it was turned on for, once a day.
 - **Ask AI…** answers questions about your history with your own key, and **Meetings…** lists your
   calls with their transcripts (see [Ask AI](../README.md#ask-ai) and [Meetings](../README.md#meetings)).
   When a call starts, a popup above the tray asks whether to take notes (**Settings → Ask Before Taking
