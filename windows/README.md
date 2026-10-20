@@ -42,6 +42,11 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   Meeting Notes**, on by default). **Settings → Summarize Meetings with AI** (off by default) sends the
   transcript of each call you take notes for to your AI provider when it ends, for a summary and
   action items.
+- **Insights…** shows where your time went today or this week: active time, time per app and
+  website, when you were active, focus sessions and app switches, compared with the day or week
+  before. Worked out on your PC without AI; blocked apps and sites are left out (see the notes there
+on older recordings and on how time is counted). Click an app, site
+  or focus session to see it in the timeline. See [Insights](../README.md#insights).
 - **Settings → Timeline Shortcut**: **Change Shortcut…** waits for the new key combination
   (Ctrl, Alt or Win with a key, or an F-key alone); **Reset** goes back to Ctrl+Alt+T.
 - **Settings → Screenshot Resolution**: Full (100%), High (75%), Medium (50%, default) or

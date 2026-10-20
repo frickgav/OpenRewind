@@ -168,8 +168,9 @@ public static class MeetingApps
     }
 }
 
-/// One saved frame, for detection.
-public sealed record MeetingFrame(DateTime Time, string App, string Window, string Url);
+/// One saved frame, for detection. `Blocked`: the recorder saved it while a blocked window or site
+/// was in front, so it is never part of a meeting.
+public sealed record MeetingFrame(DateTime Time, string App, string Window, string Url, bool Blocked = false);
 
 /// Speech (or a clip not transcribed yet) from the microphone (`Mic`) or system audio.
 public sealed record MeetingAudio(DateTime Start, DateTime End, bool Mic);
@@ -208,7 +209,7 @@ public static class MeetingDetector
         for (int i = 0; i < frames.Count; i++)
         {
             var f = frames[i];
-            if (Hides(blocked, f) || MeetingApps.Match(f.App, f.Window, f.Url) is not string label) continue;
+            if (f.Blocked || Hides(blocked, f) || MeetingApps.Match(f.App, f.Window, f.Url) is not string label) continue;
             var next = i + 1 < frames.Count ? frames[i + 1].Time : now;
             var end = Min(next, f.Time + FrameSpan);
             if (end < f.Time) end = f.Time;
@@ -520,7 +521,7 @@ public static class MeetingTracker
             if (from < now - TimeSpan.FromDays(1)) from = now - TimeSpan.FromDays(1);
             // Nothing from before the user's last delete comes back as a new meeting.
             if (db.MeetingsDeletedThrough() is DateTime cut && cut > from) from = cut < now ? cut : now;
-            var frames = db.ActivityRows(from, now).Select(r => new MeetingFrame(r.Time, r.App, r.Window, r.Url)).ToList();
+            var frames = db.MeetingFrames(from, now);
             var audio = db.MeetingAudio(from, now, chunkSeconds, includePending: transcribing);
             var spans = MeetingDetector.Detect(frames, audio, blocked, now);
             var done = db.MeetingsBetween(from - MeetingDetector.MergeGap, now).Where(m => !m.IsLive).ToList();
@@ -691,6 +692,22 @@ public sealed partial class Database
         if (to is DateTime t) { parts.Add("start_time < ?"); args.Add(Time.Iso(t)); }
         if (from is DateTime f) { parts.Add("end_time >= ?"); args.Add(Time.Iso(f)); }
         Run("UPDATE meetings SET title = '', url = '', titles = '' " + (parts.Count == 0 ? "" : "WHERE " + string.Join(" AND ", parts)), args.ToArray());
+    }
+
+    /// Frames between two times (UTC), oldest first, with the recorder's blocked mark.
+    public List<MeetingFrame> MeetingFrames(DateTime from, DateTime to)
+    {
+        lock (gate)
+        {
+            using var cmd = Cmd("SELECT timestamp, app_name, window_name, browser_url, blocked FROM frames WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC",
+                                Time.Iso(from), Time.Iso(to));
+            using var r = cmd.ExecuteReader();
+            var out_ = new List<MeetingFrame>();
+            while (r.Read())
+                if (Time.ParseIso(r.GetString(0)) is DateTime t)
+                    out_.Add(new MeetingFrame(t, r.GetString(1), r.GetString(2), r.GetString(3), r.GetInt64(4) != 0));
+            return out_;
+        }
     }
 
     /// Speech, and clips not transcribed yet when `includePending` (Whisper is set up), for finding

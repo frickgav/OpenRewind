@@ -44,6 +44,7 @@ sealed class TrayApp : ApplicationContext
         resumeTimer.Tick += (_, _) => CheckPause();
         retention = new RetentionJob(engine.Db, settings.Screen, settings.Audio);
         retention.Start();
+        _ = Database.BuildSlowIndexesInBackground(engine.Config.DbPath);
 
         updater = new Updater(settings) { QuitApp = Quit };
         updater.Changed += () => { if (overlay.Visible) overlay.Invalidate(); };
@@ -135,6 +136,13 @@ sealed class TrayApp : ApplicationContext
     /// The chat for the overlay; the same one the Ask AI window shows.
     AiChatPanel AiChat() => AiChatPanel.Get(settings, aiTools, aiConversation, OpenMoment, OpenAiSettings);
 
+    /// Where the time went; a click shows that app or moment in the timeline.
+    void ShowInsights() => InsightsForm.ShowFor(settings, engine.Db, (at, app) =>
+    {
+        if (!overlay.Visible) overlay.ShowOverlay();
+        timeline.OpenAt(at, app);
+    });
+
     void OpenMoment(DateTime at)
     {
         if (!overlay.Visible) overlay.ShowOverlay();
@@ -189,6 +197,7 @@ sealed class TrayApp : ApplicationContext
         menu.Items.Add(Item("Search…", () => { if (engine.ServerOn) Open($"http://127.0.0.1:{engine.Config.Port}/"); else overlay.ShowSearch(); }));
         menu.Items.Add(Item("Ask AI…", ShowAiChat));
         menu.Items.Add(Item("Meetings…", ShowMeetings));
+        menu.Items.Add(Item("Insights…", ShowInsights));
         menu.Items.Add(Item("Show Data Folder", () => Open(engine.Config.Home)));
         foreach (var line in StorageLines()) menu.Items.Add(new ToolStripMenuItem("   " + line) { Enabled = false });
         MeasureStorage();

@@ -156,6 +156,17 @@ public class MeetingDetectorTests
     }
 
     [Fact]
+    public void FramesTheRecorderMarkedBlockedNeverCount()
+    {
+        var frames = Frames(0, 20, "zoom.us", "Zoom Meeting").Select(f => f with { Blocked = true });
+        Assert.Empty(Detect(frames, Sound(0, 20), now: 60));
+        // Blocked part way through: the meeting is only the part before.
+        var mixed = Frames(0, 10, "zoom.us").Concat(Frames(10, 30, "zoom.us").Select(f => f with { Blocked = true })).Concat(Frames(30, 60, "Code"));
+        var m = Assert.Single(Detect(mixed, Sound(0, 30), now: 60));
+        Assert.True(m.End <= At(10) + MeetingDetector.SoundOnly);
+    }
+
+    [Fact]
     public void FindsMeetingsInTheBrowser()
     {
         var m = Assert.Single(Detect(Frames(0, 20, "Google Chrome", "Meet - abc-defg-hij - Google Chrome", "https://meet.google.com/abc-defg-hij?authuser=1"),
@@ -441,6 +452,21 @@ public class MeetingStoreTests : IDisposable
     }
 
     [Fact]
+    public void TheTrackerSkipsFramesSavedWhileSomethingBlockedWasInFront()
+    {
+        var start = DateTime.UtcNow.AddMinutes(-60);
+        for (int i = 0; i < 20; i++)
+        {
+            var t = start.AddSeconds(i * 30);
+            db.Insert(new Frame(0, Time.Iso(t), "zoom.us", "Zoom Meeting", true, "", "", "ocr", 0, Blocked: true));
+            var chunk = new AudioChunk(db.InsertChunk("", Time.Iso(t), "system audio", false), "", Time.Iso(t), "system audio", false, "pending");
+            db.SaveTranscripts(chunk, new[] { new Segment(0, 10, "secret") });
+        }
+        MeetingTracker.Update(db, None, start.AddMinutes(30));
+        Assert.Empty(db.Meetings());
+    }
+
+    [Fact]
     public void AMeetingFoundAlreadyOverIsStoredButNotSummarized()
     {
         var start = DateTime.UtcNow.AddMinutes(-60);
@@ -584,7 +610,9 @@ public class MeetingStoreTests : IDisposable
         Assert.Equal(0.002, saved.Cost);
 
         var tools = new AiTools(db) { Blocked = None };
-        var text = tools.Run(new AiToolCall("1", "list_meetings", new JsonObject { ["start"] = "today" }));
+        // From a little before the call (not "today", which misses it just after midnight).
+        var since = start.ToLocalTime().AddMinutes(-5).ToString("yyyy-MM-dd HH:mm");
+        var text = tools.Run(new AiToolCall("1", "list_meetings", new JsonObject { ["start"] = since }));
         Assert.Contains("Zoom", text);
         Assert.Contains("Ship Friday", text);
         Assert.Contains("Me: send the deck", text);
@@ -592,7 +620,7 @@ public class MeetingStoreTests : IDisposable
 
         // Not This Time hides it from the AI, and from the Meetings window.
         db.SetMeetingChoice(m.Id, MeetingChoice.Skip);
-        Assert.StartsWith("No meetings", tools.Run(new AiToolCall("3", "list_meetings", new JsonObject { ["start"] = "today" })));
+        Assert.StartsWith("No meetings", tools.Run(new AiToolCall("3", "list_meetings", new JsonObject { ["start"] = since })));
         Assert.Empty(db.ShownMeetings());
         db.SetMeetingChoice(m.Id, MeetingChoice.Take);
         Assert.Single(db.ShownMeetings());

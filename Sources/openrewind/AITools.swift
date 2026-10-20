@@ -328,6 +328,8 @@ struct ActivityRow {
     var app: String
     var window: String
     var url: String
+    /// Saved while a blocked window or site was in front (Insights).
+    var blocked = false
 }
 
 /// Turns frames into "time per app" and a timeline of what was in front.

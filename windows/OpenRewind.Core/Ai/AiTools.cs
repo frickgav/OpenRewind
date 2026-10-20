@@ -328,8 +328,9 @@ public static class AiTime
     }
 }
 
-/// One row per saved frame, for the activity summary.
-public sealed record ActivityRow(DateTime Time, string App, string Window, string Url);
+/// One row per saved frame, for the activity summary and Insights. Blocked: saved while a blocked
+/// window or site was in front.
+public sealed record ActivityRow(DateTime Time, string App, string Window, string Url, bool Blocked = false);
 
 /// Turns frames into "time per app" and a timeline of what was in front.
 public static class AiActivity

@@ -186,12 +186,14 @@ enum MeetingApps {
     }
 }
 
-/// One saved frame, for detection.
+/// One saved frame, for detection. `blocked`: the recorder saved it while a blocked window or site
+/// was in front, so it is never part of a meeting.
 struct MeetingFrame {
     var time: Date
     var app: String
     var window: String
     var url: String
+    var blocked = false
 }
 
 /// Speech (or a clip not transcribed yet) from the microphone (`mic`) or system audio.
@@ -247,7 +249,7 @@ enum MeetingDetector {
         // When a meeting app or site was in front.
         var seen: [Seen] = []
         for (i, f) in frames.enumerated() {
-            guard !hides(blocked, f), let label = MeetingApps.match(app: f.app, window: f.window, url: f.url) else { continue }
+            guard !f.blocked, !hides(blocked, f), let label = MeetingApps.match(app: f.app, window: f.window, url: f.url) else { continue }
             let next = i + 1 < frames.count ? frames[i + 1].time : now
             var end = min(next, f.time.addingTimeInterval(frameSpan))
             if end < f.time { end = f.time }
@@ -624,7 +626,7 @@ enum MeetingTracker {
         from = max(from, now.addingTimeInterval(-86_400))
         // Nothing from before the user's last delete comes back as a new meeting.
         if let cut = db.meetingsDeletedThrough(), cut > from { from = min(cut, now) }
-        let frames = db.activityRows(from: from, to: now).map { MeetingFrame(time: $0.time, app: $0.app, window: $0.window, url: $0.url) }
+        let frames = db.meetingFrames(from: from, to: now)
         let audio = db.meetingAudio(from: from, to: now, chunkSeconds: chunkSeconds, includePending: transcribing)
         let spans = MeetingDetector.detect(frames: frames, audio: audio, blocked: blocked, now: now)
         let done = db.meetings(overlapping: from.addingTimeInterval(-MeetingDetector.mergeGap), to: now).filter { !$0.isLive }
@@ -831,6 +833,23 @@ extension Database {
         defer { sqlite3_finalize(st) }
         guard sqlite3_step(st) == SQLITE_ROW else { return nil }
         return Time.iso.date(from: col(st, 0))
+    }
+
+    /// Frames between two times, oldest first, with the recorder's blocked mark.
+    func meetingFrames(from: Date, to: Date) -> [MeetingFrame] {
+        lock.lock(); defer { lock.unlock() }
+        var st: OpaquePointer?
+        let sql = "SELECT timestamp, app_name, window_name, browser_url, blocked FROM frames WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC"
+        guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); return [] }
+        defer { sqlite3_finalize(st) }
+        bind(st, 1, Time.iso.string(from: from))
+        bind(st, 2, Time.iso.string(from: to))
+        var out: [MeetingFrame] = []
+        while sqlite3_step(st) == SQLITE_ROW {
+            guard let t = Time.iso.date(from: col(st, 0)) else { continue }
+            out.append(MeetingFrame(time: t, app: col(st, 1), window: col(st, 2), url: col(st, 3), blocked: sqlite3_column_int(st, 4) != 0))
+        }
+        return out
     }
 
     /// Speech, and clips not transcribed yet when `includePending` (Whisper is set up), for finding

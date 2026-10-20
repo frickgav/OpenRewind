@@ -100,7 +100,11 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let until = pausedUntil { schedulePause(until) } else { applyRecordingPrefs() }
         retention = RetentionJob(db: engine.db, screen: keep(keepScreenKey), audio: keep(keepAudioKey))
         retention.start()
+<<<<<<< HEAD
         meetings.start()
+=======
+        Database.buildSlowIndexesInBackground(path: engine.config.dbPath)
+>>>>>>> origin/main
 
         // ⌥⌘T (or the shortcut picked in Settings) opens the timeline from anywhere.
         registerHotKey(Shortcut.load(defaults))
@@ -130,6 +134,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+<<<<<<< HEAD
     @objc private func showMeetings() {
         let model = MeetingsModel(db: engine.db)
         model.openMoment = { [weak self] d in self?.overlay.show(at: d) }
@@ -204,6 +209,11 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             MeetingCenter.autoSummarize = false
             log("meeting summaries off (provider changed)")
         }
+=======
+    /// Where the time went; a click shows that app or moment in the timeline.
+    @objc private func showInsights() {
+        InsightsWindow.shared.show(db: engine.db) { [weak self] date, app in self?.overlay.show(at: date, app: app) }
+>>>>>>> origin/main
     }
 
     @objc private func showAISettings() {
@@ -271,7 +281,11 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(tl)
         menu.addItem(action("Search…", #selector(openSearch)))
         menu.addItem(action("Ask AI…", #selector(showAIChat)))
+<<<<<<< HEAD
         menu.addItem(action("Meetings…", #selector(showMeetings)))
+=======
+        menu.addItem(action("Insights…", #selector(showInsights)))
+>>>>>>> origin/main
         menu.addItem(action("Show Data Folder", #selector(openData)))
         for line in storageLines() {
             let i = NSMenuItem(title: "  " + line, action: nil, keyEquivalent: "")
