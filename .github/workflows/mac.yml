@@ -38,6 +38,9 @@ jobs:
       # files), and SQLCipher: encrypt, search, reopen, wrong key refused, read-only, decrypt.
       - name: Encryption self-test
         run: dist/OpenRewind.app/Contents/MacOS/OpenRewind selftest-encryption
+      # Parakeet's 30 s audio windows on clip lengths around the cut points (30.01 s used to crash), no model needed.
+      - name: Parakeet window check
+        run: dist/OpenRewind.app/Contents/MacOS/OpenRewind parakeet-check
       - name: Check the notices ship
         run: test -s dist/OpenRewind.app/Contents/Resources/THIRD_PARTY_NOTICES.txt
       # Compress Older Recordings for real: encode made-up screenshots, read every frame back, delete, rewrite.
