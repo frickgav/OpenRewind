@@ -7,11 +7,17 @@ Sets a block list in the app's settings (an app, a word, a site, private windows
 screenshot of each kind it covers plus one it does not (`<exe> ingest`), starts `<exe> serve` and
 asks every route that returns frames: only the visible frame may come back, and a blocked frame's
 picture is "not found". Then unblocks the app while the server runs (it must show up) and blocks it
-again (it must go). Exits non-zero on failure. Windows runs the same checks as unit tests
-(ServerBlocklistTests.cs). Mac only: it uses `defaults` for the settings.
+again (it must go). Then adds a few hundred frames, most of them hidden, straight into the database and
+checks that `total` counts only the visible ones, from the first page on, and that paging never repeats a
+frame. Exits non-zero on failure. Windows runs the same checks as unit tests (ServerBlocklistTests.cs).
+
+Mac only: it uses `defaults` for the settings. Your own block list is in the same place (OPENREWIND_HOME
+does not move it), so it is saved first and put back at the end.
 """
 import json
 import os
+import plistlib
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -39,6 +45,22 @@ def png(path):
 
 def defaults(*args):
     subprocess.run(["defaults", *args], check=False, capture_output=True)
+
+
+def export():
+    """The app's settings as a dict ({} when it has none)."""
+    out = subprocess.run(["defaults", "export", DOMAIN, "-"], capture_output=True)
+    return plistlib.loads(out.stdout) if out.returncode == 0 and out.stdout else {}
+
+
+def restore(saved):
+    """Put the block list keys back as they were, keeping every other setting as it is now."""
+    now = export()
+    for k in KEYS:
+        now.pop(k, None)
+        if k in saved:
+            now[k] = saved[k]
+    subprocess.run(["defaults", "import", DOMAIN, "-"], input=plistlib.dumps(now), check=True)
 
 
 def block(apps):
@@ -70,6 +92,35 @@ def main():
     exe = sys.argv[1]
     image = os.path.join(tempfile.mkdtemp(), "shot.png")
     png(image)
+    saved = export()
+    try:
+        check(exe, image)
+    finally:
+        restore(saved)
+
+
+def add_frames(n):
+    """n frames with the word "overdraft", oldest first and older than the rest; one in four visible. The
+    others are hidden by the blocked app, a blocked word in the title, a blocked site or a private window.
+    Returns the visible ids, newest first."""
+    home = os.environ.get("OPENREWIND_HOME") or os.path.expanduser("~/.openrewind")
+    db = sqlite3.connect(os.path.join(home, "db.sqlite"), timeout=30)
+    visible = []
+    for i in range(n):
+        app, window, url = [("Notes", f"list {i}", ""), ("Safari", f"Payroll {i}", ""),
+                            ("Safari", f"Statement {i}", f"https://secure.chase.com/s/{i}"),
+                            ("BBEdit" if i % 8 == 3 else "Safari", f"Tab {i} - Private Browsing", "")][i % 4]
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 86400 * 400 + i)) + ".000Z"
+        cur = db.execute("INSERT INTO frames (timestamp, app_name, window_name, text, browser_url) VALUES (?, ?, ?, ?, ?)",
+                         (ts, app, window, f"budget overdraft {i}", url))
+        if i % 4 == 0:
+            visible.append(cur.lastrowid)
+    db.commit()
+    db.close()
+    return visible[::-1]
+
+
+def check(exe, image):
     block([BBEDIT])
 
     def ingest(*args):
@@ -138,12 +189,25 @@ def main():
         else:
             sys.exit("a newly blocked app still comes back")
         assert get(f"/frames/{hidden['blocked app']}")[0] == 404
-        print(f"✓ local server: frame {visible} shown; {len(hidden)} blocked frames left out of /search, /frames and /apps")
+
+        # The total counts only what can be shown, on the first page too: otherwise comparing it with the
+        # results would tell whether blocked screenshots contain a word.
+        many = add_frames(400)
+        for limit in [1, 40]:
+            ids, total, _ = frame_ids(f"/search?q=overdraft&limit={limit}")
+            assert total == len(many), (limit, total, len(many))
+            assert ids == many[:limit], (limit, ids, many[:limit])
+        got = []
+        for offset in range(0, len(many), 30):
+            ids, total, _ = frame_ids(f"/search?q=overdraft&limit=30&offset={offset}")
+            assert total == len(many), (offset, total)
+            got += ids
+        assert got == many, (len(got), len(set(got)), len(many))
+        print(f"✓ local server: frame {visible} shown; {len(hidden)} blocked frames left out of /search, /frames and /apps; "
+              f"total {len(many)} of 400 at every offset")
     finally:
         server.terminate()
         server.wait(10)
-        for k in KEYS:
-            defaults("delete", DOMAIN, k)
 
 
 if __name__ == "__main__":

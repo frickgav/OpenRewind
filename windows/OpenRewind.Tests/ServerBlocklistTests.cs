@@ -156,6 +156,7 @@ public class ServerBlocklistTests : IDisposable
         {
             var r = Json(api.Handle(Get("/search", new() { ["q"] = "budget", ["limit"] = "40", ["offset"] = offset.ToString() })));
             total = r.GetProperty("pagination").GetProperty("total").GetInt32();
+            Assert.Equal(150, total);   // on every page, not only once all of them were read
             got.AddRange(r.GetProperty("data").EnumerateArray().Select(d => d.GetProperty("content").GetProperty("frame_id").GetInt64()));
         }
         Assert.Equal(expected, got);
@@ -166,11 +167,104 @@ public class ServerBlocklistTests : IDisposable
     public void NothingVisibleGivesAnEmptyPageAndZeroTotal()
     {
         var t = DateTime.UtcNow.AddHours(-1);
-        var rows = Enumerable.Range(0, 30).Select(i => new Frame(i, Time.Iso(t.AddSeconds(i)), "BBEdit", "", true, "", "x", "ocr", 0)).ToList();
-        for (int i = 0; i < 30; i++) db.Insert(rows[i]);
-        var (shown, total) = Api.VisibleFrames(db, new SearchQuery(), 10, List.HidesFrame);
-        Assert.Empty(shown);
-        Assert.Equal(0, total);
+        for (int i = 0; i < 30; i++) db.Insert(new Frame(0, Time.Iso(t.AddSeconds(i)), "BBEdit", "", true, "", "x", "ocr", 0));
+        Assert.Equal(0, Api.VisibleCount(db, new SearchQuery(), List));
+        Assert.False(Api.EachVisibleFrame(db, new SearchQuery(), List, 10, _ => throw new Exception("nothing is visible")));
+        var r = Json(ApiWith(List).Handle(Get("/search")));
+        Assert.Empty(r.GetProperty("data").EnumerateArray());
+        Assert.Equal(0, r.GetProperty("pagination").GetProperty("total").GetInt32());
+    }
+
+    /// The total must not count hidden frames on any page, the first one included: comparing it with what comes
+    /// back would tell whether blocked screenshots contain a word.
+    [Fact]
+    public void TotalCountsOnlyVisibleFramesFromTheFirstPage()
+    {
+        var t = DateTime.UtcNow.AddHours(-3);
+        for (int i = 0; i < 600; i++)
+        {
+            // 150 visible; the rest hidden in every way, most of them by rules only code can check.
+            var (app, window, url, blocked) = (i % 4) switch
+            {
+                0 => ("Notepad", "notes " + i, "", false),
+                1 => (i % 8 == 1 ? "BBEdit" : "Chrome", "Payroll " + i, "", false),
+                2 => ("Chrome", "Statement " + i, $"https://secure.chase.com/s/{i}", false),
+                _ => (i % 8 == 3 ? "Notepad" : "Firefox", i % 8 == 3 ? "" : $"Tab {i} — Private Browsing", "", i % 8 == 3),
+            };
+            AddFrame(t.AddSeconds(i), app, window, "budget overdraft " + i, url, blocked);
+        }
+        var api = ApiWith(List);
+        foreach (var limit in new[] { "1", "40", "100" })
+        {
+            var r = Json(api.Handle(Get("/search", new() { ["q"] = "overdraft", ["limit"] = limit })));
+            Assert.Equal(150, r.GetProperty("pagination").GetProperty("total").GetInt32());
+            Assert.False(r.GetProperty("pagination").TryGetProperty("truncated", out _));
+            Assert.All(r.GetProperty("data").EnumerateArray(), d => Assert.Equal("Notepad", d.GetProperty("content").GetProperty("app_name").GetString()));
+        }
+        // Without a word too, and with audio in the mix (none here).
+        Assert.Equal(150, Json(api.Handle(Get("/search", new() { ["limit"] = "5" }))).GetProperty("pagination").GetProperty("total").GetInt32());
+        Assert.Equal(150, Api.VisibleCount(db, new SearchQuery { Q = "budget" }, List));
+    }
+
+    [Fact]
+    public void AScanNeverReturnsAFrameTwiceWhileRecordingGoesOn()
+    {
+        var t = DateTime.UtcNow.AddHours(-1);
+        for (int i = 0; i < 100; i++) AddFrame(t.AddSeconds(i), i % 2 == 0 ? "Notepad" : "BBEdit", "w", "x");
+        var seen = new List<Frame>();
+        Api.EachVisibleFrame(db, new SearchQuery(), List, 7, f =>
+        {
+            seen.Add(f);
+            // New frames land at the top while the scan pages down; OFFSET paging would shift and repeat one.
+            AddFrame(DateTime.UtcNow.AddSeconds(seen.Count), "Notepad", "w", "x");
+            return true;
+        });
+        Assert.Equal(50, seen.Count);
+        Assert.Equal(seen.Count, seen.Select(f => f.Id).Distinct().Count());
+        Assert.True(seen.Zip(seen.Skip(1)).All(p => string.CompareOrdinal(p.First.Timestamp, p.Second.Timestamp) >= 0));
+        // The scan reads no text; the page is read in full afterwards.
+        Assert.All(seen, f => Assert.Equal("", f.Text));
+    }
+
+    [Fact]
+    public void AScanStopsAfterTooManyHiddenFrames()
+    {
+        var t = DateTime.UtcNow.AddHours(-1);
+        AddFrame(t, "Notepad", "old", "x");
+        for (int i = 1; i <= 50; i++) AddFrame(t.AddSeconds(i), "Chrome", "Payroll " + i, "x");
+        AddFrame(t.AddSeconds(60), "Notepad", "new", "x");
+        var seen = new List<string>();
+        Assert.True(Api.EachVisibleFrame(db, new SearchQuery(), List, 10, f => { seen.Add(f.WindowName); return true; }, maxHidden: 20));
+        Assert.Equal(new[] { "new" }, seen);
+        seen.Clear();
+        Assert.False(Api.EachVisibleFrame(db, new SearchQuery(), List, 10, f => { seen.Add(f.WindowName); return true; }));
+        Assert.Equal(new[] { "new", "old" }, seen);
+    }
+
+    [Fact]
+    public void ReadOnlyOpenWithoutTheBlockedColumnStillReadsVideoFrames()
+    {
+        // Each optional column is checked on its own: a database with video columns but no blocked mark
+        // keeps its video paths.
+        var path = Path.Combine(home, "noblocked", "db.sqlite");
+        long id;
+        using (var fresh = new Database(path))
+        {
+            id = fresh.Insert(new Frame(0, Time.Iso(DateTime.UtcNow), "Notepad", "notes", true, "", "hello", "ocr", 0));
+            fresh.Exec($"UPDATE frames SET video_path = 'v.mp4', video_frame = 3 WHERE id = {id}");
+        }
+        using (var c = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path};Pooling=False"))
+        {
+            c.Open();
+            using var cmd = c.CreateCommand();
+            cmd.CommandText = "DROP INDEX IF EXISTS idx_frames_insights; ALTER TABLE frames DROP COLUMN blocked;";
+            cmd.ExecuteNonQuery();
+        }
+        using var ro = Database.OpenReadOnly(path);
+        var f = ro.FrameById(id)!;
+        Assert.Equal(("v.mp4", 3, false), (f.VideoPath, f.VideoFrame, f.Blocked));
+        Assert.Equal(1, Api.VisibleCount(ro, new SearchQuery { Q = "hello" }, List));
+        Assert.Single(ro.SearchKeys(new SearchQuery { Q = "hello", SkipBlocked = true }));
     }
 
     [Fact]

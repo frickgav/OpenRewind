@@ -168,24 +168,51 @@ struct API {
     /// The largest `offset` the search accepts.
     static let maxOffset = 1_000_000
 
-    /// Stop reading after this many blocked frames: a block list that covers most
-    /// of the history ends the results early rather than reading all of it.
+    /// Frames read per database call while paging through a search; the lock is let go between calls.
+    static let scanPage = 1000
+
+    /// Stop reading after this many hidden frames: a block list that covers most of the history ends
+    /// the results early (`truncated` in the answer) rather than reading all of it.
     static let maxHiddenScan = 20_000
 
-    /// The first `want` frames of a search that `hides` leaves in, newest first, and the total without the
-    /// hidden ones read. Reads in pages until it has enough; the total is exact once the last page is read.
-    static func visibleFrames(_ db: Database, _ s: SearchQuery, want: Int, hides: (Frame) -> Bool) -> (rows: [Frame], total: Int) {
+    /// `s` with the parts of the block list that SQL can apply: frames marked blocked and blocked app names.
+    /// `hides` still checks every frame read; this only means most hidden frames are never read.
+    static func skipping(_ s: SearchQuery, _ list: Blocklist) -> SearchQuery {
         var q = s
-        q.limit = max(want, 200)
-        q.offset = 0
-        var shown: [Frame] = [], hidden = 0, total = 0
+        q.skipBlocked = true
+        q.skipApps = Array(list.appKeys.prefix(500))
+        return q
+    }
+
+    /// How many frames of the search `list` leaves in, exactly. Counted in SQL by app, title and address
+    /// (all `hides` looks at once frames marked blocked are left out), so hidden frames never add to it.
+    static func visibleCount(_ db: Database, _ s: SearchQuery, _ list: Blocklist) -> Int {
+        let byTitle = list.privateWindows || !list.keywords.isEmpty
+        let byURL = !list.keywords.isEmpty || !list.sites.isEmpty
+        return db.searchGroups(skipping(s, list), byTitle: byTitle, byURL: byURL)
+            .reduce(0) { n, g in list.hides(g.frame) ? n : n + g.count }
+    }
+
+    /// Calls `body` with each frame of the search that `list` leaves in, newest first and without its text,
+    /// until `body` returns false. Pages by time, so a frame recorded meanwhile never shifts a page and no
+    /// frame comes twice. True when it stopped early, at `maxHiddenScan` hidden frames.
+    static func eachVisibleFrame(_ db: Database, _ s: SearchQuery, _ list: Blocklist, page: Int, _ body: (Frame) -> Bool) -> Bool {
+        var q = skipping(s, list)
+        q.limit = min(max(page, 1), scanPage)
+        q.before = nil
+        var hidden = 0
         while true {
-            let (rows, n) = db.search(q)
-            if q.offset == 0 { total = n }
-            for f in rows { if hides(f) { hidden += 1 } else { shown.append(f) } }
-            q.offset += rows.count
-            if rows.count < q.limit || shown.count >= want { return (shown, max(shown.count, total - hidden)) }
-            if hidden >= maxHiddenScan { return (shown, shown.count) }
+            let rows = db.searchKeys(q)
+            for f in rows {
+                if !list.hides(f) {
+                    if !body(f) { return false }
+                } else {
+                    hidden += 1
+                    if hidden >= maxHiddenScan { return true }
+                }
+            }
+            guard rows.count == q.limit, let last = rows.last else { return false }
+            q.before = (timestamp: last.timestamp, id: last.id)
         }
     }
 
@@ -221,34 +248,70 @@ struct API {
         if q["mode"]?.lowercased() == "meaning" {
             return searchByMeaning(s, list, screen: wantScreen, audio: wantAudio, offset: offset, limit: limit, clip: clip)
         }
-        // To page through a merged list: take the top (offset + limit) of each source, merge by time, then slice.
+        // Screen and audio merged newest first; the page is places offset..<offset+limit of that list.
         let fetch = offset + limit
-        var items: [(ts: String, item: [String: Any])] = []
-        var total = 0
-
-        if wantScreen {
-            let (rows, n) = API.visibleFrames(db, s, want: fetch) { list.hides($0) }
-            total += n
-            items += rows.map { f in (f.timestamp, ["type": "OCR", "content": [
-                "frame_id": f.id, "text": clip(f.text), "timestamp": f.timestamp,
-                "app_name": f.appName, "window_name": f.windowName, "focused": f.focused,
-                "file_path": f.videoPath.isEmpty ? f.snapshotPath : f.videoPath, "text_source": f.textSource,
-                "offset_index": f.videoFrame, "tags": [],
-            ] as [String: Any]]) }
-        }
+        var audio: [Transcript] = [], total = 0, audioTotal = 0
         if wantAudio {
-            let (rows, n) = db.searchAudio(s, fetch: fetch)
-            total += n
-            items += rows.map { t in (t.timestamp, ["type": "Audio", "content": [
-                "chunk_id": t.chunkId, "transcription_id": t.id, "transcription": clip(t.text),
-                "timestamp": t.timestamp, "start_time": t.startTime, "end_time": t.endTime,
-                "device_name": t.device, "device_type": t.isInput ? "Input" : "Output",
-                "file_path": t.filePath, "speaker": NSNull(), "tags": [],
-            ] as [String: Any]]) }
+            let r = db.searchAudio(s, fetch: fetch)
+            audio = r.rows
+            audioTotal = r.total
+            total += audioTotal
         }
-        items.sort { $0.ts > $1.ts }
-        let page = items.dropFirst(offset).prefix(limit).map { $0.item }
-        return .json(["data": Array(page), "pagination": ["limit": limit, "offset": offset, "total": total]])
+        enum Hit { case frame(Frame), audio(Transcript) }
+        var hits: [Hit] = [], placed = 0, nextAudio = 0, shown = 0, truncated = false
+        func place(_ h: Hit) {
+            if placed >= offset { hits.append(h) }
+            placed += 1
+        }
+        /// Audio newer than `time` (all of it when nil), while the page is not full.
+        func placeAudio(newerThan time: String?) {
+            while nextAudio < audio.count, placed < fetch, time.map({ audio[nextAudio].timestamp > $0 }) ?? true {
+                place(.audio(audio[nextAudio]))
+                nextAudio += 1
+            }
+        }
+        if wantScreen {
+            total += API.visibleCount(db, s, list)
+            truncated = API.eachVisibleFrame(db, s, list, page: max(fetch, 200)) { f in
+                placeAudio(newerThan: f.timestamp)
+                guard placed < fetch else { return false }
+                place(.frame(f))
+                shown += 1
+                return placed < fetch
+            }
+            // Cut short: count only the screenshots that can be reached, so a client stops paging.
+            if truncated { total = audioTotal + shown }
+        }
+        placeAudio(newerThan: nil)
+
+        // The scan read no text: read the page's frames in full.
+        let full = db.frames(ids: hits.compactMap { h -> Int64? in
+            if case .frame(let f) = h { return f.id }
+            return nil
+        })
+        let page: [[String: Any]] = hits.compactMap { h -> [String: Any]? in
+            switch h {
+            case .frame(let k):
+                // Gone meanwhile (deleted): left out.
+                guard let f = full[k.id], !list.hides(f) else { return nil }
+                return ["type": "OCR", "content": [
+                    "frame_id": f.id, "text": clip(f.text), "timestamp": f.timestamp,
+                    "app_name": f.appName, "window_name": f.windowName, "focused": f.focused,
+                    "file_path": f.videoPath.isEmpty ? f.snapshotPath : f.videoPath, "text_source": f.textSource,
+                    "offset_index": f.videoFrame, "tags": [],
+                ] as [String: Any]]
+            case .audio(let t):
+                return ["type": "Audio", "content": [
+                    "chunk_id": t.chunkId, "transcription_id": t.id, "transcription": clip(t.text),
+                    "timestamp": t.timestamp, "start_time": t.startTime, "end_time": t.endTime,
+                    "device_name": t.device, "device_type": t.isInput ? "Input" : "Output",
+                    "file_path": t.filePath, "speaker": NSNull(), "tags": [],
+                ] as [String: Any]]
+            }
+        }
+        var pagination: [String: Any] = ["limit": limit, "offset": offset, "total": total]
+        if truncated { pagination["truncated"] = true }
+        return .json(["data": page, "pagination": pagination])
     }
 
     /// Inside our own data dir (with the trailing slash, so a sibling folder like data-x/ is not).

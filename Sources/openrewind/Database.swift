@@ -36,6 +36,12 @@ struct SearchQuery {
     var endTime: String?
     var limit = 20
     var offset = 0
+    /// The local server's scan (API.visibleCount, API.eachVisibleFrame): leave out frames marked blocked and
+    /// these app names (lower case) in SQL, so hidden frames are mostly never read.
+    var skipBlocked = false
+    var skipApps: [String] = []
+    /// Only frames older than this one (by time, then id): the next page of a scan.
+    var before: (timestamp: String, id: Int64)?
 }
 
 enum DBError: Error {
@@ -66,8 +72,10 @@ final class Database {
     /// Frames of a video were deleted while others in it are kept: the compactor should write it again soon.
     var videosNeedRewrite: (() -> Void)?
     /// The frame columns to read. A read-only open (the MCP server) may see a database the recording app
-    /// has not migrated yet; it then reads every frame as a still.
+    /// has not migrated yet; each missing column then reads as its default (a still, not blocked).
     private var cols = Database.fullCols
+    /// The blocked mark, or 0 when that column is missing (see `cols`).
+    private var blockedCol = "f.blocked"
 
     /// `key` opens an encrypted database; `createEncrypted` makes a new one encrypted with it.
     init(path: URL, key: Data? = nil, createEncrypted: Bool = false) throws {
@@ -99,9 +107,9 @@ final class Database {
         isEncrypted = encrypted
         openKey = encrypted ? key : nil
         try exec("PRAGMA busy_timeout=5000;")
-        if scalarInt("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name IN ('display', 'video_path', 'video_frame', 'video_time', 'blocked')", []) < 5 {
-            cols = Database.stillCols
-        }
+        let have = Set(rowsChecked("SELECT name FROM pragma_table_info('frames')", []) { st -> String? in self.col(st, 0) } ?? [])
+        cols = Database.frameCols(have)
+        if !have.contains("blocked") { blockedCol = "0" }
     }
 
     /// After the data folder moved from ~/.openscreen (see `Config.defaultHome`), point the stored
@@ -255,7 +263,8 @@ final class Database {
         query("SELECT \(cols) FROM frames f WHERE f.id = ?", [.int(id)]).first
     }
 
-    func search(_ s: SearchQuery) -> (rows: [Frame], total: Int) {
+    /// FROM and WHERE of a search, with their arguments in order.
+    private func searchSQL(_ s: SearchQuery) -> (from: String, whereSQL: String, args: [Arg]) {
         var whereParts: [String] = []
         var args: [Arg] = []
         var from = "frames f"
@@ -267,11 +276,54 @@ final class Database {
         if let w = s.windowName, !w.isEmpty { whereParts.append("f.window_name LIKE ?"); args.append(.text("%\(w)%")) }
         if let t = s.startTime { whereParts.append("f.timestamp >= ?"); args.append(.text(t)) }
         if let t = s.endTime { whereParts.append("f.timestamp <= ?"); args.append(.text(t)) }
-        let whereSQL = whereParts.isEmpty ? "" : "WHERE " + whereParts.joined(separator: " AND ")
+        if s.skipBlocked { whereParts.append("\(blockedCol) = 0") }
+        if !s.skipApps.isEmpty {
+            whereParts.append("lower(f.app_name) NOT IN (\(Array(repeating: "?", count: s.skipApps.count).joined(separator: ", ")))")
+            args += s.skipApps.map { Arg.text($0) }
+        }
+        if let b = s.before { whereParts.append("(f.timestamp, f.id) < (?, ?)"); args += [.text(b.timestamp), .int(b.id)] }
+        return (from, whereParts.isEmpty ? "" : "WHERE " + whereParts.joined(separator: " AND "), args)
+    }
+
+    func search(_ s: SearchQuery) -> (rows: [Frame], total: Int) {
+        let (from, whereSQL, args) = searchSQL(s)
         let total = scalarInt("SELECT COUNT(*) FROM \(from) \(whereSQL)", args)
         let rows = query("SELECT \(cols) FROM \(from) \(whereSQL) ORDER BY f.timestamp DESC LIMIT ? OFFSET ?",
                          args + [.int(Int64(s.limit)), .int(Int64(s.offset))])
         return (rows, total)
+    }
+
+    /// How many frames match, by app and (when asked) by window title and address: all the block list
+    /// looks at in a stored frame besides the blocked mark, so the server can count only what it shows.
+    /// Each group is a frame with just those fields set.
+    func searchGroups(_ s: SearchQuery, byTitle: Bool, byURL: Bool) -> [(frame: Frame, count: Int)] {
+        let (from, whereSQL, args) = searchSQL(s)
+        let sql = "SELECT f.app_name, \(byTitle ? "f.window_name" : "''"), \(byURL ? "f.browser_url" : "''"), COUNT(*) FROM \(from) \(whereSQL) GROUP BY 1, 2, 3"
+        return rowsChecked(sql, args) { st -> (frame: Frame, count: Int)? in
+            (frame: Frame(id: 0, timestamp: "", appName: self.col(st, 0), windowName: self.col(st, 1), focused: true, snapshotPath: "",
+                          text: "", textSource: "", hash: 0, browserUrl: self.col(st, 2)),
+             count: Int(sqlite3_column_int64(st, 3)))
+        } ?? []
+    }
+
+    /// Up to `s.limit` matches older than `s.before`, newest first, without their text or picture: id, time,
+    /// app, window, address and the blocked mark (what the block list needs). `s.offset` is not used.
+    func searchKeys(_ s: SearchQuery) -> [Frame] {
+        let (from, whereSQL, args) = searchSQL(s)
+        let sql = "SELECT f.id, f.timestamp, f.app_name, f.window_name, f.browser_url, \(blockedCol) FROM \(from) \(whereSQL) ORDER BY f.timestamp DESC, f.id DESC LIMIT ?"
+        return rowsChecked(sql, args + [.int(Int64(s.limit))]) { st -> Frame? in
+            Frame(id: sqlite3_column_int64(st, 0), timestamp: self.col(st, 1), appName: self.col(st, 2), windowName: self.col(st, 3),
+                  focused: true, snapshotPath: "", text: "", textSource: "", hash: 0, browserUrl: self.col(st, 4),
+                  blocked: sqlite3_column_int(st, 5) != 0)
+        } ?? []
+    }
+
+    /// Whole frames by id; ids that are gone are left out.
+    func frames(ids: [Int64]) -> [Int64: Frame] {
+        guard !ids.isEmpty else { return [:] }
+        let marks = Array(repeating: "?", count: ids.count).joined(separator: ", ")
+        let rows = query("SELECT \(cols) FROM frames f WHERE f.id IN (\(marks))", ids.map { Arg.int($0) })
+        return Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
     }
 
     func apps(since: String?) -> [(String, Int)] {
@@ -326,7 +378,13 @@ final class Database {
     // MARK: - helpers
 
     private static let fullCols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, f.display, f.video_path, f.video_frame, f.video_time, f.blocked"
-    private static let stillCols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, '', '', 0, 0.0, 0"
+
+    /// `fullCols` with each column a read-only open does not find replaced by its default.
+    private static func frameCols(_ have: Set<String>) -> String {
+        func c(_ name: String, _ missing: String) -> String { have.contains(name) ? "f.\(name)" : missing }
+        return "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, "
+            + "\(c("display", "''")), \(c("video_path", "''")), \(c("video_frame", "0")), \(c("video_time", "0.0")), \(c("blocked", "0"))"
+    }
 
     /// Turn free text into a safe FTS5 query: every word becomes a quoted prefix term.
     static func ftsQuery(_ raw: String) -> String? {

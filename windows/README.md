@@ -200,6 +200,9 @@ OpenRewind records audio without it; the clips are transcribed once it is set up
 .\OpenRewind.exe --help
 ```
 
+`record`, `once` and `serve` use the block list from Settings, and see changes you make there while
+they run.
+
 ## Build it
 
 Needs the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)

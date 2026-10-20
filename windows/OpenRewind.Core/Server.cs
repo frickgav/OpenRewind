@@ -186,26 +186,51 @@ public sealed class Api
     /// The largest `offset` the search accepts.
     public const int MaxOffset = 1_000_000;
 
-    /// Stop reading after this many blocked frames: a block list that covers most of the history ends
-    /// the results early rather than reading all of it.
+    /// Frames read per database call while paging through a search; the lock is let go between calls.
+    public const int ScanPage = 1000;
+
+    /// Stop reading after this many hidden frames: a block list that covers most of the history ends the
+    /// results early (`truncated` in the answer) rather than reading all of it.
     public const int MaxHiddenScan = 20_000;
 
-    /// The first `want` frames of a search that `hides` leaves in, newest first, and the total without the
-    /// hidden ones read. Reads in pages until it has enough; the total is exact once the last page is read.
-    public static (List<Frame> Rows, int Total) VisibleFrames(Database db, SearchQuery s, int want, Func<Frame, bool> hides)
+    /// `s` with the parts of the block list that SQL can apply: frames marked blocked and blocked app names.
+    /// HidesFrame still checks every frame read; this only means most hidden frames are never read.
+    static SearchQuery Skipping(SearchQuery s, Blocklist list)
     {
-        var q = new SearchQuery { Q = s.Q, AppName = s.AppName, WindowName = s.WindowName, StartTime = s.StartTime, EndTime = s.EndTime,
-                                  Limit = Math.Max(want, 200), Offset = 0 };
-        var shown = new List<Frame>();
-        int hidden = 0, total = 0;
+        var q = s.Copy();
+        q.SkipBlocked = true;
+        q.SkipApps = list.AppKeys.Take(500).ToList();
+        return q;
+    }
+
+    /// How many frames of the search `list` leaves in, exactly. Counted in SQL by app, title and address
+    /// (all HidesFrame looks at once frames marked blocked are left out), so hidden frames never add to it.
+    public static int VisibleCount(Database db, SearchQuery s, Blocklist list)
+    {
+        var byTitle = list.PrivateWindows || list.Keywords.Count > 0;
+        var byUrl = list.Keywords.Count > 0 || list.Sites.Count > 0;
+        return db.SearchGroups(Skipping(s, list), byTitle, byUrl).Where(g => !list.HidesFrame(g.Frame)).Sum(g => g.Count);
+    }
+
+    /// Calls `body` with each frame of the search that `list` leaves in, newest first and without its text,
+    /// until `body` returns false. Pages by time, so a frame recorded meanwhile never shifts a page and no
+    /// frame comes twice. True when it stopped early, at `maxHidden` hidden frames.
+    public static bool EachVisibleFrame(Database db, SearchQuery s, Blocklist list, int page, Func<Frame, bool> body, int maxHidden = MaxHiddenScan)
+    {
+        var q = Skipping(s, list);
+        q.Limit = Math.Clamp(page, 1, ScanPage);
+        q.Before = null;
+        int hidden = 0;
         while (true)
         {
-            var (rows, n) = db.Search(q);
-            if (q.Offset == 0) total = n;
-            foreach (var f in rows) { if (hides(f)) hidden++; else shown.Add(f); }
-            q.Offset += rows.Count;
-            if (rows.Count < q.Limit || shown.Count >= want) return (shown, Math.Max(shown.Count, total - hidden));
-            if (hidden >= MaxHiddenScan) return (shown, shown.Count);
+            var rows = db.SearchKeys(q);
+            foreach (var f in rows)
+            {
+                if (!list.HidesFrame(f)) { if (!body(f)) return false; }
+                else if (++hidden >= maxHidden) return true;
+            }
+            if (rows.Count < q.Limit || rows.Count == 0) return false;
+            q.Before = (rows[^1].Timestamp, rows[^1].Id);
         }
     }
 
@@ -236,43 +261,75 @@ public sealed class Api
         var wantScreen = type != "audio";
         // Audio has no app/window, so those filters mean "screen only".
         var wantAudio = (type == "audio" || type == "all") && string.IsNullOrEmpty(s.AppName) && string.IsNullOrEmpty(s.WindowName);
-        // To page through a merged list: take the top (offset + limit) of each source, merge by time, then slice.
-        var fetch = offset + limit;
         if (Get("mode")?.ToLowerInvariant() == "meaning") return SearchByMeaning(s, list, wantScreen, wantAudio, offset, limit, Clip);
-        var items = new List<(string Ts, object Item)>();
-        int total = 0;
+
+        // Screen and audio merged newest first; the page is places offset..offset+limit-1 of that list.
+        var fetch = offset + limit;
+        var audio = new List<Transcript>();
+        int total = 0, audioTotal = 0;
+        if (wantAudio) { (audio, audioTotal) = db.SearchAudio(s, fetch); total += audioTotal; }
+        var hits = new List<object>();   // Frame or Transcript
+        int placed = 0, nextAudio = 0, shown = 0;
+        bool truncated = false;
+        void Place(object h) { if (placed >= offset) hits.Add(h); placed++; }
+        // Audio newer than `time` (all of it when null), while the page is not full.
+        void PlaceAudio(string? time)
+        {
+            while (nextAudio < audio.Count && placed < fetch && (time == null || string.CompareOrdinal(audio[nextAudio].Timestamp, time) > 0))
+                Place(audio[nextAudio++]);
+        }
         if (wantScreen)
         {
-            var (rows, n) = VisibleFrames(db, s, fetch, list.HidesFrame);
-            total += n;
-            items.AddRange(rows.Select(f => (f.Timestamp, (object)new
+            total += VisibleCount(db, s, list);
+            truncated = EachVisibleFrame(db, s, list, Math.Max(fetch, 200), f =>
             {
-                type = "OCR",
-                content = new
-                {
-                    frame_id = f.Id, text = Clip(f.Text), timestamp = f.Timestamp, app_name = f.AppName, window_name = f.WindowName,
-                    focused = f.Focused, file_path = f.VideoPath.Length > 0 ? f.VideoPath : f.SnapshotPath, text_source = f.TextSource,
-                    offset_index = f.VideoFrame, tags = Array.Empty<string>(),
-                },
-            })));
+                PlaceAudio(f.Timestamp);
+                if (placed >= fetch) return false;
+                Place(f);
+                shown++;
+                return placed < fetch;
+            });
+            // Cut short: count only the screenshots that can be reached, so a client stops paging.
+            if (truncated) total = audioTotal + shown;
         }
-        if (wantAudio)
+        PlaceAudio(null);
+
+        // The scan read no text: read the page's frames in full.
+        var full = db.FramesByIds(hits.OfType<Frame>().Select(f => f.Id).ToList());
+        var page = new List<object>();
+        foreach (var h in hits)
         {
-            var (rows, n) = db.SearchAudio(s, fetch);
-            total += n;
-            items.AddRange(rows.Select(t => (t.Timestamp, (object)new
+            if (h is Frame k)
             {
-                type = "Audio",
-                content = new
+                // Gone meanwhile (deleted): left out.
+                if (!full.TryGetValue(k.Id, out var f) || list.HidesFrame(f)) continue;
+                page.Add(new
                 {
-                    chunk_id = t.ChunkId, transcription_id = t.Id, transcription = Clip(t.Text), timestamp = t.Timestamp,
-                    start_time = t.StartTime, end_time = t.EndTime, device_name = t.Device, device_type = t.IsInput ? "Input" : "Output",
-                    file_path = t.FilePath, speaker = (object?)null, tags = Array.Empty<string>(),
-                },
-            })));
+                    type = "OCR",
+                    content = new
+                    {
+                        frame_id = f.Id, text = Clip(f.Text), timestamp = f.Timestamp, app_name = f.AppName, window_name = f.WindowName,
+                        focused = f.Focused, file_path = f.VideoPath.Length > 0 ? f.VideoPath : f.SnapshotPath, text_source = f.TextSource,
+                        offset_index = f.VideoFrame, tags = Array.Empty<string>(),
+                    },
+                });
+            }
+            else if (h is Transcript t)
+            {
+                page.Add(new
+                {
+                    type = "Audio",
+                    content = new
+                    {
+                        chunk_id = t.ChunkId, transcription_id = t.Id, transcription = Clip(t.Text), timestamp = t.Timestamp,
+                        start_time = t.StartTime, end_time = t.EndTime, device_name = t.Device, device_type = t.IsInput ? "Input" : "Output",
+                        file_path = t.FilePath, speaker = (object?)null, tags = Array.Empty<string>(),
+                    },
+                });
+            }
         }
-        var page = items.OrderByDescending(i => i.Ts, StringComparer.Ordinal).Skip(offset).Take(limit).Select(i => i.Item);
-        return HttpResponse.Json(new { data = page, pagination = new { limit, offset, total } });
+        object pagination = truncated ? new { limit, offset, total, truncated } : new { limit, offset, total };
+        return HttpResponse.Json(new { data = page, pagination });
     }
 
     /// mode=meaning: the moments closest in meaning to q, best first, in the same shape as the word search

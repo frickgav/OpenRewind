@@ -119,6 +119,10 @@ static class Program
             return 1;
         }
         var engine = new Engine(config, db);
+        // The block list in Settings, for the terminal commands too (`record`, `once`): without this they would
+        // record with the standard list. The tray app keeps its own copy up to date (TrayApp).
+        var savedBlocklist = Settings.SavedBlocklistIn(config.Home);
+        Blocklist.Current = savedBlocklist.Get();
 
         string? Value(string flag)
         {
@@ -148,17 +152,23 @@ static class Program
                 return 0;
 
             case "record":
+            {
                 _ = Database.BuildSlowIndexesInBackground(config.DbPath);
-                engine.ServerBlocklist = () => Settings.Load(config.Home).ToBlocklist();
+                // No tray app here: changes made in Settings meanwhile reach recording within a second, and the
+                // server reads the list again for each request. Both use the same copy.
+                Blocklist Refresh() => Blocklist.Current = savedBlocklist.Get();
+                using var refresh = new System.Threading.Timer(_ => Refresh(), null, 1000, 1000);
+                engine.ServerBlocklist = Refresh;
                 engine.StartServer();
                 engine.SetScreen(true);
                 if (config.RecordMic || config.RecordSystemAudio) engine.SetAudio(true);
                 Console.CancelKeyPress += (_, _) => engine.Shutdown();
                 Application.Run();
                 return 0;
+            }
 
             case "serve":
-                engine.ServerBlocklist = () => Settings.Load(config.Home).ToBlocklist();
+                engine.ServerBlocklist = savedBlocklist.Get;
                 engine.StartServer();
                 Thread.Sleep(Timeout.Infinite);
                 return 0;

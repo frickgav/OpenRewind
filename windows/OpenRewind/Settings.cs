@@ -104,15 +104,24 @@ sealed class Settings
     {
         var p = Path.Combine(home, "settings.json");
         Settings s;
-        try { s = File.Exists(p) ? JsonSerializer.Deserialize<Settings>(File.ReadAllText(p)) ?? new() : new(); }
+        try { s = Parse(SettingsFile.Read(p)); }
         catch { s = new(); }
         s.path = p;
         return s;
     }
 
+    /// The settings in `json`; new ones when it is null (no file yet). Throws when it is not a settings file.
+    public static Settings Parse(string? json) =>
+        json == null ? new() : JsonSerializer.Deserialize<Settings>(json) ?? throw new JsonException("settings.json is empty");
+
+    /// The block list in settings.json, for terminal commands that run beside the tray app (see SavedBlocklist).
+    public static SavedBlocklist SavedBlocklistIn(string home) =>
+        new(Path.Combine(home, "settings.json"), json => Parse(json).ToBlocklist());
+
+    /// In one step, so a terminal `record` or `serve` reading it meanwhile never sees half a file.
     public void Save()
     {
-        try { File.WriteAllText(path, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true })); }
+        try { SettingsFile.WriteAtomic(path, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true })); }
         catch (Exception e) { Log.Write($"cannot save settings: {e.Message}"); }
     }
 

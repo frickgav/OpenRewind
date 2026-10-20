@@ -751,9 +751,14 @@ On when you run `record` or `serve` from the terminal, or after **Settings → L
 
 Nothing the block list covers comes back: screenshots of a blocked app, a blocked site, a private
 window or a window or address with a blocked word are left out of `/search` (also `mode=meaning`),
-and `/frames/{id}` answers `404` for them, the same rule as Ask AI and AI apps. This includes
-screenshots saved before you blocked them. `/apps` leaves out blocked apps. Audio transcripts are
-not filtered by app (a clip has no app). The total in `pagination` counts only what can be shown.
+and `/frames/{id}` answers `404` for them, the same rule as Ask AI and AI apps. That includes
+screenshots saved before you blocked them, when the blocked app, site or window was the one in front.
+An older screenshot of another app can still show a blocked window behind it, and its text can
+include text from that window. `/apps` leaves out blocked apps. Audio transcripts are not filtered
+by app (a clip has no app). The `total` in `pagination` counts only what can be shown, on every page.
+
+If a search would have to skip more than 20,000 hidden screenshots, it stops there: `pagination`
+then has `"truncated": true`, and `total` counts only what comes before that point.
 
 | Route | What |
 |-------|------|
@@ -770,7 +775,7 @@ not filtered by app (a clip has no app). The total in `pagination` counts only w
 `score`, and leave out blocked apps and sites. A screen result is a moment: `timestamp` is where
 it starts and `text` is the moment's text.
 
-Response: `{"data":[{"type":"OCR","content":{"frame_id","text","timestamp","app_name","window_name","file_path","text_source"}},{"type":"Audio","content":{"chunk_id","transcription","timestamp","start_time","end_time","device_name","device_type"}}],"pagination":{"limit","offset","total"}}`
+Response: `{"data":[{"type":"OCR","content":{"frame_id","text","timestamp","app_name","window_name","file_path","text_source"}},{"type":"Audio","content":{"chunk_id","transcription","timestamp","start_time","end_time","device_name","device_type"}}],"pagination":{"limit","offset","total"}}` (plus `"truncated": true` when a search stopped early, see above)
 
 ## Encryption and App Lock
 

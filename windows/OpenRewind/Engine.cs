@@ -37,7 +37,7 @@ sealed class Engine
     /// While true the local server answers searches with "locked" (App Lock, see AppLock).
     public Func<bool>? ServerLocked;
     /// What the local server leaves out; null means Blocklist.Current, which the tray app keeps up to date.
-    /// `record` and `serve` in a terminal have no tray app, so they read Settings for each request (Program.cs).
+    /// `record` and `serve` in a terminal have no tray app, so they read settings.json for each request (Program.cs).
     public Func<Blocklist>? ServerBlocklist;
 
     public void StartServer()

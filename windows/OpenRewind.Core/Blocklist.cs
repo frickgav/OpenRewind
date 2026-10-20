@@ -66,6 +66,10 @@ public sealed class Blocklist
             .Concat(PrivateWindows ? new[] { "private" } : Array.Empty<string>())
             .Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList();
 
+    /// The blocked apps' ids and names in lower case (with OPENREWIND_EXCLUDE): the local server leaves
+    /// these out in SQL before HidesFrame checks each frame.
+    public IReadOnlyList<string> AppKeys => keys.Select(k => k.ToLowerInvariant()).Distinct().OrderBy(k => k, StringComparer.Ordinal).ToList();
+
     public bool BlocksApp(string? id, string? name) =>
         (!string.IsNullOrEmpty(id) && keys.Contains(id)) || (!string.IsNullOrEmpty(name) && keys.Contains(name));
 
