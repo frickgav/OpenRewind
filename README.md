@@ -83,6 +83,10 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
 - **Ask AI** (menu bar or tray → Ask AI…) answers questions like "what did I work on today?"
   with your own key: Anthropic, OpenAI, Gemini, OpenRouter (any model it offers), or any
   OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
+- **Insights** (menu bar or tray → Insights…) shows where your time went today or this week,
+  worked out on your computer without AI. See [Insights](#insights).
+- **Claude, Cursor and other AI apps** can search your history too, through MCP, once you turn
+  it on. See [Use with Claude and other AI apps (MCP)](#use-with-claude-and-other-ai-apps-mcp).
 
 ## Compress Older Recordings
 
@@ -139,12 +143,110 @@ back. Times in answers link back to that moment in the timeline. Each answer sho
 tokens it used and what they cost; the header shows the chat's total and AI Settings keeps a
 running total per provider. Prices are built in for Claude and GPT-6 models and come with
 OpenRouter's model list; for other models you can type the price. Lookups leave out every app,
-site and window on your block list, including anything saved before you blocked it; audio
+site and window on your block list, including anything saved before you blocked it (the activity
+summary still counts a blocked app's time, as "(blocked app)", without its name); audio
 transcripts are not filtered by app. Web links in an answer only open if you or a lookup
 supplied that address, so text on screen can't trick the AI into a link that sends your data
 elsewhere. With a local model (Ollama, LM Studio) nothing leaves your computer at all; a custom
 server reached over plain http on another network gets a warning, since your key would travel
 unencrypted.
+
+## Insights
+
+Open it from the menu bar or tray (**Insights…**). Switch between **Day** and **Week**, and use
+‹ › (or ← →) for the day or week before or after. It shows:
+
+- **Active time**: how long you used the computer, and the change from the day or week before
+  (up to the same time while the day or week is still going).
+- **Apps** and **Websites**: time in each, as bars, the top 10 and then "Other", each with the change
+  from the day or week before.
+- **When you were active**: a strip of the day's hours, or for a week a grid of days by hours.
+- **Focus sessions**: the longest stretches of 10 minutes or more mostly in one app (short looks at
+  another app, under a minute, don't break one).
+- **App switches**: how often the app in front changed while you were using the computer.
+
+Click an app to open the timeline showing only that app, at the first moment you used it that
+day or week. Click a website or a focus session to jump to it.
+
+Everything is worked out on your computer from what was saved with each screenshot (time, app,
+window title, address); nothing is sent anywhere and no AI is used. The window follows
+**Settings → Timeline Look**.
+
+**Blocked apps and sites.** Screenshots saved while a blocked app, window or site was in front are
+marked as blocked and left out entirely, as is anything that matches your block list now (by app
+name, window title or address). One gap: screenshots saved by an older version while a blocked
+*site* or *window* was in front kept only the browser's name, and ones from a helper app of a blocked
+app (Docker.app shows "Docker Desktop") kept the helper's name, so that older time can still show
+under the browser or the helper app. Block the helper's name too to hide it.
+
+**How time is counted.** Time counts from one screenshot to the next. A break of more than 2
+minutes (locked, asleep or paused) does not count. A screen whose text doesn't change only gets one
+screenshot a minute; after 5 minutes of that, the rest counts as away until something changes,
+unless speech was recorded at the time (a call or a video, with **Record Audio** on), which counts
+as being there. With audio recording off, a long call or video can count as away after 5
+minutes. If you record from the terminal with `--interval` of 50 seconds or more, every screenshot
+looks like a still screen and active time is undercounted; keep the interval under 50 seconds.
+Ask AI's activity summary counts every gap up to 2 minutes without the still-screen rule, so its
+totals can be a little higher than Insights'.
+
+The first launch after updating builds a database index for Insights in the background (seconds,
+or about a minute for a very large history on a slow disk). Until it is done, Insights still works,
+just more slowly.
+
+## Use with Claude and other AI apps (MCP)
+
+Claude Desktop, Claude Code, Cursor and other apps that support the
+[Model Context Protocol](https://modelcontextprotocol.io) can look things up in your history
+with the same lookups as Ask AI (the table above). Ask them "what was I reading about
+databases yesterday?" and they search OpenRewind on your computer.
+
+It is **off by default**. Turn on **Settings → Allow AI Apps to Read My History (MCP)**, then
+open **Settings → Connect AI Apps…**: it shows the setup for Claude Desktop, Claude Code and
+Cursor with this copy's path filled in, each with a **Copy** button. For Claude Desktop it looks
+like this (Mac path shown; on Windows it is the path of your `OpenRewind.exe`):
+
+```json
+{
+  "mcpServers": {
+    "openrewind": {
+      "command": "/Applications/OpenRewind.app/Contents/MacOS/OpenRewind",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+That goes in `~/Library/Application Support/Claude/claude_desktop_config.json` (Windows:
+`%APPDATA%\Claude\claude_desktop_config.json`); Cursor uses the same lines in `~/.cursor/mcp.json`.
+For Claude Code, run once:
+
+```bash
+claude mcp add --scope user openrewind /Applications/OpenRewind.app/Contents/MacOS/OpenRewind mcp
+```
+
+How it works:
+
+- The AI app starts `OpenRewind mcp` (Windows: `OpenRewind.exe mcp`, or `--mcp`) and talks to it
+  over stdin/stdout. It shows no icon or window, records nothing and never changes the database:
+  it opens it read-only, so it works whether or not OpenRewind is running.
+- Lookups are the same as in Ask AI and capped the same way. Blocked apps, sites and windows are
+  left out of screen text, searches and screenshots; in the activity summary a blocked app shows
+  only as "(blocked app)" with its time. **Audio transcripts are not filtered by app**, so a call
+  or video heard while a blocked app was open can show up in `search_audio`. One activity summary
+  covers at most 31 days. Screenshots are only shared when **Let AI look at screenshots** is on in
+  AI Settings.
+- Names you add with `OPENREWIND_EXCLUDE` are not applied here: the AI app starts OpenRewind with
+  its own environment. They are still never recorded; only frames saved before you added a name
+  can show up. Put apps on **Blocked Apps & Sites** to hide them everywhere.
+- Each moment comes with its exact local time (like `2026-10-18T14:30:05-07:00`), which the AI
+  can pass back to read more around it.
+- While the switch is off, the AI app still lists OpenRewind, but every lookup answers that you
+  need to turn it on. Turning it off takes effect on the next lookup.
+- What the AI app reads goes to that app's AI provider, like anything else you ask it.
+- Text on your screen (web pages, emails, messages) reaches the AI app as data. Unlike Ask AI,
+  OpenRewind cannot stop an AI app from opening a link or running a command that such text asks
+  for, and many AI apps (Claude Code, Cursor) can do both. OpenRewind tells the AI to treat it as
+  data only, but keep an eye on what it does with your history.
 
 ## Mac app
 
@@ -173,6 +275,7 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
   search only finds that app's screen text (and speech heard while it was in front).
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
+- **Insights…** shows where your time went today or this week (see [Insights](#insights)).
 - **Settings → Timeline Shortcut**: **Change Shortcut…** waits for the new key combination
   (⌘, ⌥ or ⌃ with a key, or an F-key alone); **Reset** goes back to ⌥⌘T.
 - **Settings → Screenshot Resolution**: Full (100%), High (75%), Medium (50%, default) or

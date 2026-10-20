@@ -101,6 +101,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         retention.start()
         video = VideoJob(db: engine.db, dataDir: engine.config.dataDir, enabled: defaults.bool(forKey: compressKey))
         video.start()
+        Database.buildSlowIndexesInBackground(path: engine.config.dbPath)
 
         // ⌥⌘T (or the shortcut picked in Settings) opens the timeline from anywhere.
         registerHotKey(Shortcut.load(defaults))
@@ -130,9 +131,27 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Where the time went; a click shows that app or moment in the timeline.
+    @objc private func showInsights() {
+        InsightsWindow.shared.show(db: engine.db) { [weak self] date, app in self?.overlay.show(at: date, app: app) }
+    }
+
     @objc private func showAISettings() {
         SetupWindows.shared.show("aiSettings", title: "AI Settings", size: NSSize(width: 560, height: 840)) {
             AISettingsView { [weak self] in self?.aiChat.reloadSettings() }
+        }
+    }
+
+    /// Turning it on shows how to add OpenRewind to each AI app.
+    @objc private func toggleMCP() {
+        MCPSetup.enabled.toggle()
+        log("AI apps (MCP) \(MCPSetup.enabled ? "allowed" : "not allowed")")
+        if MCPSetup.enabled { showConnectAIApps() }
+    }
+
+    @objc private func showConnectAIApps() {
+        SetupWindows.shared.show("mcp", title: "Connect AI Apps", size: NSSize(width: 620, height: 860), resizable: true) {
+            ConnectAIAppsView(home: engine.config.home)
         }
     }
 
@@ -179,6 +198,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(tl)
         menu.addItem(action("Search…", #selector(openSearch)))
         menu.addItem(action("Ask AI…", #selector(showAIChat)))
+        menu.addItem(action("Insights…", #selector(showInsights)))
         menu.addItem(action("Show Data Folder", #selector(openData)))
         for line in storageLines() {
             let i = NSMenuItem(title: "  " + line, action: nil, keyEquivalent: "")
@@ -301,6 +321,11 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         server.state = engine.serverOn ? .on : .off
         server.toolTip = "Search in the browser and let local scripts read your history through the API. Only this Mac can connect."
         m.addItem(server)
+        let mcp = action("Allow AI Apps to Read My History (MCP)", #selector(toggleMCP))
+        mcp.state = MCPSetup.enabled ? .on : .off
+        mcp.toolTip = "Let Claude, Cursor and other AI apps search your history on this Mac. Blocked apps and sites are left out of screen text; audio transcripts are not filtered by app. See Connect AI Apps for details."
+        m.addItem(mcp)
+        m.addItem(action("Connect AI Apps…", #selector(showConnectAIApps)))
         m.addItem(.separator())
 
         let auto = action("Download Updates Automatically", #selector(toggleAutoDownload))

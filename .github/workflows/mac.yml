@@ -2,9 +2,9 @@ name: Mac app
 
 on:
   push:
-    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", ".github/workflows/mac.yml"]
+    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", ".github/workflows/mac.yml"]
   pull_request:
-    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", ".github/workflows/mac.yml"]
+    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", ".github/workflows/mac.yml"]
   workflow_dispatch:
 
 permissions:
@@ -37,6 +37,18 @@ jobs:
       # Compress Older Recordings for real: encode made-up screenshots, read every frame back, delete, rewrite.
       - name: Video check
         run: OPENREWIND_HOME="$RUNNER_TEMP/openrewind-video-check" dist/OpenRewind.app/Contents/MacOS/OpenRewind video-check
+      # Start it as an AI app does (OpenRewind mcp, pipes for stdin/stdout) and talk MCP to it,
+      # with the Settings switch off, then on with an empty history.
+      - name: MCP check
+        run: |
+          export OPENREWIND_HOME="$RUNNER_TEMP/openrewind-mcp-home"
+          EXE=dist/OpenRewind.app/Contents/MacOS/OpenRewind
+          defaults delete ai.agilityresources.openrewind mcpEnabled 2>/dev/null || true
+          python3 scripts/mcp-check.py "$EXE" off
+          "$EXE" delete 15m
+          defaults write ai.agilityresources.openrewind mcpEnabled -bool true
+          python3 scripts/mcp-check.py "$EXE" on
+          defaults delete ai.agilityresources.openrewind mcpEnabled
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: OpenRewind-mac

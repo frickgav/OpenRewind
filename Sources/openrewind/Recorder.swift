@@ -134,7 +134,7 @@ final class Recorder {
         if list.blocksWindow(bundleID: app?.bundleIdentifier, appName: win.appName, path: app?.bundleURL?.path, title: win.windowName)
             || siteWindows.blocks(win.windowID, list) {
             _ = try ingest(image: image, window: ActiveWindow(appName: win.appName, windowName: "", pid: win.pid, windowID: win.windowID), pid: nil,
-                           display: shot.display)
+                           blocked: true, display: shot.display)
         } else {
             _ = try ingest(image: image, window: win, pid: win.pid, display: shot.display)
         }
@@ -167,7 +167,10 @@ final class Recorder {
     }
 
     /// Dedup, extract text, store snapshot, insert row. Returns the new frame id, or nil if skipped.
-    func ingest(image: CGImage, window: ActiveWindow, pid: pid_t?, display: String = "") throws -> Int64? {
+    /// `blocked`: a blocked window or site is in front (pass no pid, so its text is not read); the frame
+    /// is marked so Insights leaves it out. `display` names the screen (older frames of one screen go
+    /// into one video, see VideoCompactor).
+    func ingest(image: CGImage, window: ActiveWindow, pid: pid_t?, blocked: Bool = false, display: String = "") throws -> Int64? {
         let hash = ImageTools.dHash(image)
         let thumb = ImageTools.thumbnail(image)
         let key = window.appName + "\u{1F}" + window.windowName
@@ -211,7 +214,7 @@ final class Recorder {
 
         let id = try db.insert(Frame(id: 0, timestamp: ts, appName: window.appName, windowName: window.windowName,
                                      focused: true, snapshotPath: file.path, text: text, textSource: source,
-                                     hash: Int64(bitPattern: hash), browserUrl: url, display: display))
+                                     hash: Int64(bitPattern: hash), browserUrl: url, blocked: blocked, display: display))
         lastThumb = thumb; lastText = text; lastKey = key; lastWrite = Date()
         log("frame \(id) \(window.appName) — \(text.count) chars via \(source)")
         return id

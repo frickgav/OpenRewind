@@ -25,6 +25,16 @@ public sealed class AiTools
         return list.BlocksWindow(app, app, window) || list.BlocksUrl(url) || list.HasKeyword(url);
     }
 
+    /// One summary covers at most this many days, so a question about a whole year does not load
+    /// every frame of it (set for AI apps outside OpenRewind, see McpServer).
+    public int? MaxSummaryDays;
+
+    /// What the activity summary calls a blocked app: its time still counts, but not its name.
+    public const string BlockedAppLabel = "(blocked app)";
+
+    /// True when the app itself is on the block list (not just one of its windows or sites).
+    public bool BlocksAppName(string app) => (Blocked ?? Blocklist.Current).BlocksApp(app, app);
+
     /// Reads a frame's screenshot as a small JPEG. Set only while the user has turned on
     /// "Let AI look at screenshots"; null means view_screenshot is not offered at all.
     public Func<Frame, byte[]?>? Screenshots;
@@ -127,9 +137,18 @@ public sealed class AiTools
             case "activity_summary":
                 var start = AiTime.Parse(a["start"]) ?? DateTime.Now.Date.ToUniversalTime();
                 var end = AiTime.Parse(a["end"]) ?? DateTime.UtcNow;
-                // Time in a blocked app still counts, as on the timeline, but not its window titles or addresses.
-                var rows = db.ActivityRows(start, end).Select(r => Hides(r.App, r.Window, r.Url) ? r with { Window = "", Url = "" } : r).ToList();
-                out_ = AiActivity.Summary(rows, start, end);
+                var note = "";
+                if (MaxSummaryDays is int days && end - start > TimeSpan.FromDays(days))
+                {
+                    start = end.AddDays(-days);
+                    note = $"Only the last {days} days of that range are summarized. Ask again with an earlier end for older days.\n";
+                }
+                // Time in a blocked app still counts, as on the timeline, but not its name, window titles or addresses.
+                var rows = db.ActivityRows(start, end)
+                    .Select(r => Hides(r.App, r.Window, r.Url) ? r with { Window = "", Url = "" } : r)
+                    .Select(r => BlocksAppName(r.App) ? r with { App = BlockedAppLabel } : r)
+                    .ToList();
+                out_ = note + AiActivity.Summary(rows, start, end);
                 break;
             case "search_screen": out_ = SearchScreen(a); break;
             case "search_audio": out_ = SearchAudio(a); break;
@@ -272,8 +291,9 @@ public static class AiTime
     }
 }
 
-/// One row per saved frame, for the activity summary.
-public sealed record ActivityRow(DateTime Time, string App, string Window, string Url);
+/// One row per saved frame, for the activity summary and Insights. Blocked: saved while a blocked
+/// window or site was in front.
+public sealed record ActivityRow(DateTime Time, string App, string Window, string Url, bool Blocked = false);
 
 /// Turns frames into "time per app" and a timeline of what was in front.
 public static class AiActivity
@@ -355,8 +375,8 @@ public sealed partial class Database
     public Frame? FrameNear(DateTime t)
     {
         var iso = Time.Iso(t);
-        var before = Frames($"SELECT {Cols} FROM frames f WHERE f.timestamp <= ? ORDER BY f.timestamp DESC LIMIT 1", iso).FirstOrDefault();
-        var after = Frames($"SELECT {Cols} FROM frames f WHERE f.timestamp > ? ORDER BY f.timestamp ASC LIMIT 1", iso).FirstOrDefault();
+        var before = Frames($"SELECT {cols} FROM frames f WHERE f.timestamp <= ? ORDER BY f.timestamp DESC LIMIT 1", iso).FirstOrDefault();
+        var after = Frames($"SELECT {cols} FROM frames f WHERE f.timestamp > ? ORDER BY f.timestamp ASC LIMIT 1", iso).FirstOrDefault();
         double Gap(Frame? f) => f != null && Time.ParseIso(f.Timestamp) is DateTime d ? Math.Abs((d - t).TotalSeconds) : double.MaxValue;
         var best = Gap(before) <= Gap(after) ? before : after;
         return Gap(best) <= 600 ? best : null;
