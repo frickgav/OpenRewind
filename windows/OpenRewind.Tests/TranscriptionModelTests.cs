@@ -351,6 +351,69 @@ public class TranscriptionModelTests : IDisposable
         Assert.Empty(ParakeetMath.Windows(Array.Empty<float>()));
     }
 
+    /// Clip lengths around the 30 s window and the 80 ms slice each cut is scored on. A 30.01 s clip
+    /// used to read past the end of the audio (and crash the Mac app).
+    public static IEnumerable<object[]> WindowEdgeLengths() => new[]
+    {
+        0, 1, 16000 * 29 + 8000, 16000 * 30 - 1, 16000 * 30, 16000 * 30 + 1, 480160 /* 30.01 s */,
+        16000 * 30 + 320, 16000 * 30 + 639, 16000 * 30 + 640, 16000 * 30 + 641,
+        16000 * 30 + 1280, 16000 * 34, 16000 * 60, 16000 * 60 + 1, 960160 /* 60.01 s */, 1440160 /* 90.01 s */,
+    }.SelectMany(n => new[] { "silence", "tone", "noise" }.Select(kind => new object[] { n, kind }));
+
+    [Theory]
+    [MemberData(nameof(WindowEdgeLengths))]
+    public void WindowsCoverAnyLengthWithoutReadingPastTheEnd(int n, string kind)
+    {
+        var rng = new Random(n);
+        var samples = new float[n];
+        for (int i = 0; i < n; i++)
+            samples[i] = kind switch { "tone" => (float)(0.3 * Math.Sin(i * 0.05)), "noise" => (float)(rng.NextDouble() - 0.5), _ => 0 };
+        AssertGoodWindows(samples);
+    }
+
+    [Fact]
+    public void WindowCutsStayInsideTheSearchStretch()
+    {
+        const int Sec = 16000, Half = ParakeetMath.StepSamples / 2;
+        float[] ToneWithQuietAt(int n, int at)
+        {
+            var s = new float[n];
+            for (int i = 0; i < n; i++) s[i] = i >= at - Half && i < at + Half ? 0 : (float)(0.3 * Math.Sin(i * 0.05));
+            return s;
+        }
+        // Quiet right at the far edge of the 4 s search (26 s): the cut goes there.
+        Assert.Equal(26 * Sec, AssertGoodWindows(ToneWithQuietAt(31 * Sec, 26 * Sec))[0].Length);
+        // Quiet right at 30 s, and just enough audio after it to score that spot: cut at 30 s.
+        var w = AssertGoodWindows(ToneWithQuietAt(30 * Sec + Half, 30 * Sec));
+        Assert.Equal(30 * Sec, w[0].Length);
+        Assert.Equal(Half, w[1].Length);
+        // One sample short of that: 30 s cannot be scored, so the cut is a step earlier, not past the end.
+        w = AssertGoodWindows(ToneWithQuietAt(30 * Sec + Half - 1, 30 * Sec));
+        Assert.True(w[0].Length <= 30 * Sec - ParakeetMath.StepSamples);
+        // Quiet just past 26 s, out of reach: the cut still lands within the last 4 s.
+        w = AssertGoodWindows(ToneWithQuietAt(40 * Sec, 26 * Sec - ParakeetMath.StepSamples));
+        Assert.InRange(w[0].Length, 26 * Sec, 30 * Sec);
+    }
+
+    /// End to end, nothing left out or read twice; starts on encoder steps; at most 30 s; every cut in the last 4 s.
+    static List<(int Start, int Length)> AssertGoodWindows(float[] samples)
+    {
+        var windows = ParakeetMath.Windows(samples);
+        int next = 0;
+        for (int k = 0; k < windows.Count; k++)
+        {
+            var (start, length) = windows[k];
+            Assert.Equal(next, start);
+            Assert.Equal(0, start % ParakeetMath.StepSamples);
+            Assert.InRange(length, 1, ParakeetMath.MaxWindowSamples);
+            if (k < windows.Count - 1) Assert.True(length >= ParakeetMath.MaxWindowSamples - 4 * 16000);
+            next = start + length;
+        }
+        Assert.Equal(samples.Length, next);
+        if (samples.Length <= ParakeetMath.MaxWindowSamples) Assert.True(windows.Count == (samples.Length == 0 ? 0 : 1));
+        return windows;
+    }
+
     [Fact]
     public void TokensBecomeTimedLines()
     {

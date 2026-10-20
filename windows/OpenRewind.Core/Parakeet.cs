@@ -169,9 +169,14 @@ public static class ParakeetMath
         int n = samples.Length, start = 0;
         while (n - start > MaxWindowSamples)
         {
-            int end = start + MaxWindowSamples, best = end;
+            int end = start + MaxWindowSamples;
+            // Each candidate is scored on the 80 ms around it, which must be inside the audio: with
+            // less than 40 ms after the 30 s mark (a 30.01 s clip), the first candidate is a step earlier.
+            int top = end;
+            while (top + StepSamples / 2 > n) top -= StepSamples;
+            int best = top;
             double quietest = double.MaxValue;
-            for (int cut = end; cut >= end - CutSearchSamples; cut -= StepSamples)
+            for (int cut = top; cut >= end - CutSearchSamples; cut -= StepSamples)
             {
                 double energy = 0;
                 for (int i = cut - StepSamples / 2; i < cut + StepSamples / 2; i++) energy += (double)samples[i] * samples[i];
@@ -358,7 +363,7 @@ public static class ParakeetMath
         foreach (var line in lines)
         {
             var sp = line.LastIndexOf(' ');
-            if (sp <= 0 || !int.TryParse(line[(sp + 1)..], out var id)) continue;
+            if (sp <= 0 || !int.TryParse(line[(sp + 1)..], out var id) || id < 0) continue;
             map[id] = line[..sp];
         }
         var outArr = new string[map.Count == 0 ? 0 : map.Keys.Max() + 1];

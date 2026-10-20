@@ -57,6 +57,14 @@ if command == "selftest-encryption" {
     exit(problems.isEmpty ? 0 : 1)
 }
 
+// Hidden: checks Parakeet's 30 s audio windows on edge-case clip lengths, without the model (run by the Mac CI).
+if command == "parakeet-check" {
+    let problems = ParakeetMath.selfTest()
+    for p in problems { print("FAIL: \(p)") }
+    print(problems.isEmpty ? "parakeet check passed" : "parakeet check failed (\(problems.count))")
+    exit(problems.isEmpty ? 0 : 1)
+}
+
 let config = Config.load(arguments: args)
 // Hidden: writes a test GIF with the clip exporter's GIF encoder, for scripts/gif-check.py in CI.
 if command == "gif-check" {
