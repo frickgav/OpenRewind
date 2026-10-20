@@ -97,6 +97,10 @@ struct AITools {
                    parameters: schema(["start": timeArg("Start time."), "end": timeArg("End time."),
                                        "app": ["type": "string", "description": "Only this app (optional)."]],
                                       required: ["start", "end"])),
+        AIToolSpec(name: "list_meetings",
+                   description: "Meetings and calls found on this computer (Zoom, Teams, Google Meet, Webex, FaceTime, Slack huddles) between two times, with their summary, decisions and action items when they have notes. Use first for questions about meetings or calls, like 'what did we decide in my 2pm call'. For exactly what was said, use search_audio over the meeting's time range.",
+                   parameters: schema(["start": timeArg("Start time. Default: 7 days ago."),
+                                       "end": timeArg("End time. Default: now.")])),
     ]
 
     private static func schema(_ props: [String: Any], required: [String] = []) -> [String: Any] {
@@ -106,6 +110,10 @@ struct AITools {
     private static func timeArg(_ d: String) -> [String: Any] {
         ["type": "string", "description": d + " Local time like '2026-10-18 14:30', or 'today', 'yesterday', '2h ago'."]
     }
+
+    /// Whether web addresses in this lookup's answer may open from Ask AI's reply. Not for meeting
+    /// notes: a model wrote them from what other people said on a call.
+    static func suppliesLinks(_ tool: String) -> Bool { tool != "list_meetings" }
 
     /// A short line for the chat window: what was looked up.
     static func describe(_ call: AIToolCall) -> String {
@@ -120,6 +128,7 @@ struct AITools {
             return (q.isEmpty ? "Read transcripts" : "Searched audio for “\(q)”") + when
         case "search_by_meaning": return "Searched by meaning for “\((a["query"] as? String) ?? "")”" + when
         case "get_screen_text": return "Read screen text" + when
+        case "list_meetings": return "Listed meetings" + (range.isEmpty ? " from the last 7 days" : when)
         case "view_screenshot": return "Looked at the screenshot from \((a["time"] as? String) ?? "")"
         default: return call.name
         }
@@ -150,6 +159,8 @@ struct AITools {
             out = searchAudio(a)
         case "search_by_meaning":
             out = searchByMeaning(a)
+        case "list_meetings":
+            out = listMeetings(a)
         case "get_screen_text":
             guard let start = AITime.parse(a["start"]), let end = AITime.parse(a["end"]) else {
                 return "Error: start and end are required, e.g. '2026-10-18 14:00'."
@@ -231,6 +242,30 @@ struct AITools {
             return line + " (link: \(AITime.link(h.timestamp)))\n  " + (text.count > 300 ? String(text.prefix(300)) + "…" : text)
         }
         return "\(hits.count) closest moments, best first:\n" + lines.joined(separator: "\n")
+    }
+
+    private func listMeetings(_ a: [String: Any]) -> String {
+        let start = AITime.parse(a["start"]) ?? Date().addingTimeInterval(-7 * 86_400)
+        let end = AITime.parse(a["end"]) ?? Date()
+        // Calls the user said Not This Time to are not offered.
+        let rows = db.meetings(overlapping: start, to: end).filter { !$0.skipped && !MeetingDetector.hides(blocklist, $0) }
+        if rows.isEmpty { return "No meetings were found between \(AITime.label(start)) and \(AITime.label(end))." }
+        let shown = rows.suffix(30)
+        var out = "\(rows.count) meetings, showing \(shown.count) (oldest first, local time):\n"
+        func section(_ title: String, _ text: String) -> String {
+            "  \(title): " + (text.isEmpty ? "none" : "\n" + text.components(separatedBy: "\n").map { "    " + $0.trimmingCharacters(in: .whitespaces) }.joined(separator: "\n")) + "\n"
+        }
+        for m in shown {
+            out += "\n- \(AITime.label(m.start))–\(MeetingTranscript.clock(m.end)) \(m.app) — “\(m.name)” (link: openrewind://t/\(Int(m.start.timeIntervalSince1970)))"
+            if m.isLive { out += " — still going on" }
+            out += "\n"
+            if m.hasSummary {
+                out += section("Summary", m.summary) + section("Decisions", m.decisions) + section("Action items", m.actionItems)
+            } else {
+                out += "  No notes yet. To read what was said, call search_audio with start '\(AITime.label(m.start))' and end '\(AITime.label(m.end.addingTimeInterval(60)))'.\n"
+            }
+        }
+        return out
     }
 
     private func screenText(from start: Date, to end: Date, app: String?) -> String {

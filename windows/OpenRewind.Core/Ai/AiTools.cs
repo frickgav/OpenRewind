@@ -91,6 +91,9 @@ public sealed class AiTools
         new("get_screen_text",
             "The text that was on screen during a short time range (best under 30 minutes), sampled evenly and trimmed. Use to read details after a summary or search.",
             Schema(new() { ["start"] = TimeArg("Start time."), ["end"] = TimeArg("End time."), ["app"] = Str("Only this app (optional).") }, "start", "end")),
+        new("list_meetings",
+            "Meetings and calls found on this computer (Zoom, Teams, Google Meet, Webex, FaceTime, Slack huddles) between two times, with their summary, decisions and action items when they have notes. Use first for questions about meetings or calls, like 'what did we decide in my 2pm call'. For exactly what was said, use search_audio over the meeting's time range.",
+            Schema(new() { ["start"] = TimeArg("Start time. Default: 7 days ago."), ["end"] = TimeArg("End time. Default: now.") })),
     };
 
     static JsonObject Schema(Dictionary<string, JsonNode> props, params string[] required)
@@ -103,6 +106,10 @@ public sealed class AiTools
     static JsonObject Str(string d) => new() { ["type"] = "string", ["description"] = d };
     static JsonObject Int(string d) => new() { ["type"] = "integer", ["description"] = d };
     static JsonObject TimeArg(string d) => Str(d + " Local time like '2026-10-18 14:30', or 'today', 'yesterday', '2h ago'.");
+
+    /// Whether web addresses in this lookup's answer may open from Ask AI's reply. Not for meeting
+    /// notes: a model wrote them from what other people said on a call.
+    public static bool SuppliesLinks(string tool) => tool != "list_meetings";
 
     /// A short line for the chat window: what was looked up.
     public static string Describe(AiToolCall call)
@@ -118,6 +125,7 @@ public sealed class AiTools
             "search_audio" => (q.Length == 0 ? "Read transcripts" : $"Searched audio for “{q}”") + when,
             "search_by_meaning" => $"Searched by meaning for “{q}”{when}",
             "get_screen_text" => "Read screen text" + when,
+            "list_meetings" => "Listed meetings" + (range.Length == 0 ? " from the last 7 days" : when),
             "view_screenshot" => $"Looked at the screenshot from {S(a, "time")}",
             _ => call.Name,
         };
@@ -169,6 +177,7 @@ public sealed class AiTools
             case "search_screen": out_ = SearchScreen(a); break;
             case "search_audio": out_ = SearchAudio(a); break;
             case "search_by_meaning": out_ = SearchByMeaning(a); break;
+            case "list_meetings": out_ = ListMeetings(a); break;
             case "get_screen_text":
                 if (AiTime.Parse(a["start"]) is not DateTime s || AiTime.Parse(a["end"]) is not DateTime e)
                     return "Error: start and end are required, e.g. '2026-10-18 14:00'.";
@@ -244,6 +253,34 @@ public sealed class AiTools
             return line.Append($" (link: {AiTime.Link(h.Timestamp)})\n  {(text.Length > 300 ? text[..300] + "…" : text)}").ToString();
         });
         return $"{hits.Count} closest moments, best first:\n" + string.Join("\n", lines);
+    }
+
+    string ListMeetings(JsonObject a)
+    {
+        var start = AiTime.Parse(a["start"]) ?? DateTime.UtcNow.AddDays(-7);
+        var end = AiTime.Parse(a["end"]) ?? DateTime.UtcNow;
+        var list = Blocked ?? Blocklist.Current;
+        // Calls the user said Not This Time to are not offered.
+        var rows = db.MeetingsBetween(start, end).Where(m => !m.Skipped && !MeetingDetector.Hides(list, m)).ToList();
+        if (rows.Count == 0) return $"No meetings were found between {AiTime.Label(start)} and {AiTime.Label(end)}.";
+        var shown = rows.Skip(Math.Max(0, rows.Count - 30)).ToList();
+        var out_ = new StringBuilder($"{rows.Count} meetings, showing {shown.Count} (oldest first, local time):\n");
+        foreach (var m in shown)
+        {
+            out_.Append($"\n- {AiTime.Label(m.Start)}–{m.End.ToLocalTime():HH:mm} {m.App} — “{m.Name}” (link: {AiTime.Link(m.Start)})");
+            if (m.IsLive) out_.Append(" — still going on");
+            out_.Append('\n');
+            if (m.HasSummary)
+            {
+                out_.Append(Section("Summary", m.Summary)).Append(Section("Decisions", m.Decisions)).Append(Section("Action items", m.ActionItems));
+            }
+            else
+                out_.Append($"  No notes yet. To read what was said, call search_audio with start '{AiTime.Label(m.Start)}' and end '{AiTime.Label(m.End.AddMinutes(1))}'.\n");
+        }
+        return out_.ToString();
+
+        static string Section(string title, string text) =>
+            $"  {title}: " + (text.Length == 0 ? "none" : "\n" + string.Join("\n", text.Split('\n').Select(l => "    " + l.Trim()))) + "\n";
     }
 
     string ScreenText(DateTime start, DateTime end, string app)

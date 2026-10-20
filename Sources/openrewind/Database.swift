@@ -46,6 +46,7 @@ final class Database {
         try migrate()
         try migrateAudio()
         try migrateMeaning()
+        try migrateMeetings()
         finishHomeMove(home: path.deletingLastPathComponent())
     }
 
