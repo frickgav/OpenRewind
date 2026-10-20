@@ -47,6 +47,14 @@ enum RecordingFile {
     private static var lastLoadTry = Date.distantPast
     /// Held while a file is converted or deleted, so retention never races a conversion.
     static let fileGate = NSLock()
+    /// What the plain log may say about an app (or a call's times): nothing while Encrypt Recordings is
+    /// on, since the log is not encrypted.
+    static func forLog(_ s: String) -> String { encryptNew ? "(not logged while encrypted)" : s }
+
+    /// Held by a writer that decides "encrypted or plain?" and then puts a finished file in place (the
+    /// compactor's new videos). The migration takes it before its last look for new files, so a file
+    /// put in place with the old setting is always seen and converted, and none comes in after.
+    static let commitGate = NSLock()
 
     /// The master data key, once loaded from the Keychain or a recovery key. Nil = none.
     /// It stays in memory for the life of the process (recording needs it in the background); under
@@ -169,7 +177,7 @@ enum RecordingFile {
             guard let m = (try? fm.attributesOfItem(atPath: p))?[.modificationDate] as? Date, m < Date().addingTimeInterval(-600) else { continue }
             if (try? fm.removeItem(atPath: p)) != nil { removed += 1 }
         }
-        if removed > 0 { log("removed \(removed) leftover temporary audio files") }
+        if removed > 0 { log("removed \(removed) leftover temporary audio and video files") }
         return removed
     }
 
@@ -255,14 +263,14 @@ enum RecordingFile {
     static func keyOpens(_ path: String, key: Data) -> Bool { (try? read(path, key: key)) != nil }
 
     /// The first encrypted recording under `dir` (looks at no more than `limit` files), or nil.
-    static func firstEncrypted(in dir: URL, limit: Int = 5000) -> String? {
+    static func firstEncrypted(in dir: URL) -> String? {
+        // The whole tree, not a sample: a decrypt cut short can leave its encrypted files after any number
+        // of plain ones, and "none" decides whether the recovery key is asked for. Only the first bytes of
+        // each file are read, and it stops at the first encrypted one; it runs only when the key is missing.
         guard let e = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: [.isRegularFileKey]) else { return nil }
-        var n = 0
         for case let u as URL in e {
             guard (try? u.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true, !u.path.hasSuffix(tempSuffix) else { continue }
             if isEncrypted(path: u.path) { return u.path }
-            n += 1
-            if n >= limit { break }
         }
         return nil
     }
@@ -424,12 +432,17 @@ enum DataKeyStore {
             return .failed(s)
         case .missing:
             // A replacement that was cut short: the copy is under the second name.
-            if case .found(let k) = item(pendingAccount) {
+            switch item(pendingAccount) {
+            case .found(let k):
                 log("restoring the encryption key from its spare copy in the Keychain")
                 _ = replace(k)
                 return .found(k)
+            case .failed(let s):
+                // A spare that is there but can't be read is not "no key": making a new one would strand it.
+                return .failed(s)
+            case .missing:
+                return .missing
             }
-            return .missing
         }
     }
 
@@ -507,11 +520,13 @@ enum VaultMigration {
         let files = self.files(dataDir)
         var done = 0, total = files.count
         set((0, total, true))
+        var failedFiles: [String] = []
         func each(_ list: [String]) -> Bool {
             for f in list {
                 if cancelled() { return false }
                 do { if try RecordingFile.convert(f, key: key, encrypt: encrypt) { r.converted += 1 } } catch {
                     r.failed += 1
+                    failedFiles.append(f)
                     log("cannot \(encrypt ? "encrypt" : "decrypt") \((f as NSString).lastPathComponent): \(error.localizedDescription)")
                 }
                 done += 1
@@ -521,14 +536,28 @@ enum VaultMigration {
         }
         guard each(files) else { r.cancelled = true; return r }
         // A recording saved just as the switch flipped (it read the old setting) can land after the
-        // list above was made: look once more for files that were not on it.
+        // list above was made: look once more for files that were not on it. A video the compactor is
+        // putting in place right now is waited for (commitGate); later ones read the new setting.
+        RecordingFile.commitGate.lock(); RecordingFile.commitGate.unlock()
         let seen = Set(files)
         let late = self.files(dataDir).filter { !seen.contains($0) }
         total += late.count
         guard each(late) else { r.cancelled = true; return r }
+        // Files that failed (most often one being read or written at that moment): once more, a moment later.
+        if !failedFiles.isEmpty {
+            Thread.sleep(forTimeInterval: 2)
+            let again = failedFiles
+            failedFiles = []
+            r.failed -= again.count
+            total += again.count
+            guard each(again) else { r.cancelled = true; return r }
+        }
         log("\(encrypt ? "encrypted" : "decrypted") \(r.converted) recordings" + (r.failed > 0 ? ", \(r.failed) failed (tried again next launch)" : ""))
         return r
     }
+
+    /// The kinds of file OpenRewind records (stills, audio, videos). Nothing else under data/ is touched.
+    static let recordingExtensions: Set<String> = ["heic", "jpg", "jpeg", "png", "wav", "mp4", "mov"]
 
     /// Every recording under data/, after removing temp files left by a write that was cut short.
     private static func files(_ dir: URL) -> [String] {
@@ -545,6 +574,7 @@ enum VaultMigration {
                 if let m = v?.contentModificationDate, m < Date().addingTimeInterval(-60) { try? fm.removeItem(at: u) }
                 continue
             }
+            guard recordingExtensions.contains(u.pathExtension.lowercased()) else { continue }
             out.append(u.path)
         }
         return out.sorted()

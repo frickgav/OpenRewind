@@ -388,6 +388,21 @@ public class EncryptionTests : IDisposable
     }
 
     [Fact]
+    public void AnEncryptedFileAfterManyPlainOnesIsFound()
+    {
+        // A decrypt cut short: thousands of plain files, then one still encrypted. All of them are looked at.
+        var day = Path.Combine(config.DataDir, "2026-10-19");
+        Directory.CreateDirectory(day);
+        for (var i = 0; i < 6000; i++) File.WriteAllBytes(Path.Combine(day, $"a{i:D5}.jpg"), new byte[] { 0xFF, 0xD8, 0xFF });
+        Assert.Null(RecordingFile.FirstEncrypted(config.DataDir));
+        var later = Path.Combine(config.DataDir, "2026-10-20");
+        Directory.CreateDirectory(later);
+        var enc = Path.Combine(later, "z.jpg");
+        RecordingFile.Write(enc, Jpeg(100), encryptWith: key);
+        Assert.Equal(enc, RecordingFile.FirstEncrypted(config.DataDir));
+    }
+
+    [Fact]
     public void LeftoverPlainCopiesAreRemoved()
     {
         var tmp = Path.Combine(home, "tmp");

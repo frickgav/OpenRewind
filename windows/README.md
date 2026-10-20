@@ -123,7 +123,9 @@ on older recordings and on how time is counted). Click an app, site
   `OPENREWIND_EXCLUDE` adds more app names.
 - **Settings → Encryption & Lock → Encrypt Recordings** (off by default) encrypts screenshots,
   audio, compressed videos and the database (with the Journal, Meetings and the Search by Meaning
-  index) on disk. A video being shown is decrypted to a temp file only you can read while it is open.
+  index) on disk. A video being shown is decrypted to a temp file only you can read while it is in
+  use; it is deleted after 30 seconds unused, when the timeline closes, the app locks or quits, and
+  after each AI-app request.
   Exports (clips, Save Screenshot, Save as Markdown) are plain files you choose to make. The key is
   kept for your Windows account (DPAPI), so recording needs no password. It protects against someone copying the disk, a backup or the folder, and
   against other Windows accounts; not against programs running as you. Existing recordings are
@@ -133,7 +135,8 @@ on older recordings and on how time is counted). Click an app, site
   PC. AI apps (MCP) keep working: `OpenRewind.exe mcp` reads the key the same way.
 - **Settings → Encryption & Lock → Require Windows Hello to Open Timeline** (off by default) asks
   for your face, fingerprint or PIN before the timeline, search, Ask AI, Journal, Meetings, Insights,
-  moment links and deleting recordings. It locks again when the PC locks or sleeps, or after **Lock Again After**
+  moment links, deleting recordings, and turning AI apps on or Connect AI Apps…. AI apps (MCP) get
+  your history only while OpenRewind is running and unlocked. It locks again when the PC locks or sleeps, or after **Lock Again After**
   (15 minutes by default) with none of those windows in use, and closes them. Without Windows Hello
   your Windows password works instead. It does not stop programs running as you (they could edit
   `settings.json` or run `OpenRewind.exe serve`).

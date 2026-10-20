@@ -131,7 +131,14 @@ sealed class Encryption
         {
             try { await before; } catch { }
             if (c.IsCancellationRequested) return;
-            if (RecordingFile.Key is not byte[] key) { Log.Write("cannot convert recordings: the encryption key is not loaded"); return; }
+            if (RecordingFile.Key is not byte[] key)
+            {
+                // Decrypting with no key and nothing encrypted left: there is nothing to do, so it is done.
+                if (!encrypt && !engine.Db.IsEncrypted && RecordingFile.FirstEncrypted(engine.Config.DataDir) == null)
+                    ui?.Post(_ => { if (!settings.EncryptRecordings) { settings.EncryptionDone = true; settings.Save(); } }, null);
+                else Log.Write("cannot convert recordings: the encryption key is not loaded");
+                return;
+            }
             try
             {
                 var r = VaultMigration.Run(engine.Db, engine.Config.DataDir, key, encrypt, c.Token);

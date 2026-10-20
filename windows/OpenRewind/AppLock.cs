@@ -13,6 +13,7 @@ namespace OpenRewind;
 /// This guards against someone using the PC while you are away from it. It is not a wall against
 /// programs running as you: they could edit settings.json or run OpenRewind.exe serve themselves.
 /// When Windows Hello is not set up (any more), the Windows password works instead.
+/// The state is also written to the data folder (LockState), so the MCP server follows the lock too.
 sealed class AppLock
 {
     readonly Settings settings;
@@ -52,12 +53,32 @@ sealed class AppLock
         }
     }
 
-    /// Forget an earlier unlock without closing anything (turning the lock on asks once right away).
-    public void Forget() => Interlocked.Exchange(ref lastUsed, 0);
+    /// The data folder to write the lock state to (LockState), for the MCP server. Starts locked.
+    public string? StateHome
+    {
+        get => stateHome;
+        set { stateHome = value; Publish(); }
+    }
+    string? stateHome;
+
+    void Publish()
+    {
+        if (stateHome == null) return;
+        var t = Interlocked.Read(ref lastUsed);
+        LockState.Write(stateHome, t == 0 ? null : new DateTime(t, DateTimeKind.Utc), Environment.ProcessId);
+    }
+
+    /// Forget an earlier unlock without closing anything (turning the lock on asks once right away; quitting).
+    public void Forget()
+    {
+        Interlocked.Exchange(ref lastUsed, 0);
+        Publish();
+    }
 
     public void Lock()
     {
         Interlocked.Exchange(ref lastUsed, 0);
+        Publish();
         if (Enabled) Locked?.Invoke();
     }
 
@@ -90,7 +111,12 @@ sealed class AppLock
         finally { asking = false; }
     }
 
-    void Touch() { if (Enabled) Interlocked.Exchange(ref lastUsed, DateTime.UtcNow.Ticks); }
+    void Touch()
+    {
+        if (!Enabled) return;
+        Interlocked.Exchange(ref lastUsed, DateTime.UtcNow.Ticks);
+        Publish();
+    }
 
     /// Windows Hello can be used on this PC (it needs at least a PIN set up).
     public static async Task<bool> Available()

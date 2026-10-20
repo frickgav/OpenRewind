@@ -342,23 +342,29 @@ public sealed class VideoCompactor
 
     /// Encode to a temp file, check it reads back, move it into place. Null when any of that failed
     /// (nothing is left behind and the stills are untouched). With Encrypt Recordings on, the video is made
-    /// in the user's temp folder (never as a plain file under data/) and saved encrypted.
+    /// in the user's temp folder (never as a plain file under data/) and saved encrypted. Whether to encrypt
+    /// is decided again when the video is put in place, under RecordingFile.CommitGate: Encrypt Recordings
+    /// may have been switched while it was being made, and the migration may have finished meanwhile.
     VideoSegment? Write(string path, List<FrameSource> sources, int w, int h, Func<string, long, VideoSegment> make)
     {
-        var encrypt = RecordingFile.EncryptNew;
-        var tmp = encrypt ? Path.Combine(Path.GetTempPath(), $"{RecordingFile.TempCopyPrefix}{Guid.NewGuid():N}.mp4") : Compaction.TempPath(path);
+        var madeOutside = RecordingFile.EncryptNew;
+        var tmp = madeOutside ? Path.Combine(Path.GetTempPath(), $"{RecordingFile.TempCopyPrefix}{Guid.NewGuid():N}.mp4") : Compaction.TempPath(path);
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             var name = codec.Write(sources, w, h, tmp);
             if (!codec.Verify(tmp, sources, w, h)) throw new IOException("the new video did not read back like the pictures");
             codec.Release(tmp);
-            if (encrypt)
+            lock (RecordingFile.CommitGate)
             {
-                RecordingFile.Write(path, File.ReadAllBytes(tmp));
-                Delete(tmp);
+                if (RecordingFile.EncryptNew || madeOutside)
+                {
+                    // Encrypted or not by the setting now, written atomically under data/.
+                    RecordingFile.Write(path, File.ReadAllBytes(tmp));
+                    Delete(tmp);
+                }
+                else File.Move(tmp, path);
             }
-            else File.Move(tmp, path);
             AfterStep?.Invoke("written");
             return make(name, Size(path));
         }

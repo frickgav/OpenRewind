@@ -80,18 +80,47 @@ public sealed partial class Database
         catch (DatabaseLockedException) { return false; }
     }
 
-    /// A switch that was cut short between its two renames: put the original back.
+    /// The files that go with a database in WAL mode: its newest changes can still be in the -wal.
+    static readonly string[] WalSuffixes = { "-wal", "-shm" };
+
+    /// A switch that was cut short between its two renames: put the original back, with its WAL.
     static void RecoverSwap(string path)
     {
         var old = path + ".old";
-        if (!File.Exists(path) && File.Exists(old)) File.Move(old, path);
-        foreach (var f in new[] { path + ".converting", path + ".converting-journal", old })
+        if (!File.Exists(path) && File.Exists(old))
+        {
+            File.Move(old, path);
+            foreach (var s in WalSuffixes) if (File.Exists(old + s)) File.Move(old + s, path + s, overwrite: true);
+        }
+        foreach (var f in new[] { path + ".converting", path + ".converting-journal", old, old + "-wal", old + "-shm" })
             if (File.Exists(f) && File.Exists(path)) File.Delete(f);
+    }
+
+    /// Tries at writing the WAL into the database file before a switch; a reader in another process
+    /// (the MCP server, a CLI) can hold part of it back for a moment.
+    public static int CheckpointTries = 10;
+    /// Test hook: runs just before the new file is moved into place.
+    public static Action<string>? BeforeSwapIn;
+
+    /// Write the WAL into the database file. True when all of it went in.
+    bool Checkpoint()
+    {
+        for (var i = 1; ; i++)
+        {
+            using (var c = Cmd("PRAGMA wal_checkpoint(TRUNCATE);"))
+            using (var r = c.ExecuteReader())
+            {
+                // busy, frames in the WAL, frames written into the database (-1, -1 when not in WAL mode).
+                if (r.Read() && r.GetInt64(0) == 0 && r.GetInt64(1) == r.GetInt64(2)) return true;
+            }
+            if (i >= CheckpointTries) return false;
+            Thread.Sleep(500);
+        }
     }
 
     /// Antivirus, the search indexer, backup tools or the MCP server can hold the file for a moment,
     /// and Windows does not rename a file someone has open. Try a few times before giving up.
-    internal static int MoveAttempts = 6;
+    public static int MoveAttempts = 6;
 
     static void Move(string from, string to)
     {
@@ -135,7 +164,9 @@ public sealed partial class Database
         var next = path + ".converting";
         var old = path + ".old";
         foreach (var f in new[] { next, next + "-journal", next + "-wal", next + "-shm" }) if (File.Exists(f)) File.Delete(f);
-        Exec("PRAGMA wal_checkpoint(TRUNCATE);");
+        // The export below reads through the WAL either way; when part of it stays behind, the WAL is kept
+        // with the original until the new file is in place, so a failed swap loses nothing.
+        if (!Checkpoint()) Log.Write("the database is open in another program; its newest changes stay in its WAL until the switch is done");
         using (var attach = Cmd("ATTACH DATABASE ? AS conv KEY ?", next, key == null ? "" : KeyLiteral(key))) attach.ExecuteNonQuery();
         try
         {
@@ -158,10 +189,21 @@ public sealed partial class Database
         try
         {
             Move(path, old);
-            foreach (var f in new[] { path + "-wal", path + "-shm" }) try { File.Delete(f); } catch (IOException) { }
-            try { Move(next, path); swapped = true; }
-            catch { Move(old, path); throw; }
-            try { File.Delete(old); } catch (IOException) { }
+            // The WAL goes with the original: it is the original's, and may hold changes not in it yet.
+            foreach (var s in WalSuffixes) if (File.Exists(path + s)) Move(path + s, old + s);
+            try
+            {
+                BeforeSwapIn?.Invoke(next);
+                Move(next, path);
+                swapped = true;
+            }
+            catch
+            {
+                Move(old, path);
+                foreach (var s in WalSuffixes) if (File.Exists(old + s)) Move(old + s, path + s);
+                throw;
+            }
+            foreach (var f in new[] { old, old + "-wal", old + "-shm" }) try { File.Delete(f); } catch (IOException) { }
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
@@ -171,7 +213,13 @@ public sealed partial class Database
         finally
         {
             // Open whichever file is in place, so the app keeps working even if the swap failed.
-            if (!File.Exists(path) && File.Exists(old)) try { Move(old, path); } catch (IOException) { }
+            if (!File.Exists(path) && File.Exists(old))
+                try
+                {
+                    Move(old, path);
+                    foreach (var s in WalSuffixes) if (File.Exists(old + s)) Move(old + s, path + s);
+                }
+                catch (IOException) { }
             conn = Connect(path, swapped ? key : before);
             Exec("PRAGMA journal_mode=WAL;");
             Exec("PRAGMA busy_timeout=5000;");
@@ -214,6 +262,7 @@ public static class VaultMigration
             var files = Files(dataDir);
             Done = 0; Total = files.Count;
             int converted = 0, failed = 0;
+            var failedFiles = new List<string>();
             bool Each(IEnumerable<string> list)
             {
                 foreach (var f in list)
@@ -223,6 +272,7 @@ public static class VaultMigration
                     catch (Exception e)
                     {
                         failed++;
+                        failedFiles.Add(f);
                         Log.Write($"cannot {(encrypt ? "encrypt" : "decrypt")} {Path.GetFileName(f)}: {e.Message}");
                     }
                     Done++;
@@ -232,16 +282,35 @@ public static class VaultMigration
             }
             if (!Each(files)) return new Result(converted, failed, true);
             // A recording saved just as the switch flipped (it read the old setting) can land after
-            // the list above was made: look once more at anything written since.
+            // the list above was made: look once more at anything written since. A video the compactor is
+            // putting in place right now is waited for (CommitGate); later ones read the new setting.
+            lock (RecordingFile.CommitGate) { }
             var seen = files.ToHashSet(StringComparer.Ordinal);
             var late = Files(dataDir).Where(f => !seen.Contains(f)).ToList();
             Total += late.Count;
             if (!Each(late)) return new Result(converted, failed, true);
+            // Files that failed (most often one another process had open, which Windows can't replace):
+            // once more, a moment later.
+            if (failedFiles.Count > 0)
+            {
+                if (ct.WaitHandle.WaitOne(TimeSpan.FromSeconds(RetryDelaySeconds))) return new Result(converted, failed, true);
+                var again = failedFiles.ToList();
+                failedFiles.Clear();
+                failed -= again.Count;
+                Total += again.Count;
+                if (!Each(again)) return new Result(converted, failed, true);
+            }
             Log.Write($"{(encrypt ? "encrypted" : "decrypted")} {converted} recordings" + (failed > 0 ? $", {failed} failed (tried again next launch)" : ""));
             return new Result(converted, failed, false);
         }
         finally { Running = false; }
     }
+
+    /// Seconds to wait before the files that failed are tried once more (tests make it 0).
+    public static double RetryDelaySeconds = 2;
+
+    /// The kinds of file OpenRewind records (stills, audio, videos). Nothing else under data/ is touched.
+    public static readonly HashSet<string> RecordingExtensions = new(StringComparer.OrdinalIgnoreCase) { ".heic", ".jpg", ".jpeg", ".png", ".wav", ".mp4", ".mov" };
 
     /// Every recording under data/, after removing temp files left by a write that was cut short.
     static List<string> Files(string dataDir)
@@ -253,7 +322,8 @@ public static class VaultMigration
         foreach (var t in all.Where(IsTemp))
             try { if (File.GetLastWriteTimeUtc(t) < DateTime.UtcNow.AddMinutes(-1)) File.Delete(t); } catch { }
         // A video the compactor is still writing: it checks it and moves it into place (or deletes it) itself.
-        return all.Where(f => !IsTemp(f) && !f.EndsWith(Compaction.TempSuffix, StringComparison.OrdinalIgnoreCase))
+        return all.Where(f => !IsTemp(f) && !f.EndsWith(Compaction.TempSuffix, StringComparison.OrdinalIgnoreCase)
+                              && RecordingExtensions.Contains(Path.GetExtension(f)))
                   .OrderBy(f => f, StringComparer.Ordinal).ToList();
     }
 }

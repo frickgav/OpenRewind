@@ -85,6 +85,13 @@ static class Program
         var startSettings = Settings.Load(config.Home);
         var encrypt = startSettings.EncryptRecordings;
         var key = DataKeyStore.Load(config.Home);
+        // A switch off with nothing encrypted left: it is done, carry on without a key.
+        if (key == null && !encrypt && !startSettings.EncryptionDone && !Database.IsEncryptedFile(config.DbPath)
+            && RecordingFile.FirstEncrypted(config.DataDir) == null)
+        {
+            startSettings.EncryptionDone = true;
+            startSettings.Save();
+        }
         if (key == null && (encrypt || !startSettings.EncryptionDone || Database.IsEncryptedFile(config.DbPath)))
         {
             if (command == "app") key = Encryption.AskForRecoveryKey(config);
@@ -97,7 +104,8 @@ static class Program
         RecordingFile.Key = key;
         RecordingFile.EncryptNew = encrypt && key != null;
         RecordingFile.KeyLoader = () => DataKeyStore.Load(config.Home);
-        if (command == "app") RecordingFile.CleanTempCopies();
+        // Decrypted copies (audio for whisper-cli, videos being shown) left behind by a crash or kill.
+        if (command is "app" or "record" or "serve") RecordingFile.CleanTempCopies();
         // Encrypt Recordings switched: close a video before its file is replaced (Windows can't replace an open file).
         RecordingFile.BeforeConvert = p => { if (p.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)) FrameImages.Release(p); };
 

@@ -793,7 +793,8 @@ history), and it needs free disk space for a second copy of the database.
   on the disk until it reuses the space. Turn it on before you record anything sensitive, or delete
   the older backups.
 - **The log** (`~/.openrewind/openrewind.log`) is a plain file. With encryption on it no longer
-  names the app of each saved frame; earlier lines (from before it was on) still do.
+  names the app of each saved frame or meeting, or a meeting's times; earlier lines (from before it
+  was on) still do.
 - **Recovery key:** **Export Recovery Key…** saves the key as a text file (72 characters in 9 groups)
   that only you can read. OpenRewind offers to save it when you turn encryption on. If the Keychain
   or your Windows account is reset, or you move your recordings to another computer, OpenRewind asks
@@ -806,15 +807,18 @@ history), and it needs free disk space for a second copy of the database.
   seconds it takes, deleted right after.
 - Compressed videos: the video player reads files, so a video being shown (timeline, search, clip
   export, AI screenshots) is decrypted to a file in your temp folder that only you can read, while it
-  is open, and deleted when it is closed. A new video is made in the temp folder and saved into
-  `data/video` encrypted; no plain video is written under `data/`. Copies left by a crash are removed
-  at the next launch.
+  is in use. It is closed and deleted after 30 seconds unused, when the timeline closes or the app
+  locks or quits, and after each AI-app (MCP) request. A new video is made in the temp folder and
+  saved into `data/video` encrypted; no plain video is written under `data/`. Copies left by a crash
+  are removed when the app, `record`, `serve` or `mcp` next starts, and on each pass of Compress
+  Older Recordings.
 - Exports are plain on purpose: a clip (GIF or video), Save Screenshot, Live Text, and the Journal's
   and Meetings' Copy and Save as Markdown write ordinary files where you choose, for you to share.
 - The Search by Meaning model files are not encrypted: they are the public all-MiniLM-L6-v2 model,
   not your data. Its index of your history is in the encrypted database.
 - AI apps (MCP) keep working with encryption on: `OpenRewind mcp` reads the key the same way the app
-  does (Keychain or DPAPI) and opens the database read-only.
+  does (Keychain or DPAPI) and opens the database read-only. With the App Lock on, they follow it (see
+  below).
 - Files (format version 2): an encrypted file is `ORENC`, the version, a key id (4 bytes), a 12-byte
   nonce, the encrypted data and a 16-byte tag. The file key and the database key are both derived
   from the one key you can export (HKDF-SHA256, salt `OpenRewind`, info `openrewind/files/v2` and
@@ -842,7 +846,10 @@ changing how long they are kept. Recording keeps going while locked. An unlock l
 locks or the computer sleeps, or until **Lock Again After** has passed with none of those windows in
 use (5 minutes, 15 minutes (default), 1 hour, or only when the screen locks); then they close. While
 locked, the Local Search Server answers `423 Locked` for search, screenshots and audio, and `/health`
-says only that it is running. Windows Hello needs at least a PIN; without it (or after it is removed)
+says only that it is running. AI apps (MCP) follow the lock too: with it on, they get your history
+only while OpenRewind is running and unlocked (within **Lock Again After** of its last use), and
+otherwise get a message saying it is locked. Turning AI apps on or off and **Connect AI Apps…** ask
+for the unlock first. Windows Hello needs at least a PIN; without it (or after it is removed)
 your Windows password works instead, so you can always turn the lock off. A Mac needs a login password.
 
 The lock is against someone using your computer while you are away from it, not against programs

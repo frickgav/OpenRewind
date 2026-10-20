@@ -15,12 +15,17 @@ static class McpCommand
         // Encrypt Recordings: the key comes from DPAPI, the same as in the app (this is the same
         // Windows user). Screenshots are read through RecordingFile, which decrypts them.
         RecordingFile.KeyLoader = () => DataKeyStore.Load(config.Home);
+        // Decrypted copies of videos a killed MCP process left behind.
+        RecordingFile.CleanTempCopies();
         McpMeaning? meaning = null;
 
         McpState State()
         {
             var settings = Settings.Load(config.Home);
             if (!settings.McpEnabled) return new McpState(false, null);
+            // App Lock: history only while the app runs and is unlocked (fails closed, see LockState).
+            if (settings.RequireUnlock && !LockState.IsUnlocked(config.Home, settings.LockAfterMinutes, DateTime.UtcNow, LockState.ProcessRunning))
+                return new McpState(true, null, LockState.LockedMessage);
             if (db == null)
             {
                 if (!File.Exists(config.DbPath))
@@ -54,7 +59,14 @@ static class McpCommand
         // Open the database for each message and close it after, so the app can convert it (Encrypt
         // Recordings) while the AI app keeps this process running: Windows can't rename an open file.
         // The Search by Meaning model stays loaded; it is bound to each new open (McpMeaning).
-        new McpServer(Updater.Current, State) { AfterMessage = () => { db?.Dispose(); db = null; } }.Run(input, output);
+        new McpServer(Updater.Current, State) { AfterMessage = () =>
+        {
+            db?.Dispose();
+            db = null;
+            // No decrypted video copy outlives the message (Delete Recordings in the app can't reach them).
+            FrameImages.ReleaseAll();
+        } }.Run(input, output);
+        FrameImages.ReleaseAll();
         meaning?.Dispose();
         db?.Dispose();
         return 0;

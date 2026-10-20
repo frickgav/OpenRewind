@@ -51,7 +51,7 @@ if args.contains("-h") || args.contains("--help") || command == "help" {
 
 // Checks the file format and SQLCipher against the vectors the Windows tests use (run by the Mac CI).
 if command == "selftest-encryption" {
-    let problems = RecordingFile.selfTest()
+    let problems = RecordingFile.selfTest() + LockState.selfTest()
     for p in problems { print("FAIL: \(p)") }
     print(problems.isEmpty ? "encryption self-test passed" : "encryption self-test failed (\(problems.count))")
     exit(problems.isEmpty ? 0 : 1)
@@ -68,11 +68,11 @@ if command == "connect-check" {
     guard let path = args.filter({ !$0.hasPrefix("-") }).dropFirst().first else { print("usage: openrewind connect-check <empty folder>"); exit(2) }
     exit(MCPConnectCheck.run(in: URL(fileURLWithPath: path)) ? 0 : 1)
 }
+// Decrypted copies (audio handed to Whisper, videos being shown) left behind by a crash or kill.
+if ["app", "record", "serve", "mcp"].contains(command) { RecordingFile.cleanTempCopies() }
 // Started by an AI app with stdin/stdout as pipes: no menu bar icon, no recording, read-only.
 if command == "mcp" { MCPServer.serveStdio(config: config) }
 if command == "app" { openLogFile(in: config.home) }
-// Plain copies of encrypted audio handed to Whisper, left behind by a crash.
-if command == "app" || command == "record" { RecordingFile.cleanTempCopies() }
 let db: Database
 do {
     // Encrypt Recordings: load the data key before the database, which may be encrypted with it.

@@ -41,6 +41,14 @@ public static class RecordingFile
 
     /// Held while a file is converted or deleted, so retention never races a conversion.
     public static readonly object FileGate = new();
+    /// What the plain log may say about an app (or a call's times): nothing while Encrypt Recordings is
+    /// on, since the log is not encrypted.
+    public static string ForLog(string s) => EncryptNew ? "(not logged while encrypted)" : s;
+
+    /// Held by a writer that decides "encrypted or plain?" and then puts a finished file in place (the
+    /// compactor's new videos). The migration takes it before its last look for new files, so a file put
+    /// in place with the old setting is always seen and converted, and none comes in after.
+    public static readonly object CommitGate = new();
     /// Called before a file is converted (Encrypt Recordings switched): the app closes a video it has
     /// open, since Windows can't replace a file that is open.
     public static Action<string>? BeforeConvert;
@@ -265,10 +273,13 @@ public static class RecordingFile
     }
 
     /// The first encrypted recording under `dataDir` (looks at no more than `limit` files), or null.
-    public static string? FirstEncrypted(string dataDir, int limit = 5000)
+    public static string? FirstEncrypted(string dataDir)
     {
+        // The whole tree, not a sample: a decrypt cut short can leave its encrypted files after any number
+        // of plain ones, and "none" decides whether the recovery key is asked for. Only the first bytes of
+        // each file are read, and it stops at the first encrypted one; it runs only when the key is missing.
         if (!Directory.Exists(dataDir)) return null;
-        foreach (var f in Directory.EnumerateFiles(dataDir, "*", SearchOption.AllDirectories).Take(limit))
+        foreach (var f in Directory.EnumerateFiles(dataDir, "*", SearchOption.AllDirectories))
         {
             if (f.EndsWith(TempSuffix)) continue;
             try { if (IsEncrypted(f)) return f; } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }

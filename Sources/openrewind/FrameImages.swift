@@ -13,7 +13,9 @@ import VideoToolbox
 /// A decode holds only its own video's lock, so cached frames and other videos are served meanwhile.
 /// With Encrypt Recordings on, stills and videos are encrypted files: a still is decrypted in memory, and
 /// a video (which AVFoundation reads from a file) is decrypted to a private temp file (0600) for as long
-/// as it is open here, then deleted. Windows has the same in FrameImages.cs.
+/// as it is open here, then deleted. A video is closed after 30 s without use, and every video is closed
+/// when the timeline hides, the app locks or quits, and after each MCP message (releaseAll), so decrypted
+/// copies don't sit in the temp folder. Windows has the same in FrameImages.cs.
 final class FrameImages {
     static let shared = FrameImages()
     private static let cacheBytes = 256 << 20
@@ -24,12 +26,24 @@ final class FrameImages {
         let generator: AVAssetImageGenerator
         let lock = NSLock()
         private let plainCopy: String?
+        private var touched = Date()
         init(_ path: String) {
             plainCopy = FrameImages.plainCopy(path)
             generator = FrameImages.generator(plainCopy ?? path)
         }
         deinit { if let plainCopy { try? FileManager.default.removeItem(atPath: plainCopy) } }
+
+        /// Keeps the copy's modification time fresh while it is in use (call under `lock`), so the temp
+        /// cleanup in another OpenRewind process, which spares copies changed in the last 10 minutes, leaves it.
+        func touch() {
+            guard let plainCopy, Date().timeIntervalSince(touched) > 60 else { return }
+            touched = Date()
+            try? FileManager.default.setAttributes([.modificationDate: touched], ofItemAtPath: plainCopy)
+        }
     }
+
+    /// How long a video stays open without use.
+    static let idleClose: TimeInterval = 30
 
     /// For an encrypted video, a decrypted copy in the temp folder (only this user can read it); nil for a
     /// plain one, or when it can't be decrypted (the decode then fails and says so).
@@ -63,6 +77,34 @@ final class FrameImages {
     private let videos = Lru<String, Video>(capacity: 4)
     /// Goes up on every release: a decode that ran across one doesn't cache what it got.
     private var releases = 0
+    /// When each open video was last read (for the idle close).
+    private var lastUse: [String: Date] = [:]
+    private let idleTimer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+
+    init() {
+        idleTimer.schedule(deadline: .now() + 10, repeating: 10)
+        idleTimer.setEventHandler { [weak self] in self?.closeIdle() }
+        idleTimer.resume()
+    }
+
+    /// Close videos not read for `idleClose` (their decrypted copies are deleted with them).
+    func closeIdle(now: Date = Date()) {
+        lock.lock(); defer { lock.unlock() }
+        let idle = Set(lastUse.filter { now.timeIntervalSince($0.value) >= Self.idleClose }.keys)
+        guard !idle.isEmpty else { return }
+        videos.removeAll { idle.contains($0) }
+        for p in idle { lastUse[p] = nil }
+    }
+
+    /// Close every video and drop every decoded frame: the timeline hid, the app locked or is quitting,
+    /// or an MCP message was answered. No decrypted copy of a video is left behind.
+    func releaseAll() {
+        lock.lock(); defer { lock.unlock() }
+        releases += 1
+        videos.removeAll { _ in true }
+        frames.removeAll { _ in true }
+        lastUse = [:]
+    }
 
     /// The picture of frame `id`. A list of frames can be older than the database: the compactor may have moved
     /// the frame into a video (and deleted the still) or written its video again under a new name since. When the
@@ -88,10 +130,12 @@ final class FrameImages {
             video = Video(f.videoPath)
             videos.set(f.videoPath, video)
         }
+        lastUse[f.videoPath] = Date()
         let seen = releases
         lock.unlock()
 
         video.lock.lock()
+        video.touch()
         let img = Self.frame(video.generator, at: CMTime(seconds: f.videoTime, preferredTimescale: 600))
         video.lock.unlock()
 
@@ -143,6 +187,7 @@ final class FrameImages {
         lock.lock(); defer { lock.unlock() }
         releases += 1
         videos.removeAll { $0 == videoPath }
+        lastUse[videoPath] = nil
         let prefix = videoPath + "#"
         frames.removeAll { $0.hasPrefix(prefix) }
     }
@@ -484,6 +529,9 @@ final class VideoJob {
         running = true
         state.unlock()
         queue.async { [self] in
+            // Decrypted copies (audio for Whisper, videos) a crash left behind: not only at launch, as the
+            // app can run for weeks.
+            RecordingFile.cleanTempCopies()
             while true {
                 let compress = enabled && codec.usable != nil
                 let r = compactor.runOnce(compress: compress, now: Date(), keepGoing: { !self.isStopping }, keepCompressing: { self.enabled })

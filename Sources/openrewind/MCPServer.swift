@@ -230,6 +230,8 @@ struct MCPServer {
         var embedder: AppleEmbedder?
         let state: () -> MCPState = {
             guard MCPSetup.enabled else { return MCPState(enabled: false) }
+            // App Lock: history only while the app runs and is unlocked (fails closed, see LockState).
+            guard LockState.allowsAIApps(home: config.home) else { return MCPState(enabled: true, problem: LockState.lockedMessage) }
             if db == nil {
                 guard FileManager.default.fileExists(atPath: config.dbPath.path) else {
                     return MCPState(enabled: true, problem: "OpenRewind has not recorded anything yet (no history in \(config.home.path)). Open OpenRewind and let it record first.")
@@ -271,7 +273,11 @@ struct MCPServer {
         }
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
         log("mcp: OpenRewind \(version) serving \(config.home.path)")
-        MCPServer(version: version, state: state, afterMessage: { db = nil; meaning = nil }).run()
+        MCPServer(version: version, state: state, afterMessage: {
+            db = nil; meaning = nil
+            // No decrypted video copy outlives the message (Delete Recordings in the app can't reach them).
+            FrameImages.shared.releaseAll()
+        }).run()
         exit(0)
     }
 }

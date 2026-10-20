@@ -91,6 +91,8 @@ final class OverlayController {
         _ = model.clearTextSelection()
         model.tutorialStep = nil
         if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
+        // Close the videos it read, so no decrypted copy stays in the temp folder while it is hidden.
+        DispatchQueue.global(qos: .utility).async { FrameImages.shared.releaseAll() }
         guard let p = panel else { return }
         NSAnimationContext.runAnimationGroup({ $0.duration = 0.12; p.animator().alphaValue = 0 }) {
             p.orderOut(nil)

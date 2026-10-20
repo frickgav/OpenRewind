@@ -76,14 +76,39 @@ extension Database {
         return true
     }
 
-    /// A switch that was cut short between its two renames: put the original back.
+    /// The files that go with a database in WAL mode: its newest changes can still be in the -wal.
+    private static let walSuffixes = ["-wal", "-shm"]
+
+    /// A switch that was cut short between its two renames: put the original back, with its WAL.
     static func recoverSwap(_ url: URL) {
         let fm = FileManager.default
         let p = url.path, old = p + ".old"
-        if !fm.fileExists(atPath: p) && fm.fileExists(atPath: old) { _ = rename(old, p) }
-        for f in [p + ".converting", p + ".converting-journal", old] where fm.fileExists(atPath: f) && fm.fileExists(atPath: p) {
+        if !fm.fileExists(atPath: p) && fm.fileExists(atPath: old) {
+            _ = rename(old, p)
+            for s in walSuffixes where fm.fileExists(atPath: old + s) { _ = rename(old + s, p + s) }
+        }
+        for f in [p + ".converting", p + ".converting-journal", old, old + "-wal", old + "-shm"]
+        where fm.fileExists(atPath: f) && fm.fileExists(atPath: p) {
             try? fm.removeItem(atPath: f)
         }
+    }
+
+    /// Write the WAL into the database file (call with `lock` held). A reader in another process (the MCP
+    /// server, a CLI) can hold part of it back for a moment: try for about 5 s. True when all of it went in.
+    private func checkpointLocked() -> Bool {
+        for attempt in 1...10 {
+            var st: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "PRAGMA wal_checkpoint(TRUNCATE);", -1, &st, nil) == SQLITE_OK else { return false }
+            var done = false
+            // busy, frames in the WAL, frames written into the database (-1, -1 when not in WAL mode).
+            if sqlite3_step(st) == SQLITE_ROW {
+                done = sqlite3_column_int(st, 0) == 0 && sqlite3_column_int(st, 1) == sqlite3_column_int(st, 2)
+            }
+            sqlite3_finalize(st)
+            if done { return true }
+            if attempt < 10 { Thread.sleep(forTimeInterval: 0.5) }
+        }
+        return false
     }
 
     /// Room for the new copy: its size plus 10% and 100 MB.
@@ -110,7 +135,9 @@ extension Database {
         let fm = FileManager.default
         let p = path.path, next = p + ".converting", old = p + ".old"
         for f in [next, next + "-journal", next + "-wal", next + "-shm"] { try? fm.removeItem(atPath: f) }
-        try execLocked("PRAGMA wal_checkpoint(TRUNCATE);")
+        // The export below reads through the WAL either way; when part of it stays behind, the WAL is kept
+        // with the original until the new file is in place, so a failed swap loses nothing.
+        if !checkpointLocked() { log("the database is open in another program; its newest changes stay in its WAL until the switch is done") }
         var st: OpaquePointer?
         guard sqlite3_prepare_v2(db, "ATTACH DATABASE ? AS conv KEY ?;", -1, &st, nil) == SQLITE_OK else { throw DBError.prepare(errmsg) }
         bind(st, 1, next)
@@ -132,13 +159,23 @@ extension Database {
         // Swap: database → .old, new → database, then drop .old. recoverSwap undoes a crash in between.
         try? fm.removeItem(atPath: old)
         var swapped = false
+        for s in Self.walSuffixes { try? fm.removeItem(atPath: old + s) }
         if rename(p, old) == 0 {
-            for f in [p + "-wal", p + "-shm"] { try? fm.removeItem(atPath: f) }
+            // The WAL goes with the original: it is the original's, and may hold changes not in it yet.
+            for s in Self.walSuffixes where fm.fileExists(atPath: p + s) { _ = rename(p + s, old + s) }
             swapped = rename(next, p) == 0
-            if swapped { try? fm.removeItem(atPath: old) } else { _ = rename(old, p) }
+            if swapped {
+                for f in [old, old + "-wal", old + "-shm"] { try? fm.removeItem(atPath: f) }
+            } else {
+                _ = rename(old, p)
+                for s in Self.walSuffixes where fm.fileExists(atPath: old + s) { _ = rename(old + s, p + s) }
+            }
         }
         if !swapped { try? fm.removeItem(atPath: next) }
-        if !fm.fileExists(atPath: p) && fm.fileExists(atPath: old) { _ = rename(old, p) }
+        if !fm.fileExists(atPath: p) && fm.fileExists(atPath: old) {
+            _ = rename(old, p)
+            for s in Self.walSuffixes where fm.fileExists(atPath: old + s) { _ = rename(old + s, p + s) }
+        }
         // Open whichever file is in place, so the app keeps working even if the swap failed.
         db = try Database.connect(path, key: swapped ? key : before)
         if swapped { isEncrypted = key != nil; openKey = key }

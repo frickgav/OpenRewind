@@ -52,7 +52,7 @@ sealed class TrayApp : ApplicationContext
         journalTools = new AiTools(engine.Db);
         overlay = new OverlayForm(timeline) { Look = settings.TimelineLook };
         _ = overlay.Handle;  // create it on the UI thread now
-        appLock = new AppLock(settings);
+        appLock = new AppLock(settings) { StateHome = engine.Config.Home };
         appLock.Locked += () => overlay.BeginInvoke(HideHistory);
         engine.ServerLocked = () => !appLock.IsUnlocked;
         encryption = new Encryption(engine, settings);
@@ -122,6 +122,8 @@ sealed class TrayApp : ApplicationContext
         JournalForm.Release();
         MeetingsForm.Release();
         InsightsForm.Release();
+        ConnectAiAppsForm.Release();
+        Task.Run(FrameImages.ReleaseAll);
     }
 
     /// A window that shows history is open (App Lock's "Lock Again After" waits while one is in use).
@@ -153,6 +155,7 @@ sealed class TrayApp : ApplicationContext
         if (Journal.AutoRecapDue(DateTime.Now, settings.JournalLastAutoDay, settings.JournalAutoAttemptDay, settings.JournalAutoAttempts) is not string key
             || Journal.FromKey(key) is not DateTime day || JournalJobs.IsWriting(key)) return;
         void Done() { settings.JournalLastAutoDay = key; settings.Save(); }
+        if (engine.Db.IsConverting) return;  // the database is held while Encrypt Recordings converts it
         if (engine.Db.Recap(key) is { Partial: false }) { Done(); return; }
         writingRecap = true;
         try
@@ -212,15 +215,16 @@ sealed class TrayApp : ApplicationContext
     }
 
     /// Turning it on shows how to add OpenRewind to each AI app.
-    void ToggleMcp()
+    /// Behind App Lock: AI apps read the whole history through it.
+    void ToggleMcp() => appLock.Run("Unlock OpenRewind to change whether AI apps can read your history", () =>
     {
         settings.McpEnabled = !settings.McpEnabled;
         settings.Save();
         Log.Write($"AI apps (MCP) {(settings.McpEnabled ? "allowed" : "not allowed")}");
-        if (settings.McpEnabled) ShowConnectAiApps(); else ConnectAiAppsForm.SettingsChanged(settings);
-    }
+        if (settings.McpEnabled) ConnectAiAppsForm.ShowFor(settings, engine.Config); else ConnectAiAppsForm.SettingsChanged(settings);
+    });
 
-    void ShowConnectAiApps() => ConnectAiAppsForm.ShowFor(settings, engine.Config);
+    void ShowConnectAiApps() => appLock.Run("Unlock OpenRewind to connect AI apps", () => ConnectAiAppsForm.ShowFor(settings, engine.Config));
 
     void ShowAiChat() => appLock.Run("Unlock OpenRewind to ask about your history",
                                      () => AiChatForm.ShowFor(settings, aiTools, aiConversation, OpenMoment, OpenAiSettings));
@@ -509,7 +513,8 @@ sealed class TrayApp : ApplicationContext
         else if (st.LastAt is DateTime at)
             lines.Add($"Last clip {at.ToLocalTime():t}: {st.LastAudioSeconds:0} s of audio in {st.LastSeconds:0.0} s");
         else lines.Add("No clips transcribed since it started");
-        var pending = engine.Db.AudioStats().Pending;
+        // Converting holds the database for a while (Encrypt Recordings); don't wait for it here.
+        var pending = engine.Db.IsConverting ? 0 : engine.Db.AudioStats().Pending;
         if (pending > 0) lines.Add(pending == 1 ? "1 clip waiting" : $"{pending} clips waiting");
         return lines;
     }
@@ -897,9 +902,9 @@ sealed class TrayApp : ApplicationContext
             var local = oldest.ToLocalTime();
             lines.Add($"Goes back to {local:g} ({Ago(oldest)})");
         }
-        else lines.Add("No recordings yet");
+        else if (!converting) lines.Add("No recordings yet");
         // Deleted frames that are still inside a video until it is written again (or turned back into pictures).
-        if (engine.Db.StuckRewrites() is int stuck and > 0)
+        if (!converting && engine.Db.StuckRewrites() is int stuck and > 0)
             lines.Add($"{stuck} video{(stuck == 1 ? "" : "s")} still hold{(stuck == 1 ? "s" : "")} deleted frames · being redone");
         return lines;
     }
@@ -998,6 +1003,7 @@ sealed class TrayApp : ApplicationContext
 
     void Quit()
     {
+        appLock.Forget();  // AI apps (MCP) get nothing once the app is gone
         encryption.Stop();
         icon.Visible = false;
         overlay.HideOverlay();
@@ -1011,6 +1017,8 @@ sealed class TrayApp : ApplicationContext
         updater.Dispose();
         meetings.Dispose();
         engine.Shutdown();
+        // Deletes the decrypted copies of open videos.
+        FrameImages.ReleaseAll();
         ExitThread();
     }
 }

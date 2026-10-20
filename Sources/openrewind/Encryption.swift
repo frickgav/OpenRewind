@@ -144,7 +144,15 @@ final class Encryption {
         let db = engine.db, dir = engine.config.dataDir
         queue.async { [weak self] in
             if c.isSet { return }
-            guard let key = RecordingFile.key ?? DataKeyStore.load() else { log("cannot convert recordings: the encryption key is not loaded"); return }
+            guard let key = RecordingFile.key ?? DataKeyStore.load() else {
+                // Decrypting with no key and nothing encrypted left: there is nothing to do, so it is done.
+                if !encrypt && !db.isEncrypted && RecordingFile.firstEncrypted(in: dir) == nil {
+                    DispatchQueue.main.async { if !Self.isOn { UserDefaults.standard.set(true, forKey: Self.doneKey) } }
+                    return
+                }
+                log("cannot convert recordings: the encryption key is not loaded")
+                return
+            }
             RecordingFile.key = key
             let r = VaultMigration.run(db: db, dataDir: dir, key: key, encrypt: encrypt, cancelled: { c.isSet })
             DispatchQueue.main.async {
@@ -200,8 +208,11 @@ final class Encryption {
         // Read the Keychain only when it matters, so nobody who never turned this on sees a prompt.
         guard isOn || !isDone || dbEncrypted else { return nil }
         if let key = DataKeyStore.load() { return key }
-        // A switch off with nothing encrypted left: carry on without a key.
-        if !isOn && !dbEncrypted && RecordingFile.firstEncrypted(in: config.dataDir) == nil { return nil }
+        // A switch off with nothing encrypted left: it is done, carry on without a key.
+        if !isOn && !dbEncrypted && RecordingFile.firstEncrypted(in: config.dataDir) == nil {
+            UserDefaults.standard.set(true, forKey: doneKey)
+            return nil
+        }
         if interactive, let key = askForRecoveryKey(config: config) { return key }
         throw DBError.locked("the recordings are encrypted and the key is not in this Mac's Keychain; open OpenRewind.app to enter the recovery key")
     }

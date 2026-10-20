@@ -53,7 +53,9 @@ static class MfThread
 /// a long-running process (the MCP server) doesn't keep a video open that the app wants to delete.
 /// With Encrypt Recordings on, stills and videos are encrypted files: a still is decrypted in memory, and
 /// a video (Media Foundation reads files) is decrypted to a temp file only this Windows account can read,
-/// for as long as its reader is open, then deleted. Mac has the same in FrameImages.swift.
+/// for as long as its reader is open, then deleted. Readers close after 30 s idle, and all of them close
+/// when the timeline hides, the app locks or quits, and after each MCP message (ReleaseAll).
+/// Mac has the same in FrameImages.swift.
 static class FrameImages
 {
     const long CacheBytes = 256L << 20;
@@ -157,6 +159,24 @@ static class FrameImages
 
     /// Close a video and forget its frames (before it is deleted or replaced).
     public static void Release(string videoPath) => MfThread.Run(() => { lock (gate) Forget(videoPath); });
+
+    /// Close every video (deleting its decrypted copy) and drop every decoded frame.
+    public static void ReleaseAll()
+    {
+        try
+        {
+            MfThread.Run(() =>
+            {
+                lock (gate)
+                {
+                    readers.RemoveWhere(_ => true);
+                    frames.RemoveWhere(_ => true);
+                    lastUse.Clear();
+                }
+            });
+        }
+        catch (Exception e) { Log.Write($"closing videos failed: {e.Message}"); }
+    }
 
     static void Forget(string videoPath)
     {
@@ -390,6 +410,9 @@ sealed class VideoJob : IDisposable
         if (Interlocked.Exchange(ref running, 1) == 1) { pending = true; return; }
         var t = new Thread(() =>
         {
+            // Decrypted copies (audio for Whisper, videos) a crash left behind: not only at launch, as the
+            // app can run for weeks.
+            RecordingFile.CleanTempCopies();
             try
             {
                 do

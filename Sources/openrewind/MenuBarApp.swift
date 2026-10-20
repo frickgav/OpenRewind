@@ -110,6 +110,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         overlay = OverlayController(db: engine.db)
         overlay.chat = { [unowned self] in self.aiChat }
         appLock.onLock = { [weak self] in self?.hideHistory() }
+        appLock.stateHome = engine.config.home
         let t = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
             guard let self else { return }
             // In use: OpenRewind is in front with a window that shows history.
@@ -174,7 +175,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                              attemptDay: JournalSettings.attemptDay, attempts: JournalSettings.attempts),
               let day = Journal.date(fromKey: key) else { return }
         let db = engine.db, j = journal
-        guard !j.writing.contains(key) else { return }
+        guard !j.writing.contains(key), !db.isConverting else { return }  // held while Encrypt Recordings converts it
         if let r = db.recap(day: key), !r.partial { JournalSettings.lastAutoDay = key; return }
         writingRecap = true
         let tools = JournalModel.tools(db), price = AISettings.price(for: s.model)
@@ -331,8 +332,9 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The app locked (screen locked, Mac asleep): close everything that shows history. Recording goes on.
     private func hideHistory() {
         if overlay.isVisible { overlay.hide(restoreFocus: false) }
-        for w in ["ai", "blocked", "journal", "meetings"] { SetupWindows.shared.close(w) }
+        for w in ["ai", "blocked", "journal", "meetings", "mcp"] { SetupWindows.shared.close(w) }
         InsightsWindow.shared.close()
+        FrameImages.shared.releaseAll()
     }
 
     @objc private func showAISettings() {
@@ -346,13 +348,20 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Turning it on shows how to add OpenRewind to each AI app.
+    /// Behind App Lock: AI apps read the whole history through it.
     @objc private func toggleMCP() {
-        MCPSetup.enabled.toggle()
-        log("AI apps (MCP) \(MCPSetup.enabled ? "allowed" : "not allowed")")
-        if MCPSetup.enabled { showConnectAIApps() }
+        appLock.run("change whether AI apps can read your history") { [weak self] in
+            MCPSetup.enabled.toggle()
+            log("AI apps (MCP) \(MCPSetup.enabled ? "allowed" : "not allowed")")
+            if MCPSetup.enabled { self?.openConnectAIApps() }
+        }
     }
 
     @objc private func showConnectAIApps() {
+        appLock.run("connect AI apps") { [weak self] in self?.openConnectAIApps() }
+    }
+
+    private func openConnectAIApps() {
         SetupWindows.shared.show("mcp", title: "Connect AI Apps", size: NSSize(width: 620, height: 860), resizable: true) {
             ConnectAIAppsView(home: engine.config.home)
         }
@@ -701,7 +710,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             lines.append("No clips transcribed since it started")
         }
-        let pending = engine.db.audioStats().pending
+        // While the database is being converted every query waits for it; don't hang the menu.
+        let pending = engine.db.isConverting ? 0 : engine.db.audioStats().pending
         if pending > 0 { lines.append(pending == 1 ? "1 clip waiting" : "\(pending) clips waiting") }
         return lines
     }
@@ -1151,7 +1161,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lines.append("No recordings yet")
         }
         // Deleted frames that are still inside a video until it is written again (or turned back into pictures).
-        let stuck = engine.db.stuckRewrites()
+        let stuck = converting ? 0 : engine.db.stuckRewrites()
         if stuck > 0 { lines.append("\(stuck) video\(stuck == 1 ? "" : "s") still hold\(stuck == 1 ? "s" : "") deleted frames · being redone") }
         return lines
     }
@@ -1353,9 +1363,15 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func quit() {
+        appLock.forget()  // AI apps (MCP) get nothing once the app is gone
         encryption.stop()
         video?.stop()
         NSApp.terminate(nil)
+    }
+
+    /// Quit from the menu, logout or shutdown: delete the decrypted copies of open videos.
+    func applicationWillTerminate(_ notification: Notification) {
+        FrameImages.shared.releaseAll()
     }
 }
 

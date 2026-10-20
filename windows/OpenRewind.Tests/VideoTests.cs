@@ -697,4 +697,51 @@ public class EncryptedRecordingsTests : IDisposable
         compactor.RunOnce(compress: false, now);
         Assert.Empty(Directory.GetFiles(config.DataDir, "*.mp4", SearchOption.AllDirectories));
     }
+
+    /// Encrypt Recordings is turned on while a video is being made (from plain stills): the video still
+    /// lands encrypted, and the migration that ran meanwhile has nothing plain left behind.
+    [Fact]
+    public void AVideoMadeAcrossTheSwitchIsSavedEncrypted()
+    {
+        RecordingFile.EncryptNew = false;
+        // Only the files are left to convert (the database switch has its own tests).
+        using var db = new Database(config.DbPath, key, createEncrypted: true);
+        var codec = new FakeCodec();
+        for (int i = 0; i < 3; i++)
+        {
+            var t = now.AddHours(-3).AddSeconds(i * 2);
+            var dir = Path.Combine(config.DataDir, Time.Iso(t)[..10]);
+            Directory.CreateDirectory(dir);
+            var file = Path.Combine(dir, Time.Iso(t).Replace(':', '-') + ".jpg");
+            File.WriteAllText(file, $"64x40:p{i}:" + new string('.', 2000));
+            db.Insert(new Frame(0, Time.Iso(t), "App", "Window", true, file, $"text p{i}", "ocr", 0, Display: "screen1"));
+        }
+        // The switch, and the whole migration, happen after the video was made and checked, before it is put in place.
+        codec.AfterVerify = () =>
+        {
+            RecordingFile.EncryptNew = true;
+            var r = VaultMigration.Run(db, config.DataDir, key, encrypt: true, CancellationToken.None);
+            Assert.False(r.Cancelled);
+        };
+        var done = new VideoCompactor(db, codec, config.DataDir) { OrphanAge = TimeSpan.Zero }.RunOnce(compress: true, now);
+        Assert.Equal(3, done.Frames);
+        var files = Directory.GetFiles(config.DataDir, "*", SearchOption.AllDirectories);
+        Assert.NotEmpty(files);
+        Assert.All(files, f => Assert.True(RecordingFile.IsEncrypted(f), Path.GetFileName(f)));
+        Assert.Single(files, f => f.EndsWith(".mp4"));
+    }
+
+    /// The migration leaves files that are not recordings alone (a Thumbs.db, a note someone put there).
+    [Fact]
+    public void TheMigrationOnlyTouchesRecordings()
+    {
+        using var db = new Database(config.DbPath, key, createEncrypted: true);
+        var dir = Path.Combine(config.DataDir, "2026-10-19");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "Thumbs.db"), "not a recording");
+        RecordingFile.Write(Path.Combine(dir, "12-00-00.jpg"), "picture"u8.ToArray(), null);
+        VaultMigration.Run(db, config.DataDir, key, encrypt: true, CancellationToken.None);
+        Assert.True(RecordingFile.IsEncrypted(Path.Combine(dir, "12-00-00.jpg")));
+        Assert.Equal("not a recording", File.ReadAllText(Path.Combine(dir, "Thumbs.db")));
+    }
 }

@@ -155,6 +155,8 @@ sealed class OverlayForm : Form
         model.ClearSelection();
         selecting = false;
         Hide();
+        // Close the videos it read, so no decrypted copy stays in the temp folder while it is hidden.
+        Task.Run(FrameImages.ReleaseAll);
         if (restoreFocus && previousWindow != IntPtr.Zero) Native.SetForegroundWindow(previousWindow);
         previousWindow = IntPtr.Zero;
     }
