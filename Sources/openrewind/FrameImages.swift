@@ -115,7 +115,7 @@ final class FrameImages {
         if !f.isVideo {
             let opts = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: maxPixels,
                         kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary
-            guard let src = stillSource(f.stillPath) else { return nil }
+            guard let src = Self.stillSource(f.stillPath) else { return nil }
             return CGImageSourceCreateThumbnailAtIndex(src, 0, opts)
         }
         guard let img = image(f) else { return nil }
