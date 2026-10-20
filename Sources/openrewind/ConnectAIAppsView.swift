@@ -22,7 +22,21 @@ struct ConnectAIAppsView: View {
         var message: String?
         var failed = false
         var busy = false
+        /// The setup when the message was shown; nil right after a click. The message stays until the
+        /// setup changes some other way.
+        var last: MCPLink?
     }
+
+    /// One app's setup as read in the background.
+    struct Found {
+        let id: String
+        let link: MCPLink
+        let problem: String?
+        let running: Bool
+    }
+
+    @State private var reading = false
+    @State private var again = false
 
     private var exe: String { MCPSetup.executable }
     private var homeArg: String? { MCPSetup.homeArg(home) }
@@ -87,13 +101,20 @@ struct ConnectAIAppsView: View {
             switch s.link {
             case .added: return s.running ? "Added. Restart \(link.appName) if it doesn't list OpenRewind yet." : "Added."
             case .different: return "Set up for another copy of OpenRewind or with other options. Update points it at this one."
+            case .turnedOff: return "Turned off in \(link.appName). Turn On switches it back on."
             case .unreadable: return s.problem ?? "OpenRewind can't change this app's setup. Set it up by hand below."
             case .notAdded: return "Not added."
             }
         }()
         let color: Color = s.message != nil && s.failed ? SetupTheme.warn
-            : s.link == .added ? SetupTheme.good : s.link == .unreadable ? SetupTheme.warn : SetupTheme.dim
-        let addTitle: String = s.link == .added ? "Added ✓" : s.link == .different ? "Update" : "Add to \(link.appName)"
+            : s.link == .added ? SetupTheme.good : s.link == .unreadable || s.link == .turnedOff ? SetupTheme.warn : SetupTheme.dim
+        let addTitle: String
+        switch s.link {
+        case .added: addTitle = "Added ✓"
+        case .different: addTitle = "Update"
+        case .turnedOff: addTitle = "Turn On"
+        default: addTitle = "Add to \(link.appName)"
+        }
         return VStack(alignment: .leading, spacing: 6) {
             Text(link.title).font(.system(size: 14, weight: .semibold))
             Text(link.about).font(.system(size: 11)).foregroundColor(SetupTheme.faint).fixedSize(horizontal: false, vertical: true)
@@ -105,7 +126,7 @@ struct ConnectAIAppsView: View {
                     .buttonStyle(PillButtonStyle(primary: s.link != .added))
                     .disabled(s.busy || s.link == .added || s.link == .unreadable)
                     .opacity(s.busy || s.link == .unreadable ? 0.5 : 1)
-                if s.link == .added || s.link == .different {
+                if s.link == .added || s.link == .different || s.link == .turnedOff {
                     Button("Remove") { act(link, add: false) }.buttonStyle(PillButtonStyle()).disabled(s.busy)
                 }
                 if s.link == .added && s.running {
@@ -115,17 +136,36 @@ struct ConnectAIAppsView: View {
         }
     }
 
-    /// Reads every app's setup again and shows it.
+    /// Reads every app's setup again, off the main thread (~/.claude.json can be large), and shows it.
     private func refresh(clearMessages: Bool) {
-        for link in links {
-            var s = rows[link.id] ?? RowState()
+        if reading { again = true; return }
+        reading = true
+        let todo = links.filter { rows[$0.id]?.busy != true }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let found = todo.map { link -> Found in
+                let (l, problem) = link.status()
+                return Found(id: link.id, link: l, problem: problem, running: l == .added && !link.running.isEmpty)
+            }
+            Task { @MainActor in show(found, clearMessages: clearMessages) }
+        }
+    }
+
+    private func show(_ found: [Found], clearMessages: Bool) {
+        reading = false
+        for f in found {
+            var s = rows[f.id] ?? RowState()
             if s.busy { continue }
-            let (l, problem) = link.status()
-            if clearMessages || l != s.link { s.message = nil }
-            s.link = l
-            s.problem = problem
-            s.running = l == .added && !link.running.isEmpty
-            rows[link.id] = s
+            // A message from the last click stays until the setup changes some other way.
+            if clearMessages || (s.last != nil && s.last != f.link) { s.message = nil }
+            s.last = f.link
+            s.link = f.link
+            s.problem = f.problem
+            s.running = f.running
+            rows[f.id] = s
+        }
+        if again {
+            again = false
+            refresh(clearMessages: false)
         }
     }
 
@@ -155,16 +195,27 @@ struct ConnectAIAppsView: View {
     }
 
     private func restart(_ link: AIAppLink) {
+        let app = link.appName
+        let ask = NSAlert()
+        ask.messageText = "Restart \(app)?"
+        ask.informativeText = "OpenRewind will quit \(app) and open it again, so it loads OpenRewind. If \(app) is still writing a reply, or you have a message you haven't sent, it may be lost."
+        ask.addButton(withTitle: "Restart")
+        ask.addButton(withTitle: "Cancel")
+        guard ask.runModal() == .alertFirstButtonReturn else { return }
         link.restart()
-        done(link, message: "Restarting \(link.appName)…", failed: false)
+        done(link, message: "Restarting \(app)…", failed: false)
     }
 
     /// Shows the setup as it is now, with what just happened under the app's name.
     private func done(_ link: AIAppLink, message: String, failed: Bool) {
-        rows[link.id, default: RowState()].busy = false
+        var s = rows[link.id] ?? RowState()
+        s.busy = false
+        s.message = message
+        s.failed = failed
+        // The next read sets `last` without taking the message away.
+        s.last = nil
+        rows[link.id] = s
         refresh(clearMessages: false)
-        rows[link.id, default: RowState()].message = message
-        rows[link.id, default: RowState()].failed = failed
     }
 
     private func snippet(_ title: String, code: String) -> some View {

@@ -9,6 +9,8 @@ enum MCPLink {
     case added
     /// An entry that starts another copy (an old path) or with other options; Add brings it up to date.
     case different
+    /// This copy's entry, turned off in the app ("disabled": true, enabled = false). Add turns it back on.
+    case turnedOff
     /// The file is there but OpenRewind can't read or safely change it (not valid JSON, an
     /// openrewind entry it did not write, …). Nothing is changed; the user sets it up by hand.
     case unreadable
@@ -188,8 +190,9 @@ indirect enum OrderedJSON {
                         let low = try hex4()
                         if low >= 0xDC00, low < 0xE000 { code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00) } else { i = save }
                     }
-                    // A lone surrogate can't be UTF-8; it becomes U+FFFD, as .NET does.
-                    let scalar = Unicode.Scalar(code) ?? "\u{FFFD}"
+                    // Half of a surrogate pair on its own isn't a character: the file is refused
+                    // rather than written back changed, as the Windows app does.
+                    guard let scalar = Unicode.Scalar(code) else { throw ParseError() }
                     out.append(contentsOf: Array(String(Character(scalar)).utf8))
                 default: throw ParseError()
                 }
@@ -278,7 +281,12 @@ enum MCPJSONConfig {
         let root: OrderedJSON
         do { root = try parse(text) } catch let e as MCPConfigError { return (.unreadable, e.message) } catch { return (.unreadable, notJSON) }
         guard let entry = root[serversKey]?[name] else { return (.notAdded, nil) }
-        guard case .object = entry else { return (.different, nil) }
+        guard case .object(let members) = entry else { return (.different, nil) }
+        // Any key the button doesn't write means the user set it up their own way.
+        if members.contains(where: { !ownKeys.contains($0.key) }) { return (.different, nil) }
+        if let env = entry["env"] {
+            guard case .object(let vars) = env, vars.isEmpty else { return (.different, nil) }
+        }
         var command: String?
         if case .string(let c)? = entry["command"] { command = c }
         var args: [String]? = []
@@ -290,11 +298,15 @@ enum MCPJSONConfig {
                 }
             } else { args = nil }
         }
-        // A server that also sets a URL, or isn't stdio, is not what the button adds.
-        if entry["url"] != nil { return (.different, nil) }
+        // A server that isn't stdio is not what the button adds.
         if let t = entry["type"] { if case .string("stdio") = t {} else { return (.different, nil) } }
-        return (want.same(command: command, args: args) ? .added : .different, nil)
+        guard want.same(command: command, args: args) else { return (.different, nil) }
+        if case .bool(true)? = entry["disabled"] { return (.turnedOff, nil) }
+        return (.added, nil)
     }
+
+    /// The keys the button writes (and "disabled", which the app sets to turn it off).
+    private static let ownKeys: Set<String> = ["type", "command", "args", "env", "disabled"]
 
     /// The file with the openrewind entry added, or replaced if one is there. `stdioType` writes
     /// "type": "stdio" too, as Claude Code does.
@@ -344,9 +356,11 @@ enum MCPTOMLConfig {
         r.firstMatch(in: s, range: NSRange(location: 0, length: (s as NSString).length))
     }
 
+    /// mcp_servers as a TOML key: bare or quoted.
+    private static let servers = #"(?:mcp_servers|"mcp_servers"|'mcp_servers')"#
     private static let anyHeader = regex(#"^\s*\["#)
-    private static let serversHeader = regex(#"^\s*\[\s*mcp_servers\s*\]\s*(#.*)?$"#)
-    private static let inlineServers = regex(#"^\s*mcp_servers\s*="#)
+    private static let serversHeader = regex(#"^\s*\[\s*"# + servers + #"\s*\]\s*(#.*)?$"#)
+    private static let inlineServers = regex(#"^\s*"# + servers + #"\s*="#)
 
     private static func names(_ name: String) -> String {
         let n = NSRegularExpression.escapedPattern(for: name)
@@ -365,23 +379,24 @@ enum MCPTOMLConfig {
     /// The file as lines, which of them belong to openrewind's tables, and whether openrewind is
     /// also defined in a way only the user should change.
     private static func scan(_ text: String, name: String) -> (lines: [Line], foreign: Bool) {
-        let own = regex(#"^\s*\[\s*mcp_servers\s*\.\s*"# + names(name) + #"\s*(\.[^\]]*)?\]\s*(#.*)?$"#)
-        let dotted = regex(#"^\s*mcp_servers\s*\.\s*"# + names(name) + #"\s*[.=]"#)
+        let own = regex(#"^\s*\[\s*"# + servers + #"\s*\.\s*"# + names(name) + #"\s*(\.[^\]]*)?\]\s*(#.*)?$"#)
+        let dotted = regex(#"^\s*"# + servers + #"\s*\.\s*"# + names(name) + #"\s*[.=]"#)
         let keyInServers = regex(#"^\s*"# + names(name) + #"\s*[.=]"#)
+        // A line that names both mcp_servers and openrewind (as a whole word) outside a comment.
+        let mentions = regex("mcp_servers.*(?<![\\w-])" + NSRegularExpression.escapedPattern(for: name) + "(?![\\w-])")
         var lines: [Line] = []
         var inOwn = false, inServers = false, foreign = false, atRoot = true
         var multiline: String?
         var depth = 0
         for raw in text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n") {
-            if let m = multiline {
-                // Inside a """ or ''' string: not a header or a key, whatever it looks like.
-                if count(raw, m) % 2 == 1 { multiline = nil }
-                lines.append(Line(text: raw, own: inOwn, ownMain: false, header: false))
-                continue
-            }
-            if depth > 0 {
-                // The rest of an array (or table) value that spans lines.
-                depth = max(0, depth + bracketDelta(raw))
+            if multiline != nil || depth > 0 {
+                // Inside a """ or ''' string, or the rest of an array or table value that spans
+                // lines: not a header or a key, whatever it looks like.
+                let inString = multiline != nil
+                let (open, delta) = walk(raw, multiline)
+                multiline = open
+                depth = max(0, depth + delta)
+                if !inString && !inOwn && matches(mentions, stripComment(raw)) != nil { foreign = true }
                 lines.append(Line(text: raw, own: inOwn, ownMain: false, header: false))
                 continue
             }
@@ -393,25 +408,72 @@ enum MCPTOMLConfig {
                 inOwn = m != nil
                 ownMain = m.map { $0.range(at: 1).location == NSNotFound } ?? false
                 inServers = matches(serversHeader, raw) != nil
-            } else {
-                if !inOwn {
-                    if matches(dotted, raw) != nil { foreign = true }
-                    if inServers && matches(keyInServers, raw) != nil { foreign = true }
-                    if atRoot && matches(inlineServers, raw) != nil { foreign = true }
-                }
-                depth = max(0, bracketDelta(raw))
+                // [[mcp_servers.openrewind]], or any other header naming it that isn't openrewind's table.
+                if !inOwn && matches(mentions, stripComment(raw)) != nil { foreign = true }
+            } else if !inOwn {
+                if matches(dotted, raw) != nil || matches(mentions, stripComment(raw)) != nil { foreign = true }
+                if inServers && matches(keyInServers, raw) != nil { foreign = true }
+                if atRoot && matches(inlineServers, raw) != nil { foreign = true }
             }
             lines.append(Line(text: raw, own: inOwn, ownMain: ownMain, header: header))
-            for q in ["\"\"\"", "'''"] where count(stripComment(raw), q) % 2 == 1 {
-                multiline = q
-                depth = 0
-                break
-            }
+            let (opened, d) = walk(raw, nil)
+            multiline = opened
+            depth = header ? 0 : max(0, d)
         }
         return (lines, foreign)
     }
 
-    private static func count(_ s: String, _ what: String) -> Int { s.components(separatedBy: what).count - 1 }
+    /// Reads one line as TOML does, starting inside the multi-line string `open` (""" or ''') if
+    /// there is one. Returns the multi-line string still open at its end, and brackets and braces
+    /// opened minus closed outside strings and comments.
+    private static func walk(_ line: String, _ startOpen: String?) -> (open: String?, delta: Int) {
+        let u = Array(line.unicodeScalars)
+        var open = startOpen
+        var i = 0, d = 0
+        func at(_ k: Int, _ s: String) -> Bool {
+            let p = Array(s.unicodeScalars)
+            return k + p.count <= u.count && Array(u[k..<k + p.count]) == p
+        }
+        while i < u.count {
+            if let o = open {
+                guard let end = closeOf(u, i, o) else { return (o, d) }
+                i = end + 3
+                open = nil
+                continue
+            }
+            let c = u[i]
+            if c == "#" { break }
+            if at(i, "\"\"\"") { open = "\"\"\""; i += 3; continue }
+            if at(i, "'''") { open = "'''"; i += 3; continue }
+            if c == "\"" {
+                i += 1
+                while i < u.count && u[i] != "\"" { if u[i] == "\\" { i += 1 }; i += 1 }
+                i += 1
+                continue
+            }
+            if c == "'" {
+                i += 1
+                while i < u.count && u[i] != "'" { i += 1 }
+                i += 1
+                continue
+            }
+            if c == "[" || c == "{" { d += 1 } else if c == "]" || c == "}" { d -= 1 }
+            i += 1
+        }
+        return (open, d)
+    }
+
+    /// Where the multi-line string `open` closes on the line, from `from`; nil if it doesn't.
+    private static func closeOf(_ u: [Unicode.Scalar], _ from: Int, _ open: String) -> Int? {
+        let q: Unicode.Scalar = open == "'''" ? "'" : "\""
+        var i = from
+        while i + 2 < u.count {
+            if q == "\"" && u[i] == "\\" { i += 2; continue }
+            if u[i] == q && u[i + 1] == q && u[i + 2] == q { return i }
+            i += 1
+        }
+        return nil
+    }
 
     /// The line up to a # that is not inside a quoted string.
     private static func stripComment(_ line: String) -> String {
@@ -432,25 +494,6 @@ enum MCPTOMLConfig {
         return line
     }
 
-    /// Brackets and braces opened minus closed on a line, outside strings and comments.
-    private static func bracketDelta(_ line: String) -> Int {
-        let u = Array(line.unicodeScalars)
-        var d = 0
-        var quote: Unicode.Scalar?
-        var i = 0
-        while i < u.count {
-            let c = u[i]
-            if let q = quote {
-                if c == "\\" && q == "\"" { i += 1 } else if c == q { quote = nil }
-            } else if c == "#" { break }
-            else if c == "\"" || c == "'" { quote = c }
-            else if c == "[" || c == "{" { d += 1 }
-            else if c == "]" || c == "}" { d -= 1 }
-            i += 1
-        }
-        return d
-    }
-
     static func status(_ text: String?, name: String, want: MCPCommandLine) -> (MCPLink, String?) {
         guard let text, !text.isEmpty else { return (.notAdded, nil) }
         let (lines, isForeign) = scan(text, name: name)
@@ -458,7 +501,7 @@ enum MCPTOMLConfig {
         guard lines.contains(where: { $0.own }) else { return (.notAdded, nil) }
         var command: String?
         var args: [String]? = []
-        var sawArgs = false, extra = false, inMain = false
+        var sawArgs = false, extra = false, inMain = false, off = false
         for l in lines {
             if l.header { inMain = l.ownMain; if l.own && !l.ownMain { extra = true }; continue }
             guard inMain else { continue }
@@ -469,11 +512,13 @@ enum MCPTOMLConfig {
             let value = body[body.index(after: eq)...].trimmingCharacters(in: .whitespaces)
             if key == "command" { command = parseString(value) }
             else if key == "args" { sawArgs = true; args = parseStringArray(value) }
-            // Anything else (env, enabled = false, a url, …) is not what the button writes.
+            else if key == "enabled" && (value == "false" || value == "true") { off = value == "false" }
+            // Anything else (env, a url, …) is not what the button writes.
             else { extra = true }
         }
         if !sawArgs { args = [] }
-        return (!extra && want.same(command: command, args: args) ? .added : .different, nil)
+        if extra || !want.same(command: command, args: args) { return (.different, nil) }
+        return (off ? .turnedOff : .added, nil)
     }
 
     /// The file with openrewind's table written, in place of any it had.
@@ -501,7 +546,14 @@ enum MCPTOMLConfig {
             output += table
             output.append("")
         }
-        return output.joined(separator: crlf ? "\r\n" : "\n")
+        let result = output.joined(separator: crlf ? "\r\n" : "\n")
+        // A file read wrongly could end up with two openrewind tables, which ChatGPT would refuse
+        // to load at all. Check the result the same way and write nothing if it isn't exactly one.
+        let check = scan(result, name: name)
+        if check.foreign || check.lines.filter(\.ownMain).count != 1 || status(result, name: name, want: want).0 != .added {
+            throw MCPConfigError(message: "OpenRewind couldn't work out where “\(name)” goes in it")
+        }
+        return result
     }
 
     /// The file without openrewind's table, or nil when it has none (nothing to change).
@@ -525,7 +577,8 @@ enum MCPTOMLConfig {
         if seam {
             // The table was last: the file ends where it did before it, with a newline if it had one.
             while let last = output.last, last.trimmingCharacters(in: .whitespaces).isEmpty { output.removeLast() }
-            if !output.isEmpty && text.hasSuffix("\n") { output.append("") }
+            // The last byte: "\r\n" is one Character in Swift, so hasSuffix("\n") would miss it.
+            if !output.isEmpty && text.utf8.last == 0x0A { output.append("") }
         }
         return output.joined(separator: text.contains("\r\n") ? "\r\n" : "\n")
     }
@@ -653,45 +706,165 @@ enum MCPTOMLConfig {
 
 // MARK: - Files
 
-/// Reads and writes AI apps' setup files without ever leaving one half-written: the old file is
-/// copied to "<name>.openrewind-backup" next to it, the new text goes to a temporary file in the
-/// same folder, and that replaces the file in one step. Nothing else is touched.
+/// The file changed between reading it and replacing it (the app wrote it meanwhile).
+struct MCPConfigChanged: Error {
+    let path: String
+}
+
+/// Reads and writes AI apps' setup files without ever leaving one half-written: the new text goes
+/// to a new private temporary file in the same folder, which replaces the file in one step, and only
+/// if nothing else changed the file meanwhile. The previous version is kept as one
+/// "<name>.openrewind-backup" next to it (readable only by you), which Remove deletes again.
+/// The Windows app does the same in McpConnect.cs (McpConfigFile), with tests.
 enum MCPConfigFile {
     static let backupSuffix = ".openrewind-backup"
+    static let notUTF8 = "it isn't saved as UTF-8 text"
 
-    /// The file's text, or nil when it doesn't exist.
+    /// The file's text, or nil when it doesn't exist. Bytes that aren't UTF-8 throw MCPConfigError
+    /// rather than being read as something else and written back.
     static func read(_ url: URL) throws -> String? {
         let target = url.resolvingSymlinksInPath()
-        guard FileManager.default.fileExists(atPath: target.path) else { return nil }
-        let text = try String(contentsOf: target, encoding: .utf8)
-        // A byte order mark some editors add is not part of the JSON or TOML (.NET drops it too).
-        return text.hasPrefix("\u{FEFF}") ? String(text.dropFirst()) : text
+        guard isFile(target.path) else { return nil }
+        return try decode(Data(contentsOf: target))
     }
 
-    /// Writes `text` over the file (or creates it and its folder). A file that is a link to another
-    /// (dotfiles kept elsewhere) is written where the link points, so the link stays.
-    static func write(_ url: URL, _ text: String) throws {
+    /// A file, not a folder (as .NET's File.Exists, so both apps treat a folder in the way alike).
+    private static func isFile(_ path: String) -> Bool {
+        var folder: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &folder) && !folder.boolValue
+    }
+
+    static func decode(_ data: Data) throws -> String {
+        // A byte order mark some editors add is not part of the JSON or TOML (.NET drops it too).
+        let bytes = data.starts(with: [0xEF, 0xBB, 0xBF]) ? Data(data.dropFirst(3)) : data
+        let text = String(decoding: bytes, as: UTF8.self)
+        // Decoding replaces bytes that aren't UTF-8; if anything was replaced, the text isn't the file.
+        guard Data(text.utf8) == bytes else { throw MCPConfigError(message: notUTF8) }
+        return text
+    }
+
+    /// Writes `text` over the file (or creates it and its folder), if the file still holds
+    /// `expected` (nil: doesn't exist); otherwise throws MCPConfigChanged and changes nothing.
+    /// A file that is a link to another (dotfiles kept elsewhere) is written where the link points,
+    /// so the link stays. Other failures throw MCPConfigError with the system's reason.
+    static func write(_ url: URL, _ text: String, expected: String?, backup: Bool = true) throws {
         let fm = FileManager.default
         let target = url.resolvingSymlinksInPath()
         try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let temp = URL(fileURLWithPath: target.path + ".openrewind-tmp")
-        let backup = URL(fileURLWithPath: target.path + backupSuffix)
-        let exists = fm.fileExists(atPath: target.path)
-        if exists {
-            try? fm.removeItem(at: backup)
-            try fm.copyItem(at: target, to: backup)
+        let exists = isFile(target.path)
+        // Keep a private file private (~/.claude.json is readable only by its owner); new files are private.
+        var mode: mode_t = 0o600
+        if exists, let m = (try? fm.attributesOfItem(atPath: target.path))?[.posixPermissions] as? NSNumber {
+            mode = mode_t(truncatingIfNeeded: m.intValue & 0o777)
         }
-        try? fm.removeItem(at: temp)
-        try Data(text.utf8).write(to: temp)
-        // Keep a private file private (~/.claude.json is readable only by its owner).
-        if exists, let mode = try fm.attributesOfItem(atPath: target.path)[.posixPermissions] {
-            try fm.setAttributes([.posixPermissions: mode], ofItemAtPath: temp.path)
+        let temp = target.path + ".openrewind-\(UUID().uuidString).tmp"
+        // Gone after the rename; taken away here if anything went wrong before it.
+        defer { unlink(temp) }
+        try createNew(temp, Data(text.utf8), mode)
+        let now: String?
+        if isFile(target.path) {
+            do { now = try decode(Data(contentsOf: target)) } catch { now = "\0changed" }
+        } else {
+            now = nil
+        }
+        guard now == expected else { throw MCPConfigChanged(path: target.path) }
+        if backup && exists {
+            let copy = target.path + backupSuffix
+            unlink(copy)
+            try createNew(copy, Data(contentsOf: target), 0o600)
         }
         // rename(2) replaces the file in one step.
-        guard rename(temp.path, target.path) == 0 else {
-            let err = String(cString: strerror(errno))
-            try? fm.removeItem(at: temp)
-            throw MCPConfigError(message: "Couldn't save \(target.path) (\(err)).")
+        guard Darwin.rename(temp, target.path) == 0 else { throw MCPConfigError(message: String(cString: strerror(errno))) }
+    }
+
+    /// Takes away the backup `write` keeps, if there is one.
+    static func deleteBackup(_ url: URL) {
+        let copy = url.resolvingSymlinksInPath().path + backupSuffix
+        if unlink(copy) != 0 && errno != ENOENT { log("connect: cannot delete a backup: \(String(cString: strerror(errno)))") }
+    }
+
+    /// A new file with `data`, made with `mode` from the start so it is never readable by others.
+    private static func createNew(_ path: String, _ data: Data, _ mode: mode_t) throws {
+        let fd = Darwin.open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode)
+        guard fd >= 0 else { throw MCPConfigError(message: String(cString: strerror(errno))) }
+        defer { Darwin.close(fd) }
+        // open() leaves out what the umask takes away; the exact mode is set before anything is written.
+        guard fchmod(fd, mode) == 0 else { throw MCPConfigError(message: String(cString: strerror(errno))) }
+        try data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
+            var done = 0
+            while done < buffer.count {
+                let n = Darwin.write(fd, buffer.baseAddress! + done, buffer.count - done)
+                if n < 0 {
+                    if errno == EINTR { continue }
+                    throw MCPConfigError(message: String(cString: strerror(errno)))
+                }
+                done += n
+            }
+        }
+        guard fsync(fd) == 0 else { throw MCPConfigError(message: String(cString: strerror(errno))) }
+    }
+
+    /// Changes every file with `change` (nil result: leave it), or none of them. Reads them all
+    /// first, writes them one by one, and puts back the ones already written if a later one fails.
+    /// When an app writes a file meanwhile, starts over with what it wrote, up to three times.
+    /// Removing (`removing`) keeps no backup and deletes the old one.
+    static func change(_ files: [URL], removing: Bool = false, _ change: (String?) throws -> String?) throws {
+        var attempt = 1
+        while true {
+            do {
+                try changeOnce(files, removing, change)
+                return
+            } catch let e as MCPConfigChanged {
+                guard attempt < 3 else { throw MCPConfigError(message: "\(e.path) changed while OpenRewind was saving it. Quit the app and try again.") }
+                log("connect: \(e.path) changed while OpenRewind was saving it; trying again")
+                attempt += 1
+            }
+        }
+    }
+
+    private static func changeOnce(_ files: [URL], _ removing: Bool, _ change: (String?) throws -> String?) throws {
+        var writes: [(url: URL, before: String?, after: String)] = []
+        for f in files {
+            let before: String?
+            let after: String?
+            do {
+                before = try read(f)
+                after = try change(before)
+            } catch let e as MCPConfigError {
+                throw MCPConfigError(message: "OpenRewind didn't change \(f.path) because \(e.message). Fix that file, or set it up by hand below.")
+            } catch {
+                throw MCPConfigError(message: "OpenRewind can't read \(f.path) (\(error.localizedDescription)).")
+            }
+            if let after, after != before { writes.append((f, before, after)) }
+        }
+        var done: [(url: URL, before: String?, after: String)] = []
+        for w in writes {
+            do {
+                try write(w.url, w.after, expected: w.before, backup: !removing)
+            } catch {
+                for d in done { putBack(d.url, d.before, d.after) }
+                if error is MCPConfigChanged { throw error }
+                let also = done.isEmpty ? "" : done.count > 1 ? " The other files were put back as they were." : " The other file was put back as it was."
+                let reason = (error as? MCPConfigError)?.message ?? error.localizedDescription
+                throw MCPConfigError(message: "Couldn't save \(w.url.path) (\(reason)).\(also)")
+            }
+            log("connect: changed \(w.url.path)")
+            done.append(w)
+        }
+        if removing { for f in files { deleteBackup(f) } }
+    }
+
+    /// Undoes one write: the old text back, or no file if there was none.
+    private static func putBack(_ url: URL, _ before: String?, _ after: String) {
+        do {
+            if let before {
+                try write(url, before, expected: after, backup: false)
+            } else if try read(url) == after {
+                try FileManager.default.removeItem(at: url.resolvingSymlinksInPath())
+            }
+            log("connect: put \(url.path) back")
+        } catch {
+            log("connect: cannot put \(url.path) back: \((error as? MCPConfigError)?.message ?? error.localizedDescription)")
         }
     }
 }
@@ -725,17 +898,23 @@ class AIAppLink: Identifiable {
         bundleIDs.flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0) }
     }
 
-    /// Quits the app the normal way and opens it again once it is gone.
+    /// Quits the app the normal way (it may ask to save something) and opens it again once it is gone.
     func restart() {
-        guard let app = running.first, let url = app.bundleURL else { return }
+        let apps = running
+        // Every app that was quit opens again, each once.
+        var urls: [URL] = []
+        for a in apps { if let u = a.bundleURL, !urls.contains(u) { urls.append(u) } }
+        guard !urls.isEmpty else { return }
         log("connect: restarting \(appName)")
-        for a in running { a.terminate() }
+        for a in apps { a.terminate() }
         DispatchQueue.global().async {
-            // Wait up to 10 seconds for it to quit (it may ask to save something).
-            for _ in 0..<50 where !app.isTerminated { Thread.sleep(forTimeInterval: 0.2) }
+            // Wait up to 10 seconds for it to quit.
+            for _ in 0..<50 where apps.contains(where: { !$0.isTerminated }) { Thread.sleep(forTimeInterval: 0.2) }
             DispatchQueue.main.async {
-                NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { _, error in
-                    if let error { log("connect: cannot reopen \(url.path): \(error.localizedDescription)") }
+                for url in urls {
+                    NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+                        if let error { log("connect: cannot reopen \(url.path): \(error.localizedDescription)") }
+                    }
                 }
             }
         }
@@ -746,7 +925,9 @@ class AIAppLink: Identifiable {
         var all: [MCPLink] = []
         for f in files {
             let text: String?
-            do { text = try MCPConfigFile.read(f) } catch {
+            do { text = try MCPConfigFile.read(f) } catch let e as MCPConfigError {
+                return (.unreadable, "OpenRewind can't change \(f.path) because \(e.message). Set it up by hand below.")
+            } catch {
                 return (.unreadable, "OpenRewind can't read \(f.path) (\(error.localizedDescription)).")
             }
             let (link, problem) = one(text)
@@ -754,27 +935,14 @@ class AIAppLink: Identifiable {
             all.append(link)
         }
         if all.allSatisfy({ $0 == .notAdded }) { return (.notAdded, nil) }
-        return (all.allSatisfy({ $0 == .added }) ? .added : .different, nil)
+        if all.allSatisfy({ $0 == .added }) { return (.added, nil) }
+        if all.allSatisfy({ $0 == .added || $0 == .turnedOff }) { return (.turnedOff, nil) }
+        return (.different, nil)
     }
 
-    /// Works out every file's new text first and writes only when all of them can be changed.
-    func change(_ files: [URL], _ change: (String?) throws -> String?) throws {
-        var writes: [(URL, String)] = []
-        for f in files {
-            let text: String?
-            do { text = try MCPConfigFile.read(f) } catch {
-                throw MCPConfigError(message: "OpenRewind can't read \(f.path) (\(error.localizedDescription)).")
-            }
-            let after: String?
-            do { after = try change(text) } catch let e as MCPConfigError {
-                throw MCPConfigError(message: "OpenRewind didn't change \(f.path) because \(e.message). Fix that file, or set it up by hand below.")
-            }
-            if let after, after != text { writes.append((f, after)) }
-        }
-        for (url, text) in writes {
-            try MCPConfigFile.write(url, text)
-            log("connect: changed \(url.path)")
-        }
+    /// Changes all the files or none of them (see MCPConfigFile.change).
+    func change(_ files: [URL], removing: Bool = false, _ change: (String?) throws -> String?) throws {
+        try MCPConfigFile.change(files, removing: removing, change)
     }
 }
 
@@ -802,7 +970,7 @@ final class JSONAppLink: AIAppLink {
     }
 
     override func remove() throws -> String {
-        try change([file]) { try MCPJSONConfig.remove($0, name: MCPSetup.name) }
+        try change([file], removing: true) { try MCPJSONConfig.remove($0, name: MCPSetup.name) }
         return "Removed. Quit and reopen \(app) to finish."
     }
 
@@ -830,9 +998,10 @@ final class ChatGPTLink: AIAppLink {
 
     override var title: String { "ChatGPT" }
     override var about: String {
-        "For Work chats in the ChatGPT desktop app, and Codex. Regular chats and chatgpt.com only reach servers on the internet, and OpenRewind never puts your history there."
+        "For Work chats in the ChatGPT desktop app, and Codex. What OpenRewind returns there goes to OpenAI like anything else in the chat. Regular chats and chatgpt.com can't reach it."
     }
-    override var bundleIDs: [String] { ["com.openai.chat", "com.openai.codex"] }
+    /// The ChatGPT app only; Codex sessions are never quit by OpenRewind.
+    override var bundleIDs: [String] { ["com.openai.chat"] }
 
     override func status() -> (MCPLink, String?) {
         statusOf([file]) { MCPTOMLConfig.status($0, name: MCPSetup.name, want: want) }
@@ -844,7 +1013,7 @@ final class ChatGPTLink: AIAppLink {
     }
 
     override func remove() throws -> String {
-        try change([file]) { try MCPTOMLConfig.remove($0, name: MCPSetup.name) }
+        try change([file], removing: true) { try MCPTOMLConfig.remove($0, name: MCPSetup.name) }
         return "Removed. Quit and reopen ChatGPT to finish."
     }
 }
@@ -879,18 +1048,31 @@ final class ClaudeCodeLink: AIAppLink {
 
     override func remove() throws -> String {
         if let cli = Self.findCLI(), Self.run(cli, ["mcp", "remove", "--scope", "user", MCPSetup.name]), status().0 == .notAdded {
+            MCPConfigFile.deleteBackup(file)
             return "Removed from Claude Code."
         }
-        try change([file]) { try MCPJSONConfig.remove($0, name: MCPSetup.name) }
+        try change([file], removing: true) { try MCPJSONConfig.remove($0, name: MCPSetup.name) }
         return "Removed from Claude Code."
     }
 
-    /// Where the installers put `claude`. Apps opened from the Dock don't get the shell's PATH.
-    private static let usualDirs = ["~/.local/bin", "~/.claude/local", "/opt/homebrew/bin", "/usr/local/bin"]
-        .map { NSString(string: $0).expandingTildeInPath }
+    /// Where the installers and Node version managers put `claude`. Apps opened from the Dock don't
+    /// get the shell's PATH, so these are looked in first.
+    static var usualDirs: [String] {
+        let home = Self.home.path as NSString
+        var dirs = [".local/bin", ".claude/local", ".npm-global/bin", ".volta/bin", ".asdf/shims", ".bun/bin",
+                    ".local/share/fnm/aliases/default/bin", "Library/Application Support/fnm/aliases/default/bin"]
+            .map { home.appendingPathComponent($0) }
+        // nvm keeps one folder per Node version; the newest first.
+        let nvm = home.appendingPathComponent(".nvm/versions/node") as NSString
+        let versions = ((try? FileManager.default.contentsOfDirectory(atPath: nvm as String)) ?? [])
+            .sorted { $0.compare($1, options: .numeric) == .orderedDescending }
+        dirs += versions.map { nvm.appendingPathComponent("\($0)/bin") }
+        return dirs + ["/opt/homebrew/bin", "/usr/local/bin"]
+    }
 
     static func findCLI() -> String? {
-        let path = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
+        // Full paths only: an empty or relative PATH entry would mean the current folder.
+        let path = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init).filter { $0.hasPrefix("/") }
         return (usualDirs + path).map { ($0 as NSString).appendingPathComponent("claude") }
             .first { FileManager.default.isExecutableFile(atPath: $0) }
     }

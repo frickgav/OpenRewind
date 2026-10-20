@@ -50,6 +50,11 @@ if command == "gif-check" {
     guard let path = args.filter({ !$0.hasPrefix("-") }).dropFirst().first else { print("usage: openrewind gif-check <file.gif>"); exit(2) }
     do { try GifWriter.writeCheck(to: URL(fileURLWithPath: path)); exit(0) } catch { print("gif-check: \(error)"); exit(1) }
 }
+// Hidden: checks the one-click setup editors (MCPConnectCheck.swift) in an empty folder, in CI.
+if command == "connect-check" {
+    guard let path = args.filter({ !$0.hasPrefix("-") }).dropFirst().first else { print("usage: openrewind connect-check <empty folder>"); exit(2) }
+    exit(MCPConnectCheck.run(in: URL(fileURLWithPath: path)) ? 0 : 1)
+}
 // Started by an AI app with stdin/stdout as pipes: no menu bar icon, no recording, read-only.
 if command == "mcp" { MCPServer.serveStdio(config: config) }
 if command == "app" { openLogFile(in: config.home) }
