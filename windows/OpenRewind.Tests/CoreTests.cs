@@ -183,6 +183,25 @@ public class CoreTests : IDisposable
     }
 
     [Fact]
+    public void ApiSearchClampsOffsetAndContentLength()
+    {
+        AddFrame(DateTime.UtcNow.AddMinutes(-1), "Notepad", "budget plan");
+        var api = new Api(db, config);
+        var huge = api.Handle(new HttpRequest("GET", "/search", new() { ["q"] = "budget", ["offset"] = int.MaxValue.ToString() }));
+        Assert.Equal(200, huge.Status);
+        using (var doc = JsonDocument.Parse(huge.Body))
+            Assert.Equal(Api.MaxOffset, doc.RootElement.GetProperty("pagination").GetProperty("offset").GetInt32());
+        foreach (var mode in new[] { "keyword", "meaning" })
+        {
+            var r = api.Handle(new HttpRequest("GET", "/search", new() { ["q"] = "budget", ["max_content_length"] = "-1", ["mode"] = mode }));
+            Assert.NotEqual(500, r.Status);
+        }
+        var neg = api.Handle(new HttpRequest("GET", "/search", new() { ["q"] = "budget", ["max_content_length"] = "-1" }));
+        using var d = JsonDocument.Parse(neg.Body);
+        Assert.Equal("…", d.RootElement.GetProperty("data")[0].GetProperty("content").GetProperty("text").GetString());
+    }
+
+    [Fact]
     public void SearchPageComesFromTheSwiftSource()
     {
         Assert.StartsWith("<!doctype html>", WebUI.Html);

@@ -7,6 +7,8 @@ final class Engine {
     private(set) var config: Config
     let db: Database
     let recorder: Recorder
+    /// Search by Meaning; it indexes only while the menu bar app has turned it on.
+    let meaning: MeaningService
     private(set) var transcriber: Transcriber?
     private var server: Server?
     private var screenTask: Task<Void, Never>?
@@ -25,13 +27,14 @@ final class Engine {
         self.config = config
         self.db = db
         self.recorder = Recorder(config: config, db: db)
+        self.meaning = MeaningService(db: db)
     }
 
     var serverOn: Bool { server != nil }
 
     func startServer(exitOnFailure: Bool = true) throws {
         guard server == nil else { return }
-        let api = API(db: db, config: config)
+        let api = API(db: db, config: config, meaning: meaning)
         let s = Server(port: config.port, exitOnFailure: exitOnFailure, router: api.handle)
         try s.start()
         server = s

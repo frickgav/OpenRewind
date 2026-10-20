@@ -37,6 +37,19 @@ struct Blocklist {
             .map { $0.hasSuffix("/") ? $0 : $0 + "/" }
     }
 
+    /// Everything on the list, one line each and sorted ("app:1password", "word:chase", "site:…",
+    /// "private"). A saved journal recap keeps these, so it can tell when the list has grown since.
+    var entries: [String] {
+        var all = Set(keys.map { "app:" + $0 })
+        for k in keywords {
+            let w = k.trimmingCharacters(in: .whitespaces).lowercased()
+            if !w.isEmpty { all.insert("word:" + w) }
+        }
+        for s in sites { all.insert("site:" + s) }
+        if privateWindows { all.insert("private") }
+        return all.sorted()
+    }
+
     /// `path` is the running app's bundle path (NSRunningApplication.bundleURL).
     func blocksApp(bundleID: String?, name: String?, path: String? = nil) -> Bool {
         if let b = bundleID?.lowercased(), !b.isEmpty, keys.contains(b) { return true }

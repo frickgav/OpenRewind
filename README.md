@@ -84,6 +84,10 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
 - **Ask AI** (menu bar or tray → Ask AI…) answers questions like "what did I work on today?"
   with your own key: Anthropic, OpenAI, Gemini, OpenRouter (any model it offers), or any
   OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
+- **Search by Meaning** (off until you turn it on) finds moments by what they were about, not
+  only the exact words. It runs on your computer. See [Search by Meaning](#search-by-meaning).
+- **Journal** (menu bar or tray → Journal…): one page per day with your top apps, sites and
+  windows, worked out on your computer, plus an optional AI recap. See [Journal](#journal).
 - **Meetings** (menu bar or tray → Meetings…) lists your Zoom, Teams, Meet, Webex, FaceTime and
   Slack huddle calls with their transcript, and can summarize them with your AI key. When a call
   starts, a small popup asks whether to take notes for it. See [Meetings](#meetings).
@@ -91,6 +95,42 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
   worked out on your computer without AI. See [Insights](#insights).
 - **Claude, Cursor and other AI apps** can search your history too, through MCP, once you turn
   it on. See [Use with Claude and other AI apps (MCP)](#use-with-claude-and-other-ai-apps-mcp).
+
+## Search by Meaning
+
+Keyword search finds the words you type. Search by Meaning also finds moments that are *about*
+the same thing in other words: "the flight I was booking" finds the airline page, "when we talked
+about hiring" finds the call where someone said "we need another engineer".
+
+Turn it on in **Settings → Search by Meaning**. OpenRewind then builds an index in the
+background: it goes through your old recordings first and then keeps up with new ones. It works
+slowly while you use the computer, slower still on battery (or in Low Power Mode on a Mac), and
+faster when you are away. The line under the switch shows how far it has got.
+
+Once it is on, the timeline's search box has a **Keyword | Meaning** switch. Meaning shows the
+closest moments first; click one to go there, as with keyword search. The browser search page and
+Ask AI (`search_by_meaning`) can use it too, and so can AI apps connected through MCP.
+
+How it works:
+
+- A "moment" is a stretch of one window (until the app, window or page changes, up to 10 minutes),
+  or one 30-second audio clip. Repeated text in a stretch is counted once.
+- Each moment gets a sentence vector made **on your computer**. The Mac uses the sentence model
+  that comes with macOS, so nothing is downloaded. Windows downloads one model the first time
+  (all-MiniLM-L6-v2, about 90 MB, from Hugging Face), checks it against a fixed SHA-256, and runs
+  it with ONNX Runtime. Your recordings are never uploaded.
+- The index is stored in the same database. Each moment keeps a copy of its text (up to about
+  1,500 characters of screen text or transcript) with its app, window title and web address
+  (table `meaning_moments`), and its vector (table `meaning_vectors`): up to about 2 KB per moment.
+  So the index holds screen text too, not only numbers, and is deleted with it.
+- Blocked apps, sites and windows are never indexed, and are hidden from results if you block
+  them later. As with Ask AI, audio is not filtered by app. Apps you unblock are only indexed from
+  then on.
+- Deleting recordings (by hand or with Keep Recordings For) deletes their vectors too. Turning
+  Search by Meaning off deletes the whole index; Windows keeps the downloaded model so turning it
+  back on downloads nothing.
+- The Mac model and the Windows model are different, so their scores are not comparable. The Mac
+  uses your system language when macOS has a sentence model for it, otherwise English.
 
 ## Ask AI
 
@@ -111,6 +151,7 @@ send back capped, trimmed text:
 | `activity_summary` | Time per app, window and website, and a timeline of what was in front |
 | `search_screen` | Matching moments from the screen-text search, with a short snippet |
 | `search_audio` | Matching transcript lines (or all of them in a time range) |
+| `search_by_meaning` | The moments closest in meaning to a question, with a short snippet. Only offered while **Search by Meaning** is on |
 | `get_screen_text` | Screen text from a short time range, sampled and trimmed |
 | `view_screenshot` | One screenshot near a moment, as a JPEG. Only offered when you turn on **Let AI look at screenshots** (off by default) |
 | `list_meetings` | Meetings in a time range, with their summary, decisions and action items when they have notes (see [Meetings](#meetings)) |
@@ -127,6 +168,57 @@ supplied that address, so text on screen can't trick the AI into a link that sen
 elsewhere. With a local model (Ollama, LM Studio) nothing leaves your computer at all; a custom
 server reached over plain http on another network gets a warning, since your key would travel
 unencrypted.
+
+## Journal
+
+Open it from the menu bar or tray (**Journal…**). Each page is one day: ‹ and › go to the day
+before or after, the date picker jumps to any day, and **Today** comes back.
+
+Every page has a part worked out on your computer, with no AI and nothing sent anywhere:
+
+- first and last activity and the total active time (a screenshot counts until the next one, at most 2 minutes)
+- top apps, top websites and top window or document titles
+- when audio was recorded (microphone, system audio or both)
+
+Apps, sites and windows on your block list are never shown: a blocked app is left out of every
+list, and a blocked site or window keeps only its app name. Screenshots saved while a blocked window
+or site was in front are left out of every list too (their time still counts as active). Click a
+time to open that moment in the timeline.
+
+**Recap**: with an AI provider set up in **AI Settings**, **Write Recap** asks your model for a
+short recap: what you worked on, who you talked to, and open loops to follow up. It sends that
+day's history with your key: app and window names, web addresses, transcripts and some screen text.
+
+- It uses the same lookups as Ask AI, and every lookup (including the ones the model asks for) is
+  limited to that day. **What was sent** lists each lookup and exactly what went to the provider.
+- Blocked sites and windows are left out, and a blocked app shows only as "(blocked app)" with its
+  time. **Audio transcripts are not filtered by app**, so a call heard while a blocked app was open
+  is still sent.
+- The page shows the tokens and cost. Times in the recap link to that moment in the timeline.
+- Recaps are saved in the database (`journal_recaps`), so a day is not written (or paid for) again;
+  **Rewrite** replaces it. One written before the day was over says so.
+- Each recap remembers the block list it was written with. If you block something new later, older
+  recaps are hidden (and left out of exports) until you rewrite them, since they may mention it.
+
+**Settings → Write Each Day's Recap Automatically** (also a switch in the Journal window) is off by
+default because it spends tokens. When on, it writes **yesterday's** recap the first time the app is
+running on the next day, with the AI provider it was turned on for; after you switch providers in
+AI Settings it pauses until you turn it on again.
+
+- Days with nothing recorded are skipped. A day the app is not running the day after (say, a long
+  weekend with the computer off) gets no automatic recap; open it and use **Write Recap**.
+- A recap you wrote by hand during the day is replaced by one of the whole day.
+- If it fails (offline at login, a busy provider), it tries again 10 minutes later, at most 3 times
+  for that day.
+
+**Deleting recordings**: deleting a time range by hand (**Delete Recordings → Last Hour**, **Today** …) also
+deletes the recaps of the days it touches, and deleting all recordings deletes every recap. **Keep …
+Recordings For** deletes a day's recap only once nothing of that day (screen or audio) is left, so
+with **Keep For 1 Day** yesterday's recap stays while part of yesterday does.
+
+**Copy as Markdown** and **Save as Markdown…** export the page. In the recap, times become plain
+text, any other link or image becomes its text and address in plain text, and HTML is escaped, so
+opening the file never loads anything.
 
 ## Copy and export
 
@@ -421,6 +513,9 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
 - **Settings → Local Search Server** turns on the API and browser search page at
   `http://127.0.0.1:3031`. Off by default. Only this Mac can connect. The terminal
   commands `record` and `serve` always start it.
+- **Settings → Search by Meaning** (off by default) indexes your recordings in the background
+  so you can search by meaning, with the model that comes with macOS. See
+  [Search by Meaning](#search-by-meaning).
 - **Settings → Launch at Login** starts it with your Mac.
 - The lock screen and screen saver are never recorded.
 - **Settings → Blocked Apps & Sites** picks apps to blur, plus words that hide a window when its
@@ -567,6 +662,11 @@ On when you run `record` or `serve` from the terminal, or after **Settings → L
 
 `content_type`: `all` (screen + audio), `ocr` (screen only), `audio`.
 
+`mode=meaning` searches by meaning instead of words (only while **Search by Meaning** is on, else
+400; `/health` says `"search_by_meaning": true`). Results come best first, in the same shape plus a
+`score`, and leave out blocked apps and sites. A screen result is a moment: `timestamp` is where
+it starts and `text` is the moment's text.
+
 Response: `{"data":[{"type":"OCR","content":{"frame_id","text","timestamp","app_name","window_name","file_path","text_source"}},{"type":"Audio","content":{"chunk_id","transcription","timestamp","start_time","end_time","device_name","device_type"}}],"pagination":{"limit","offset","total"}}`
 
 ## Data
@@ -584,6 +684,7 @@ Delete the folder to wipe everything, or from the terminal:
 ## Not yet (Rewind had these)
 
 - Speaker identification (who said what)
+- Meeting summaries (Ask AI and the Journal recap summarize the day's transcripts, but not each meeting on its own)
 - UI input events (clicks, keys)
 - Browser URL per frame
 - Video chunk encoding (ffmpeg) instead of JPEGs

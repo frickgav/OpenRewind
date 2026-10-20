@@ -34,6 +34,14 @@ final class TimelineModel: ObservableObject {
     /// Bumped to ask the view to focus the search box.
     @Published var focusSearchToken = 0
     var searchWork: DispatchWorkItem?
+    /// Search by Meaning, when the app has it. It can search only once its model is loaded.
+    var meaning: MeaningService?
+    /// The user picked Meaning over Keyword in the search box.
+    @Published var byMeaning = false
+    /// A meaning search is running in the background.
+    @Published var searching = false
+    /// Bumped by each search, so an older meaning search that finishes late is dropped.
+    var searchSeq = 0
     /// Set by the overlay: gives the keyboard back to the timeline (so space plays audio again).
     var leaveSearchBox: (() -> Void)?
     /// Set by the overlay: closes it without giving focus back to the app that was in front.

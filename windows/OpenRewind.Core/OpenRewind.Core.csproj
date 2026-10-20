@@ -12,7 +12,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11" />
     <!-- ONNX Runtime, the one copy for the whole app: NVIDIA Parakeet v3 (Settings → Transcription Model) and
-         search by meaning use it. Keep it at the Mac app's Swift package version (Package.swift). -->
+         Search by Meaning (all-MiniLM-L6-v2) use it. Keep it at the Mac app's Swift package version (Package.swift). -->
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.2" />
   </ItemGroup>
 

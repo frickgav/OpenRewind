@@ -34,9 +34,12 @@ extension Database {
         let (whereSQL, args) = Self.range("timestamp", from, to)
         let paths = strings("SELECT snapshot_path FROM frames \(whereSQL)", args)
         guard !paths.isEmpty else { return 0 }
+        forgetScreenMoments(from: from, to: to)  // Search by Meaning vectors go with the screenshots
         forgetMeetingWindows(from: from, to: to)
         run("DELETE FROM frames \(whereSQL)", args)  // FTS rows go with it (trigger frames_ad)
         Self.removeFiles(paths)
+        // A recap is made from its day's recordings, so it goes with them.
+        deleteRecapsWith(from: from, to: to)
         return paths.count
     }
 
@@ -48,9 +51,11 @@ extension Database {
         let (whereSQL, args) = Self.range("timestamp", from, to)
         let paths = strings("SELECT file_path FROM audio_chunks \(whereSQL)", args)
         guard !paths.isEmpty else { return 0 }
+        forgetAudioMoments(chunkWhere: whereSQL, args)
         run("DELETE FROM audio_transcriptions WHERE audio_chunk_id IN (SELECT id FROM audio_chunks \(whereSQL))", args)
         run("DELETE FROM audio_chunks \(whereSQL)", args)
         Self.removeFiles(paths)
+        deleteRecapsWith(from: from, to: to)
         return paths.count
     }
 
@@ -66,7 +71,7 @@ extension Database {
         return (parts.isEmpty ? "" : "WHERE " + parts.joined(separator: " AND "), args)
     }
 
-    private func strings(_ sql: String, _ args: [Arg]) -> [String] {
+    func strings(_ sql: String, _ args: [Arg]) -> [String] {
         lock.lock(); defer { lock.unlock() }
         var st: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); return [] }

@@ -10,6 +10,8 @@ sealed class Engine
     public readonly Database Db;
     public readonly Recorder Recorder;
     public Transcriber? Transcriber { get; private set; }
+    /// Search by Meaning; it indexes only while MeaningController has turned it on.
+    public readonly MeaningService Meaning;
     Server? server;
     CancellationTokenSource? screenCts, txCts;
     AudioStream? mic, system;
@@ -26,6 +28,7 @@ sealed class Engine
         Config = config;
         Db = db;
         Recorder = new Recorder(config, db);
+        Meaning = new MeaningService(db);
     }
 
     public bool ServerOn => server != null;
@@ -40,7 +43,7 @@ sealed class Engine
             ["accessibility_permission"] = Config.UseAccessibility,
             ["ocr_available"] = Ocr.Available,
             ["platform"] = "windows",
-        });
+        }, () => Meaning);
         var s = new Server(Config.Port, api.Handle);
         s.Start();
         server = s;
@@ -210,6 +213,7 @@ sealed class Engine
         SetScreen(false);
         SetAudio(false);
         txCts?.Cancel();
+        Meaning.Stop();
         server?.Dispose();
     }
 }
