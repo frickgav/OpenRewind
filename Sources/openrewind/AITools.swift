@@ -163,6 +163,9 @@ struct AITools {
         blocklist.blocksFrame(appName: app, windowName: window, url: url) || Blocklist.hasKeyword(url, blocklist.keywords)
     }
 
+    /// True for an app on the block list. The journal leaves such apps out of its lists entirely.
+    func hidesApp(_ app: String) -> Bool { blocklist.blocksApp(bundleID: nil, name: app) }
+
     static func cap(_ s: String, _ limit: Int = resultLimit) -> String {
         s.count <= limit ? s : String(s.prefix(limit)) + "\n[cut to fit; narrow the time range or search for more]"
     }

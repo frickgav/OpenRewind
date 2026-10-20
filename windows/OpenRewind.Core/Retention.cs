@@ -42,6 +42,8 @@ public sealed partial class Database
         ForgetMeetingWindows(from, to);
         Run($"DELETE FROM frames {where}", args);  // FTS rows go with it (trigger frames_ad)
         RemoveFiles(paths);
+        // A recap is made from its day's recordings, so it goes with them.
+        DeleteRecapsWith(from, to);
         return paths.Count;
     }
 
@@ -56,6 +58,7 @@ public sealed partial class Database
         Run($"DELETE FROM audio_transcriptions WHERE audio_chunk_id IN (SELECT id FROM audio_chunks {where})", args);
         Run($"DELETE FROM audio_chunks {where}", args);
         RemoveFiles(paths);
+        DeleteRecapsWith(from, to);
         return paths.Count;
     }
 
