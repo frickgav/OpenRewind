@@ -71,5 +71,18 @@ struct LiveTextOverlay: NSViewRepresentable {
         nonisolated func contentsRect(for overlayView: ImageAnalysisOverlayView) -> CGRect {
             CGRect(x: 0, y: 0, width: 1, height: 1)
         }
+
+        /// The right-click menu keeps only Copy and Select All. Look Up, Translate, Search With Google, Share and
+        /// Services would send the text off this Mac.
+        nonisolated func overlayView(_ overlayView: ImageAnalysisOverlayView, updatedMenuFor menu: NSMenu,
+                                     for event: NSEvent, at point: CGPoint) -> NSMenu {
+            MainActor.assumeIsolated {
+                let keep: Set<Selector> = [#selector(NSText.copy(_:)), #selector(NSText.selectAll(_:))]
+                for item in menu.items.reversed() where item.action.map({ !keep.contains($0) }) ?? true {
+                    menu.removeItem(item)
+                }
+            }
+            return menu
+        }
     }
 }

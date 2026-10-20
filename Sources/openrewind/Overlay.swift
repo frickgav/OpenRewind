@@ -85,6 +85,10 @@ final class OverlayController {
     func hide(restoreFocus: Bool = true) {
         model.stopAudio()
         model.exportClip = nil
+        // Marks and a text selection belong to this visit: next time the bar opens on now, where they can't be
+        // seen, and Esc would clear them instead of closing.
+        model.clearMarks()
+        _ = model.clearTextSelection()
         model.tutorialStep = nil
         if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
         guard let p = panel else { return }

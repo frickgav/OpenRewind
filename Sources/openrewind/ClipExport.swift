@@ -19,7 +19,7 @@ struct ClipFrame {
 }
 
 /// Which screenshots go into an exported clip, and for how long each one shows.
-/// Clips are made only from screenshots already saved (blocked apps are blurred in them), never from a new capture.
+/// Clips are made only from screenshots already saved, never from a new capture.
 /// The Windows app has the same rules in ClipPlan.cs (with tests).
 enum ClipPlan {
     /// Longest stretch of time one clip can cover.
@@ -85,8 +85,8 @@ enum ClipPlan {
             var secs = min(next.timeIntervalSince(f.time), maxHold)
             let last = i + 1 >= frames.count || frames[i + 1].time > end
             if last { secs = min(secs, max(lastHold, end.timeIntervalSince(f.time))) }
-            if secs <= 0 { continue }
             if hides?(f) == true { blocked += 1; continue }
+            if secs <= 0 { continue }
             raw.append((f, secs))
         }
         let real = raw.reduce(0) { $0 + $1.secs }
@@ -127,6 +127,52 @@ enum ClipPlan {
         return out
     }
 
+    /// How many video samples `samples` makes, without making them.
+    static func sampleCount(_ frames: [ClipFrame], maxGap: Double = maxVideoGap) -> Int {
+        frames.reduce(0) { $0 + max(1, Int(($1.duration / maxGap - 1e-9).rounded(.up))) }
+    }
+
+    /// H.264 bitrate (bits per second) for a `w`×`h` video: screens are mostly still, so a modest one keeps text
+    /// sharp without big files.
+    static func videoBitrate(width w: Int, height h: Int) -> Int { min(max(w * h * 2, 1_000_000), 6_000_000) }
+
+    /// A rough guess, shown before exporting, of the file's size (bytes) and how long making it takes (seconds)
+    /// for a `w`×`h` output. Screens compress very differently, so this only gives the order of magnitude.
+    static func estimate(_ plan: Result, format: ClipFormat, width w: Int, height h: Int) -> (bytes: Int, seconds: Double) {
+        let pictures = Double(plan.frames.count)
+        let px = Double(w) * Double(h)
+        if format == .gif {
+            // The first picture in full, then only what changed, which is usually a small part of the screen.
+            let bytes = px * 0.5 + max(0, pictures - 1) * px * 0.03 + 1024
+            return (Int(bytes), pictures * (0.05 + px * 5e-8))
+        }
+        // A mostly still screen uses about a third of the bitrate allowed.
+        let size = Double(videoBitrate(width: w, height: h)) / 8 * plan.duration / 3 + 4096
+        return (Int(size), pictures * 0.05 + Double(sampleCount(plan.frames)) * 0.01)
+    }
+
+    /// "820 KB" or "12.4 MB".
+    static func fileSize(_ bytes: Int) -> String {
+        bytes < 1024 * 1024 ? "\(max(1, bytes / 1024)) KB" : String(format: "%.1f MB", Double(bytes) / 1_048_576)
+    }
+
+    /// What is going into the clip, shown before exporting: "0:42 clip · 312 frames · 1280×800 · about 4.1 MB · takes about 0:20".
+    static func summary(_ plan: Result, format: ClipFormat, width w: Int, height h: Int) -> String {
+        let e = estimate(plan, format: format, width: w, height: h)
+        let n = plan.frames.count
+        return "\(length(plan.duration)) clip · \(n) frame\(n == 1 ? "" : "s") · \(w)×\(h) · about \(fileSize(e.bytes)) · takes about \(length(max(1, e.seconds)))"
+    }
+
+    /// While exporting: "Frame 120 of 600 · 20% · 0:12 elapsed · about 0:48 left".
+    static func progressText(done: Int, total: Int, elapsed: Double) -> String {
+        let total = max(1, total)
+        let done = min(max(done, 0), total)
+        let s = "Frame \(done) of \(total) · \(done * 100 / total)% · \(length(elapsed)) elapsed"
+        if done >= total { return s + " · finishing the file…" }
+        if done == 0 || elapsed < 1 { return s + " · working out the time left…" }
+        return s + " · about \(length(elapsed * Double(total - done) / Double(done))) left"
+    }
+
     /// Output size for a `w`×`h` screenshot: scaled down to fit, even sizes for video (H.264 needs them).
     static func outputSize(width w: Int, height h: Int, format: ClipFormat) -> (width: Int, height: Int) {
         let limit = format == .gif ? maxGifSide : maxVideoSide
@@ -156,18 +202,19 @@ enum ClipPlan {
 }
 
 extension Blocklist {
-    /// True for a frame the block list covers now (same rule as Ask AI): by app, window title, site or word.
+    /// True for a frame saved while a blocked window or site was in front, or one the block list covers now
+    /// (same rule as Ask AI): by app, window title, site or word.
     func hides(_ f: TimelineFrame) -> Bool {
-        blocksFrame(appName: f.appName, windowName: f.windowName, url: f.url) || Blocklist.hasKeyword(f.url, keywords)
+        f.blocked || blocksFrame(appName: f.appName, windowName: f.windowName, url: f.url) || Blocklist.hasKeyword(f.url, keywords)
     }
 }
 
-/// Writes a clip of saved screenshots to an MP4 (H.264 with AVAssetWriter) or an animated GIF (ImageIO).
-/// Only the files already on disk are used, so blocked apps stay blurred; nothing is captured again.
+/// Writes a clip of saved screenshots to an MP4 (H.264 with AVAssetWriter) or an animated GIF (GifWriter, written
+/// as it goes). Only the files already on disk are used; nothing is captured again.
 final class ClipExporter {
     private let lock = NSLock()
     private var stopped = false
-    private var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
+    var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
 
     func cancel() { lock.lock(); stopped = true; lock.unlock() }
 
@@ -176,22 +223,33 @@ final class ClipExporter {
         var errorDescription: String? { message }
     }
 
-    /// Write `plan` to `url` in the background. `progress` (0–1) and `done` run on the main thread; `done` gets
-    /// nil on success. A cancelled or failed export leaves no file behind.
-    func export(_ plan: ClipPlan.Result, format: ClipFormat, to url: URL,
-                progress: @escaping (Double) -> Void, done: @escaping (Error?) -> Void) {
+    /// Write `plan` as a `size` clip to `url` in the background. `progress` gets how many of the plan's frames are
+    /// done, about ten times a second; it and `done` run on the main thread. `done` gets nil on success.
+    /// A cancelled or failed export leaves no file behind.
+    func export(_ plan: ClipPlan.Result, format: ClipFormat, size: (width: Int, height: Int), to url: URL,
+                progress: @escaping (Int) -> Void, done: @escaping (Error?) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             let tmp = url.deletingLastPathComponent().appendingPathComponent("." + url.lastPathComponent + ".part")
             var failure: Error?
             do {
                 try? FileManager.default.removeItem(at: tmp)
-                let report = { (p: Double) in DispatchQueue.main.async { progress(p) } }
-                if format == .gif { try writeGIF(plan.frames, to: tmp, progress: report) }
-                else { try writeMP4(plan, to: tmp, progress: report) }
+                let total = plan.frames.count
+                var last = Date.distantPast, lastDone = -1
+                let report = { (n: Int) in
+                    // At most ten times a second, and always the last one.
+                    guard n != lastDone, n >= total || Date().timeIntervalSince(last) >= 0.1 else { return }
+                    last = Date(); lastDone = n
+                    DispatchQueue.main.async { progress(n) }
+                }
+                if format == .gif { try writeGIF(plan.frames, size: size, to: tmp, progress: report) }
+                else { try writeMP4(plan, size: size, to: tmp, progress: report) }
                 if isCancelled { throw CancellationError() }
-                // The save panel already asked before replacing a file.
-                if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
-                try FileManager.default.moveItem(at: tmp, to: url)
+                // The save panel already asked before replacing a file; replacing keeps the old one if it fails.
+                if FileManager.default.fileExists(atPath: url.path) {
+                    _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+                } else {
+                    try FileManager.default.moveItem(at: tmp, to: url)
+                }
             } catch {
                 failure = error
             }
@@ -200,15 +258,15 @@ final class ClipExporter {
         }
     }
 
-    /// Size of the first screenshot that can still be read.
-    private func outputSize(_ frames: [ClipFrame], _ format: ClipFormat) throws -> (width: Int, height: Int) {
+    /// Output size for the first screenshot that can still be read (only its header is read), or nil.
+    static func outputSize(_ frames: [ClipFrame], _ format: ClipFormat) -> (width: Int, height: Int)? {
         for f in frames {
             guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: f.frame.path) as CFURL, nil),
                   let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
                   let w = props[kCGImagePropertyPixelWidth] as? Int, let h = props[kCGImagePropertyPixelHeight] as? Int else { continue }
             return ClipPlan.outputSize(width: w, height: h, format: format)
         }
-        throw Failure(message: "The screenshots in that range were deleted.")
+        return nil
     }
 
     /// Draw `image` scaled to fit `size`, centered on black.
@@ -222,8 +280,8 @@ final class ClipExporter {
         ctx.draw(image, in: CGRect(x: (CGFloat(width) - w) / 2, y: (CGFloat(height) - h) / 2, width: w, height: h))
     }
 
-    private func writeMP4(_ plan: ClipPlan.Result, to url: URL, progress: (Double) -> Void) throws {
-        let (w, h) = try outputSize(plan.frames, .mp4)
+    private func writeMP4(_ plan: ClipPlan.Result, size: (width: Int, height: Int), to url: URL, progress: (Int) -> Void) throws {
+        let (w, h) = size
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let settings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
@@ -231,7 +289,7 @@ final class ClipExporter {
             AVVideoHeightKey: h,
             AVVideoCompressionPropertiesKey: [
                 // Screens are mostly still: a modest bitrate keeps text sharp without big files.
-                AVVideoAverageBitRateKey: min(max(w * h * 2, 1_000_000), 6_000_000),
+                AVVideoAverageBitRateKey: ClipPlan.videoBitrate(width: w, height: h),
                 AVVideoMaxKeyFrameIntervalDurationKey: 2.0,
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
             ] as [String: Any],
@@ -248,10 +306,14 @@ final class ClipExporter {
         guard writer.startWriting() else { throw writer.error ?? Failure(message: "Could not start the video.") }
         writer.startSession(atSourceTime: .zero)
 
-        let samples = ClipPlan.samples(plan.frames)
+        // Each video sample, with the frame of the plan it shows.
+        var samples: [(sample: ClipFrame, frame: Int)] = []
+        for (p, f) in plan.frames.enumerated() {
+            for s in ClipPlan.samples([f]) { samples.append((s, p)) }
+        }
         var lastPath: String?
         var image: CGImage?
-        for (i, s) in samples.enumerated() {
+        for (i, (s, frame)) in samples.enumerated() {
             while !input.isReadyForMoreMediaData {
                 if isCancelled { break }
                 Thread.sleep(forTimeInterval: 0.005)
@@ -271,7 +333,7 @@ final class ClipExporter {
                 writer.cancelWriting()
                 throw error ?? Failure(message: "Could not write the video.")
             }
-            progress(Double(i + 1) / Double(samples.count))
+            progress(i + 1 == samples.count ? plan.frames.count : frame)
         }
         input.markAsFinished()
         writer.endSession(atSourceTime: CMTime(seconds: plan.duration, preferredTimescale: 6000))
@@ -296,45 +358,37 @@ final class ClipExporter {
         return pb
     }
 
-    private func writeGIF(_ frames: [ClipFrame], to url: URL, progress: (Double) -> Void) throws {
-        let (w, h) = try outputSize(frames, .gif)
-        guard let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.gif.identifier as CFString, frames.count, nil),
-              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+    private func writeGIF(_ frames: [ClipFrame], size: (width: Int, height: Int), to url: URL, progress: (Int) -> Void) throws {
+        let (w, h) = size
+        // BGRA in memory, as GifWriter reads it.
+        guard FileManager.default.createFile(atPath: url.path, contents: nil),
+              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue),
+              let pixels = ctx.data
         else { throw Failure(message: "Could not start the GIF.") }
-        CGImageDestinationSetProperties(dest, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
+        let file = try FileHandle(forWritingTo: url)
+        defer { try? file.close() }
+        let gif = try GifWriter(output: file, width: w, height: h)
         var lastPath: String?
-        var picture: CGImage?
+        var drawn = false
         for (i, f) in frames.enumerated() {
             if isCancelled { throw CancellationError() }
-            if f.frame.path != lastPath || picture == nil {
+            if f.frame.path != lastPath {
                 // A missing file keeps the picture before it.
                 if let image = ImageTools.load(URL(fileURLWithPath: f.frame.path)) {
                     Self.draw(image, in: ctx, width: w, height: h)
-                    picture = Self.compact(ctx.makeImage())
+                    drawn = true
                 }
                 lastPath = f.frame.path
             }
-            guard let picture else { continue }
-            let delay = [kCGImagePropertyGIFDelayTime: f.duration, kCGImagePropertyGIFUnclampedDelayTime: f.duration]
-            CGImageDestinationAddImage(dest, picture, [kCGImagePropertyGIFDictionary: delay] as CFDictionary)
-            progress(Double(i + 1) / Double(frames.count) * 0.9)
+            if drawn {
+                try gif.addFrame(pixels.assumingMemoryBound(to: UInt8.self), bytesPerRow: ctx.bytesPerRow, seconds: f.duration)
+            }
+            progress(i + 1)
         }
         if isCancelled { throw CancellationError() }
-        guard CGImageDestinationFinalize(dest) else { throw Failure(message: "Could not write the GIF.") }
-        progress(1)
-    }
-
-    /// The picture kept as PNG bytes and read back only when the GIF is written, so a long GIF does not hold
-    /// hundreds of full-size pictures in memory until then.
-    private static func compact(_ image: CGImage?) -> CGImage? {
-        guard let image else { return nil }
-        let data = NSMutableData()
-        guard let dest = CGImageDestinationCreateWithData(data as CFMutableData, UTType.png.identifier as CFString, 1, nil) else { return image }
-        CGImageDestinationAddImage(dest, image, nil)
-        guard CGImageDestinationFinalize(dest), let src = CGImageSourceCreateWithData(data as CFData, nil),
-              let lazy = CGImageSourceCreateImageAtIndex(src, 0, [kCGImageSourceShouldCache: false] as CFDictionary) else { return image }
-        return lazy
+        try gif.finish()
     }
 }
 
@@ -375,6 +429,8 @@ extension TimelineModel {
     /// Copy the text selected with Live Text, or the shown screenshot when nothing is selected.
     func copy() {
         if let text = selectedText {
+            // The block list may have changed since the words were read.
+            if currentHidden { _ = clearTextSelection(); show(notice: "This moment is from a blocked app or site"); return }
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
             show(notice: "Copied the selected text")
@@ -448,20 +504,31 @@ extension TimelineModel {
         exportClip = ClipRange(start: r.start, end: r.end)
     }
 
-    /// The screenshots in a range as the timeline shows them (with its app filter), and what the clip will be.
-    func clipPlan(_ start: Date, _ end: Date, speed: Double, format: ClipFormat) -> (plan: ClipPlan.Result?, problem: String?) {
-        guard end > start else { return (nil, "The end is before the start.") }
+    /// The screenshots in a range as the timeline shows them (with its app filter), what the clip will be and its
+    /// size, or why there is none. Reads only that range of the database; safe off the main thread.
+    static func clipPlan(db: Database, appFilter: String?, _ start: Date, _ end: Date, speed: Double,
+                         format: ClipFormat) -> ClipInfo {
+        func problem(_ s: String) -> ClipInfo { ClipInfo(plan: nil, size: nil, problem: s) }
+        guard end > start else { return problem("The end is before the start.") }
         guard end.timeIntervalSince(start) <= ClipPlan.maxLength else {
-            return (nil, "A clip can cover at most \(Int(ClipPlan.maxLength / 3600)) hours.")
+            return problem("A clip can cover at most \(Int(ClipPlan.maxLength / 3600)) hours.")
         }
-        let shown = AppFilter.apply(db.timelineFrames(since: start), app: appFilter)
+        let shown = AppFilter.apply(db.timelineFrames(from: start, to: end), app: appFilter)
         let list = BlocklistStore.shared.current
         let plan = ClipPlan.make(shown, from: start, to: end, speed: speed, format: format) { list.hides($0) }
         guard !plan.frames.isEmpty else {
-            return (nil, plan.blocked > 0 ? "Every screenshot in that range is from a blocked app or site." : "No screenshots in that range.")
+            return problem(plan.blocked > 0 ? "Every screenshot in that range is from a blocked app or site." : "No screenshots in that range.")
         }
-        return (plan, nil)
+        guard let size = ClipExporter.outputSize(plan.frames, format) else { return problem("The screenshots in that range were deleted.") }
+        return ClipInfo(plan: plan, size: size, problem: nil)
     }
+}
+
+/// A clip ready to export (its plan and output size), or why there is none.
+struct ClipInfo {
+    var plan: ClipPlan.Result?
+    var size: (width: Int, height: Int)?
+    var problem: String?
 }
 
 /// The range the Export Clip card opened with.

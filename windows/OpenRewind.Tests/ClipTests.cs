@@ -24,6 +24,21 @@ public class ClipTests : IDisposable
         Assert.Equal(2, db.TimelineFrames(T0.AddSeconds(180), T0.AddSeconds(500)).Count);
     }
 
+    [Fact]
+    public void ScreenshotsSavedWithABlockedWindowInFrontAreNeverExported()
+    {
+        db = new Database(Config.Load(new[] { "--home", home }).DbPath);
+        db.Insert(new Frame(0, Time.Iso(T0), "Chrome", "", true, "", "", "ocr", 0, "", Blocked: true));
+        db.Insert(new Frame(0, Time.Iso(T0.AddSeconds(10)), "Chrome", "News", true, "", "", "ocr", 0, ""));
+        var frames = db.TimelineFrames(T0, T0.AddSeconds(20));
+        Assert.Equal(new[] { true, false }, frames.Select(f => f.Blocked));
+        // Even with nothing on the block list now, and through the app filter.
+        var list = new Blocklist(Array.Empty<BlockedApp>(), Array.Empty<string>(), false);
+        var plan = ClipPlan.Make(AppFilter.Apply(frames, "Chrome"), T0, T0.AddSeconds(20), 1, ClipFormat.Mp4, f => ClipPlan.Hides(list, f));
+        Assert.Equal(1, plan.Blocked);
+        Assert.Equal(new long[] { frames[1].Id }, plan.Frames.Select(f => f.Frame.Id));
+    }
+
     static readonly DateTime T0 = new(2026, 10, 19, 14, 0, 0, DateTimeKind.Utc);
 
     static TimelineFrame F(int id, double secs, string app = "Code", string window = "main.cs", string url = "") =>

@@ -170,7 +170,7 @@ public static class ClipPlan
     }
 
     /// True for a frame the block list covers now (same rule as Ask AI): by app, window title, site or word.
-    public static bool Hides(Blocklist list, TimelineFrame f) =>
+    public static bool Hides(Blocklist list, TimelineFrame f) => f.Blocked ||
         list.BlocksWindow(f.AppName, f.AppName, f.WindowName) || list.BlocksUrl(f.Url) || list.HasKeyword(f.Url);
 
     /// "OpenRewind 2026-10-19 14.30.05.gif", from a local time.

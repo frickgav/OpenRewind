@@ -135,16 +135,22 @@ Get things out of the timeline, on the Mac and on Windows:
 - **Export Clip…** (**⌘E** / **Ctrl+E**) turns a stretch of the timeline into an MP4 video or an
   animated GIF. Mark where it starts with **[** and where it ends with **]** (the bar shows the
   marked range; **Esc** clears it), or leave it unmarked to get the 5 minutes before the shown
-  screenshot. Pick the format and a speed (1× real time, or 2×, 5×, 10×, 30× faster), then
-  where to save it. A bar shows how far it got; **Cancel** stops it and leaves no file.
+  screenshot. Pick the format and a speed (1× real time, or 2×, 5×, 10×, 30× faster). Before you
+  start, it shows how long the clip will be, how many frames it has, its size in pixels, and
+  roughly how big the file will be and how long making it takes. Then pick where to save it.
+  It says **Preparing…** at once, then shows a bar with the frame it is on ("Frame 120 of 600"),
+  the percentage, the time so far and about how long is left. **Cancel** stops it right away and
+  leaves no file. When it is done, **Show in Finder** / **Show in Explorer** and **Open** take you
+  to the file.
 - The share button at the top of the timeline (or a right-click on the screenshot on Windows) has
   all of these, plus **Copy All Text** and **Mark Clip Start / End Here**.
 
 What is left out:
 
-- Screenshots whose front app, window or site is on your block list **now** are left out of
-  clips and can't be copied, saved or read for text, even ones saved before you blocked it. With
-  the app filter on, a clip has only that app's screenshots, as the timeline shows them.
+- Screenshots saved while a blocked app, window or site was in front, and ones whose front app,
+  window or site is on your block list **now** (even if saved before you blocked it), are left
+  out of clips and can't be copied, saved or read for text. With the app filter on, a clip has
+  only that app's screenshots, as the timeline shows them.
 - Clips are made from the screenshots already saved, never from a new recording. Blurring of
   other windows happens when a screenshot is taken, using the block list as it was then. So an
   app you block today is still visible, unblurred, in older screenshots where another app was in
