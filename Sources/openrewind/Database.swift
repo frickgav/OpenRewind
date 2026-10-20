@@ -15,6 +15,8 @@ struct Frame: Codable {
     var hash: Int64
     /// Address of the browser tab in this frame, the open document (file://), or "".
     var browserUrl = ""
+    /// Saved while a blocked window or site was in front (only the app name is kept; Insights leaves it out).
+    var blocked = false
 }
 
 struct SearchQuery {
@@ -43,6 +45,7 @@ final class Database {
         try exec("PRAGMA busy_timeout=5000;")
         try migrate()
         try migrateAudio()
+        try migrateMeetings()
         finishHomeMove(home: path.deletingLastPathComponent())
     }
 
@@ -91,7 +94,6 @@ final class Database {
             text_source TEXT NOT NULL DEFAULT 'ocr',
             hash INTEGER NOT NULL DEFAULT 0
         );
-        CREATE INDEX IF NOT EXISTS idx_frames_ts ON frames(timestamp);
         CREATE INDEX IF NOT EXISTS idx_frames_app_ts ON frames(app_name, timestamp);
         CREATE VIRTUAL TABLE IF NOT EXISTS frames_fts USING fts5(
             text, app_name, window_name,
@@ -110,6 +112,56 @@ final class Database {
         if scalarInt("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'browser_url'", []) == 0 {
             try exec("ALTER TABLE frames ADD COLUMN browser_url TEXT NOT NULL DEFAULT ''")
         }
+        // Time order. Replaced by idx_frames_insights, which starts with the time too (see
+        // buildSlowIndexesInBackground); only a database that does not have that one yet needs this.
+        if scalarInt("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_frames_insights'", []) == 0 {
+            try exec("CREATE INDEX IF NOT EXISTS idx_frames_ts ON frames(timestamp)")
+        }
+        // Frames saved while a blocked window or site was in front. Older frames say 0. Windows: the same column.
+        if scalarInt("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'blocked'", []) == 0 {
+            try exec("ALTER TABLE frames ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
+        }
+    }
+
+    /// Indexes that take a while on a big database (the whole frames table is read, screen text and
+    /// all: seconds, or about a minute on a slow disk). Built after launch on a connection of its own,
+    /// in the background, so the app starts at once and reads keep working meanwhile. A failure (full
+    /// disk, another process writing) is logged and tried again next launch; Insights still works,
+    /// only slower. Windows does the same.
+    static func buildSlowIndexesInBackground(path: URL) {
+        DispatchQueue.global(qos: .utility).async {
+            var c: OpaquePointer?
+            defer { sqlite3_close(c) }
+            guard sqlite3_open_v2(path.path, &c, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+                log("could not build the Insights index (will try again next launch): cannot open the database"); return
+            }
+            func run(_ sql: String) -> Bool {
+                var err: UnsafeMutablePointer<CChar>?
+                guard sqlite3_exec(c, sql, nil, nil, &err) == SQLITE_OK else {
+                    log("could not build the Insights index (will try again next launch): \(err.map { String(cString: $0) } ?? "unknown")")
+                    sqlite3_free(err)
+                    return false
+                }
+                return true
+            }
+            sqlite3_busy_timeout(c, 30_000)
+            var st: OpaquePointer?
+            var has = false
+            if sqlite3_prepare_v2(c, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_frames_insights'", -1, &st, nil) == SQLITE_OK,
+               sqlite3_step(st) == SQLITE_ROW {
+                has = sqlite3_column_int64(st, 0) > 0
+            }
+            sqlite3_finalize(st)
+            if has { return }
+            let started = Date()
+            // Insights reads time, app, window, address and the blocked mark in time order; with this
+            // index it never touches the screen text.
+            guard run("CREATE INDEX IF NOT EXISTS idx_frames_insights ON frames(timestamp, app_name, window_name, browser_url, blocked)") else { return }
+            // The new index starts with the time, so the old time index only costs disk space and inserts.
+            _ = run("DROP INDEX IF EXISTS idx_frames_ts")
+            _ = run("DROP INDEX IF EXISTS idx_frames_activity")  // an earlier test build of Insights
+            log("built the Insights index in \(String(format: "%.1f", Date().timeIntervalSince(started))) s")
+        }
     }
 
     func exec(_ sql: String) throws {
@@ -125,7 +177,7 @@ final class Database {
     @discardableResult
     func insert(_ f: Frame) throws -> Int64 {
         lock.lock(); defer { lock.unlock() }
-        let sql = "INSERT INTO frames (timestamp, app_name, window_name, focused, snapshot_path, text, text_source, hash, browser_url) VALUES (?,?,?,?,?,?,?,?,?)"
+        let sql = "INSERT INTO frames (timestamp, app_name, window_name, focused, snapshot_path, text, text_source, hash, browser_url, blocked) VALUES (?,?,?,?,?,?,?,?,?,?)"
         var st: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { throw DBError.prepare(errmsg) }
         defer { sqlite3_finalize(st) }
@@ -134,6 +186,7 @@ final class Database {
         bind(st, 5, f.snapshotPath); bind(st, 6, f.text); bind(st, 7, f.textSource)
         sqlite3_bind_int64(st, 8, f.hash)
         bind(st, 9, f.browserUrl)
+        sqlite3_bind_int(st, 10, f.blocked ? 1 : 0)
         guard sqlite3_step(st) == SQLITE_DONE else { throw DBError.step(errmsg) }
         return sqlite3_last_insert_rowid(db)
     }

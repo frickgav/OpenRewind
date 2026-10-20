@@ -83,6 +83,11 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
 - **Ask AI** (menu bar or tray → Ask AI…) answers questions like "what did I work on today?"
   with your own key: Anthropic, OpenAI, Gemini, OpenRouter (any model it offers), or any
   OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
+- **Meetings** (menu bar or tray → Meetings…) lists your Zoom, Teams, Meet, Webex, FaceTime and
+  Slack huddle calls with their transcript, and can summarize them with your AI key. When a call
+  starts, a small popup asks whether to take notes for it. See [Meetings](#meetings).
+- **Insights** (menu bar or tray → Insights…) shows where your time went today or this week,
+  worked out on your computer without AI. See [Insights](#insights).
 - **Claude, Cursor and other AI apps** can search your history too, through MCP, once you turn
   it on. See [Use with Claude and other AI apps (MCP)](#use-with-claude-and-other-ai-apps-mcp).
 
@@ -107,6 +112,7 @@ send back capped, trimmed text:
 | `search_audio` | Matching transcript lines (or all of them in a time range) |
 | `get_screen_text` | Screen text from a short time range, sampled and trimmed |
 | `view_screenshot` | One screenshot near a moment, as a JPEG. Only offered when you turn on **Let AI look at screenshots** (off by default) |
+| `list_meetings` | Meetings in a time range, with their summary, decisions and action items when they have notes (see [Meetings](#meetings)) |
 
 Each lookup shows in the chat with the arguments the AI asked for and exactly what was sent
 back. Times in answers link back to that moment in the timeline. Each answer shows the
@@ -120,6 +126,93 @@ supplied that address, so text on screen can't trick the AI into a link that sen
 elsewhere. With a local model (Ollama, LM Studio) nothing leaves your computer at all; a custom
 server reached over plain http on another network gets a warning, since your key would travel
 unencrypted.
+
+## Meetings
+
+OpenRewind finds your calls in what it already records; nothing extra runs during a call.
+A meeting starts when Zoom, Microsoft Teams, Webex, FaceTime or a Slack huddle is the app in front
+(not its chat, calendar or home window), or the browser in front shows Google Meet, Teams, Zoom or
+Webex, and other people can be heard (system audio). It goes on while that app is in front; after you
+switch away, your microphone keeps it going for up to 30 minutes (say, while you share slides) and
+other sound for up to 15. It ends after 3 minutes with none of these, and calls in the same app less
+than 10 minutes apart (a dropped call, a rejoin) become one. Blocked apps and sites never become
+meetings. Without Whisper, audio waiting to be transcribed does not count as sound.
+
+**Take notes?** A minute or two into a call, a small popup asks "Meeting detected in Zoom. Take
+notes?" in the corner of the screen. It does not take focus from the call.
+
+- **Take Notes** keeps the call in Meetings with its transcript and, if summaries are on (below),
+  sends it for a summary when it ends.
+- **Not This Time** leaves the call out of Meetings and Ask AI, and it is never summarized. Audio is
+  still recorded as usual under your recording settings; delete it from **Delete Recordings** if you
+  want it gone.
+- **Remember for Zoom** answers the same way for that app from then on. **Settings → Forget Remembered
+  Meeting Choices** asks again for every app.
+- **Settings → Ask Before Taking Meeting Notes** (on by default): turn it off to take notes for every
+  call without asking (apps you said Never for are still skipped). If you don't answer, the call is
+  listed but not summarized by itself; you can still press **Summarize**.
+
+**Meetings…** in the menu bar or tray lists them by day. Each one shows its transcript, built from the
+audio transcripts of that time: lines from your microphone are **Me**, lines from system audio are
+**Others** (OpenRewind does not tell people apart). **Open in Timeline** jumps to the start,
+**Copy as Markdown** and **Save as Markdown…** export the notes and transcript.
+
+**Summaries are off by default.** They use your Ask AI provider and key, cost tokens, and send the
+call's whole transcript to that provider. The transcript is not filtered by app: anything said or
+played during the call is sent, even while a blocked app or site was in front. Turn on **Settings →
+Summarize Meetings with AI** to have each call you take notes for summarized when it ends (only calls
+that end after you turn it on), or press **Summarize** on one meeting. Summaries go only to the
+provider you agreed to; if you switch providers in AI Settings, OpenRewind asks again and pauses
+summaries until you answer. If Whisper is still catching up when a call ends, OpenRewind waits up to
+2 hours, and makes the notes once more if more of the call is transcribed afterwards.
+
+You get a short summary, decisions and action items, with the tokens and cost it used, as in Ask AI.
+Notes never contain web links (only links into your timeline), since the AI writes them from what
+other people said. Ask AI can read them too: "what did we decide in my 2pm call?" Deleting audio
+recordings deletes the meetings in that time, and they are not found again from what is left;
+deleting screen recordings clears the window titles they kept.
+
+## Insights
+
+Open it from the menu bar or tray (**Insights…**). Switch between **Day** and **Week**, and use
+‹ › (or ← →) for the day or week before or after. It shows:
+
+- **Active time**: how long you used the computer, and the change from the day or week before
+  (up to the same time while the day or week is still going).
+- **Apps** and **Websites**: time in each, as bars, the top 10 and then "Other", each with the change
+  from the day or week before.
+- **When you were active**: a strip of the day's hours, or for a week a grid of days by hours.
+- **Focus sessions**: the longest stretches of 10 minutes or more mostly in one app (short looks at
+  another app, under a minute, don't break one).
+- **App switches**: how often the app in front changed while you were using the computer.
+
+Click an app to open the timeline showing only that app, at the first moment you used it that
+day or week. Click a website or a focus session to jump to it.
+
+Everything is worked out on your computer from what was saved with each screenshot (time, app,
+window title, address); nothing is sent anywhere and no AI is used. The window follows
+**Settings → Timeline Look**.
+
+**Blocked apps and sites.** Screenshots saved while a blocked app, window or site was in front are
+marked as blocked and left out entirely, as is anything that matches your block list now (by app
+name, window title or address). One gap: screenshots saved by an older version while a blocked
+*site* or *window* was in front kept only the browser's name, and ones from a helper app of a blocked
+app (Docker.app shows "Docker Desktop") kept the helper's name, so that older time can still show
+under the browser or the helper app. Block the helper's name too to hide it.
+
+**How time is counted.** Time counts from one screenshot to the next. A break of more than 2
+minutes (locked, asleep or paused) does not count. A screen whose text doesn't change only gets one
+screenshot a minute; after 5 minutes of that, the rest counts as away until something changes,
+unless speech was recorded at the time (a call or a video, with **Record Audio** on), which counts
+as being there. With audio recording off, a long call or video can count as away after 5
+minutes. If you record from the terminal with `--interval` of 50 seconds or more, every screenshot
+looks like a still screen and active time is undercounted; keep the interval under 50 seconds.
+Ask AI's activity summary counts every gap up to 2 minutes without the still-screen rule, so its
+totals can be a little higher than Insights'.
+
+The first launch after updating builds a database index for Insights in the background (seconds,
+or about a minute for a very large history on a slow disk). Until it is done, Insights still works,
+just more slowly.
 
 ## Use with Claude and other AI apps (MCP)
 
@@ -234,6 +327,7 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
   search only finds that app's screen text (and speech heard while it was in front).
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
+- **Insights…** shows where your time went today or this week (see [Insights](#insights)).
 - **Settings → Timeline Shortcut**: **Change Shortcut…** waits for the new key combination
   (⌘, ⌥ or ⌃ with a key, or an F-key alone); **Reset** goes back to ⌥⌘T.
 - **Settings → Screenshot Resolution**: Full (100%), High (75%), Medium (50%, default) or
@@ -409,7 +503,6 @@ Delete the folder to wipe everything, or from the terminal:
 ## Not yet (Rewind had these)
 
 - Speaker identification (who said what)
-- Meeting summaries (Ask AI can summarize transcripts when asked, but nothing runs on its own)
 - UI input events (clicks, keys)
 - Browser URL per frame
 - Video chunk encoding (ffmpeg) instead of JPEGs
