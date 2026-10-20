@@ -119,6 +119,7 @@ public sealed partial class Database : IDisposable
             failure_reason TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_audio_chunks_status ON audio_chunks(status, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_audio_chunks_ts ON audio_chunks(timestamp);
         CREATE TABLE IF NOT EXISTS audio_transcriptions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             audio_chunk_id INTEGER NOT NULL REFERENCES audio_chunks(id),
@@ -146,6 +147,7 @@ public sealed partial class Database : IDisposable
         // Added later: older databases do not have this column yet.
         if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'browser_url'") == 0)
             Exec("ALTER TABLE frames ADD COLUMN browser_url TEXT NOT NULL DEFAULT ''");
+        MigrateJournal();
         // Time order. Replaced by idx_frames_insights, which starts with the time too (see BuildSlowIndexesInBackground);
         // only a database that does not have that one yet needs this.
         if (ScalarLong("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_frames_insights'") == 0)

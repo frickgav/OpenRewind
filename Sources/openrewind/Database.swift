@@ -45,6 +45,7 @@ final class Database {
         try exec("PRAGMA busy_timeout=5000;")
         try migrate()
         try migrateAudio()
+        try migrateJournal()
         try migrateMeetings()
         finishHomeMove(home: path.deletingLastPathComponent())
     }

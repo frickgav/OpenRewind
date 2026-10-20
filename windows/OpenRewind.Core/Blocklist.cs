@@ -57,6 +57,15 @@ public sealed class Blocklist
     public static string IdFor(string? exePath) =>
         string.IsNullOrEmpty(exePath) ? "" : Path.GetFileNameWithoutExtension(exePath).ToLowerInvariant();
 
+    /// Everything on the list, one line each and sorted ("app:1password", "word:chase", "site:…",
+    /// "private"). A saved journal recap keeps these, so it can tell when the list has grown since.
+    public IReadOnlyList<string> Entries =>
+        keys.Select(k => "app:" + k.ToLowerInvariant())
+            .Concat(Keywords.Select(k => "word:" + k.ToLowerInvariant()))
+            .Concat(Sites.Select(x => "site:" + x))
+            .Concat(PrivateWindows ? new[] { "private" } : Array.Empty<string>())
+            .Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList();
+
     public bool BlocksApp(string? id, string? name) =>
         (!string.IsNullOrEmpty(id) && keys.Contains(id)) || (!string.IsNullOrEmpty(name) && keys.Contains(name));
 
