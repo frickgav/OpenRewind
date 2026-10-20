@@ -90,6 +90,7 @@ case "app":
 
 case "record":
     requirePermissions()
+    Database.buildSlowIndexesInBackground(path: config.dbPath)
     startServer()
     engine.setScreen(true)
     if config.recordMic || config.recordSystemAudio { engine.setAudio(true) }

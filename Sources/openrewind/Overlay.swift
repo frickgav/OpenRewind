@@ -69,6 +69,12 @@ final class OverlayController {
         model.jump(to: date)
     }
 
+    /// Open the timeline at a moment, only showing `app` when given (Insights).
+    func show(at date: Date, app: String?) {
+        if !isVisible { show() }
+        model.open(at: date, app: app)
+    }
+
     /// Open the timeline with the guided tour on it.
     func showTutorial() {
         show()
