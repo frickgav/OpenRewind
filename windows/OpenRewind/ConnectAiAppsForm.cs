@@ -172,25 +172,38 @@ sealed class ConnectAiAppsForm : Form
         Activated += (_, _) => ShowStatus(clearMessages: false);
     }
 
-    /// Reads every app's setup again and shows it.
-    void ShowStatus(bool clearMessages)
+    bool reading, again;
+
+    /// Reads every app's setup again, off the window's thread (~/.claude.json can be large), and shows it.
+    async void ShowStatus(bool clearMessages)
     {
-        foreach (var row in rows)
+        if (reading) { again = true; return; }
+        reading = true;
+        var todo = rows.Where(r => !r.Busy).ToList();
+        var found = await Task.Run(() => todo.Select(r =>
         {
-            if (row.Busy) continue;
             McpLink link;
             string? problem;
-            try { (link, problem) = row.Link.Status(); }
-            catch (Exception e) { (link, problem) = (McpLink.Unreadable, e.Message); }
-            if (clearMessages || row.Last != link) row.Message = null;
+            try { (link, problem) = r.Link.Status(); }
+            catch (Exception e) { Log.Write($"connect: {r.Link.Title}: {e.Message}"); (link, problem) = (McpLink.Unreadable, "OpenRewind can't read this app's setup."); }
+            var running = link is McpLink.Added && SafeCanRestart(r.Link);
+            return (Row: r, Link: link, Problem: problem, Running: running);
+        }).ToList());
+        reading = false;
+        if (IsDisposed) return;
+        foreach (var (row, link, problem, running) in found)
+        {
+            if (row.Busy) continue;
+            // A message from the last click stays until the setup changes some other way.
+            if (clearMessages || (row.Last != null && row.Last != link)) row.Message = null;
             row.Last = link;
-            var running = link is McpLink.Added && SafeCanRestart(row.Link);
             row.Status.ForeColor = row.Message != null && row.Failed ? Ui.Warn
-                : link switch { McpLink.Added => Ui.Good, McpLink.Unreadable => Ui.Warn, _ => Ui.Dim };
+                : link switch { McpLink.Added => Ui.Good, McpLink.Unreadable or McpLink.TurnedOff => Ui.Warn, _ => Ui.Dim };
             row.Status.Text = row.Message ?? link switch
             {
                 McpLink.Added => running ? $"Added. Restart {row.Link.AppName} if it doesn't list OpenRewind yet." : "Added.",
                 McpLink.Different => "Set up for another copy of OpenRewind or with other options. Update points it at this one.",
+                McpLink.TurnedOff => $"Turned off in {row.Link.AppName}. Turn On switches it back on.",
                 McpLink.Unreadable => problem ?? "OpenRewind can't change this app's setup. Set it up by hand below.",
                 _ => "Not added.",
             };
@@ -198,13 +211,15 @@ sealed class ConnectAiAppsForm : Form
             {
                 McpLink.Added => "Added ✓",
                 McpLink.Different => "Update",
+                McpLink.TurnedOff => "Turn On",
                 _ => $"Add to {row.Link.AppName}",
             };
-            row.Add.Enabled = link is McpLink.NotAdded or McpLink.Different;
-            row.Remove.Visible = link is McpLink.Added or McpLink.Different;
+            row.Add.Enabled = link is McpLink.NotAdded or McpLink.Different or McpLink.TurnedOff;
+            row.Remove.Visible = link is McpLink.Added or McpLink.Different or McpLink.TurnedOff;
             row.Restart.Visible = running;
             row.Restart.Left = row.Remove.Visible ? row.Remove.Right + (row.Remove.Left - row.Add.Right) : row.Remove.Left;
         }
+        if (again) { again = false; ShowStatus(clearMessages: false); }
     }
 
     static bool SafeCanRestart(AiAppLink link)
@@ -232,9 +247,9 @@ sealed class ConnectAiAppsForm : Form
         var failed = false;
         try { message = await Task.Run(() => add ? row.Link.Add() : row.Link.Remove()); }
         catch (McpConfigException e) { message = e.Message; failed = true; }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        catch (Exception e)
         {
-            Log.Write($"connect: {row.Link.Title}: {e.Message}");
+            Log.Write($"connect: {row.Link.Title}: {e.GetType().Name}: {e.Message}");
             message = $"Couldn't save the change: {e.Message}";
             failed = true;
         }
@@ -244,16 +259,21 @@ sealed class ConnectAiAppsForm : Form
     async void RestartApp(Row row)
     {
         if (row.Busy) return;
+        var app = row.Link.AppName;
+        if (MessageBox.Show(this,
+                $"OpenRewind will close {app} and open it again, so it loads OpenRewind.\n\n"
+                + $"If {app} is still writing a reply, or you have a message you haven't sent, it will be lost.",
+                $"Restart {app}?", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
         row.Busy = true;
         row.Restart.Enabled = false;
-        row.Status.Text = $"Restarting {row.Link.AppName}…";
+        row.Status.Text = $"Restarting {app}…";
         string message;
         var failed = false;
-        try { await Task.Run(row.Link.Restart); message = $"Restarted {row.Link.AppName}."; }
+        try { await Task.Run(row.Link.Restart); message = $"Restarted {app}."; }
         catch (Exception e)
         {
-            Log.Write($"connect: cannot restart {row.Link.AppName}: {e.Message}");
-            message = $"Couldn't restart {row.Link.AppName}. Quit and reopen it yourself.";
+            Log.Write($"connect: cannot restart {app}: {e.Message}");
+            message = $"Couldn't restart {app}. Quit and reopen it yourself.";
             failed = true;
         }
         Done(row, message, failed);
@@ -265,11 +285,13 @@ sealed class ConnectAiAppsForm : Form
         if (IsDisposed) return;
         row.Busy = false;
         row.Remove.Enabled = row.Restart.Enabled = true;
-        ShowStatus(clearMessages: false);
         row.Message = message;
         row.Failed = failed;
+        // The next read sets Last without taking the message away.
+        row.Last = null;
         row.Status.Text = message;
-        row.Status.ForeColor = failed ? Ui.Warn : row.Last == McpLink.Added ? Ui.Good : Ui.Dim;
+        row.Status.ForeColor = failed ? Ui.Warn : Ui.Dim;
+        ShowStatus(clearMessages: false);
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e) { open = null; base.OnFormClosed(e); }

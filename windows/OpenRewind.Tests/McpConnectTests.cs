@@ -327,10 +327,10 @@ public class McpConnectTests : IDisposable
     {
         var path = Path.Combine(dir, "sub dir ✨", "claude_desktop_config.json");
         Assert.Null(McpConfigFile.Read(path));
-        McpConfigFile.Write(path, "{}\n");
+        McpConfigFile.Write(path, "{}\n", null);
         Assert.Equal("{}\n", McpConfigFile.Read(path));
         Assert.False(File.Exists(path + McpConfigFile.BackupSuffix));
-        McpConfigFile.Write(path, "{\"a\":1}\n");
+        McpConfigFile.Write(path, "{\"a\":1}\n", "{}\n");
         Assert.Equal("{\"a\":1}\n", File.ReadAllText(path));
         Assert.Equal("{}\n", File.ReadAllText(path + McpConfigFile.BackupSuffix));
         Assert.Equal(new[] { "claude_desktop_config.json", "claude_desktop_config.json" + McpConfigFile.BackupSuffix },
@@ -345,7 +345,7 @@ public class McpConnectTests : IDisposable
         var path = Path.Combine(dir, ".claude.json");
         File.WriteAllText(path, "{}");
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-        McpConfigFile.Write(path, "{\"a\":1}");
+        McpConfigFile.Write(path, "{\"a\":1}", "{}");
         Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
     }
 
@@ -357,9 +357,174 @@ public class McpConnectTests : IDisposable
         var link = Path.Combine(dir, "mcp.json");
         File.WriteAllText(real, "{}");
         try { File.CreateSymbolicLink(link, real); } catch (Exception) { return; } // Windows without the right to make links.
-        McpConfigFile.Write(link, "{\"a\":1}");
+        McpConfigFile.Write(link, "{\"a\":1}", "{}");
         Assert.NotNull(new FileInfo(link).LinkTarget);
         Assert.Equal("{\"a\":1}", File.ReadAllText(real));
+    }
+
+    [Fact]
+    public void ReadRefusesTextThatIsNotUtf8()
+    {
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "ansi.json");
+        // {"p":"é"} saved as Windows-1252 ("ANSI"): é is the single byte E9.
+        File.WriteAllBytes(path, new byte[] { 0x7B, 0x22, 0x70, 0x22, 0x3A, 0x22, 0xE9, 0x22, 0x7D });
+        var e = Assert.Throws<McpConfigException>(() => McpConfigFile.Read(path));
+        Assert.Equal(McpConfigFile.NotUtf8, e.Message);
+        var refused = Assert.Throws<McpConfigException>(() => McpConfigFile.Change(new[] { path }, t => McpJsonConfig.Add(t, Name, Exe)));
+        Assert.Contains("UTF-8", refused.Message);
+        Assert.Equal(9, File.ReadAllBytes(path).Length);
+        // A byte order mark is fine and not part of the text.
+        File.WriteAllBytes(path, new byte[] { 0xEF, 0xBB, 0xBF, 0x7B, 0x7D });
+        Assert.Equal("{}", McpConfigFile.Read(path));
+    }
+
+    [Fact]
+    public void WriteChangesNothingWhenTheFileChangedMeanwhile()
+    {
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "mcp.json");
+        File.WriteAllText(path, "{\"theirs\":2}");
+        Assert.Throws<McpConfigChangedException>(() => McpConfigFile.Write(path, "{\"ours\":1}", "{\"theirs\":1}"));
+        Assert.Equal("{\"theirs\":2}", File.ReadAllText(path));
+        Assert.Equal(new[] { "mcp.json" }, Directory.GetFiles(dir).Select(f => Path.GetFileName(f)));
+        // Created by someone else while we thought it was missing.
+        Assert.Throws<McpConfigChangedException>(() => McpConfigFile.Write(path, "{}", null));
+    }
+
+    [Fact]
+    public void NewFilesAndBackupsArePrivate()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var path = Path.Combine(dir, "new", ".claude.json");
+        McpConfigFile.Write(path, "{}", null);
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        McpConfigFile.Write(path, "{\"a\":1}", "{}");
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path + McpConfigFile.BackupSuffix));
+        // The file itself keeps the mode its owner gave it.
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead, File.GetUnixFileMode(path));
+    }
+
+    [Fact]
+    public void ChangeKeepsOneBackupAndRemoveDeletesIt()
+    {
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "claude_desktop_config.json");
+        File.WriteAllText(path, "{\"a\":1}");
+        Assert.Equal(1, McpConfigFile.Change(new[] { path }, t => McpJsonConfig.Add(t, Name, Exe)));
+        Assert.Equal("{\"a\":1}", File.ReadAllText(path + McpConfigFile.BackupSuffix));
+        Assert.Equal(0, McpConfigFile.Change(new[] { path }, t => McpJsonConfig.Add(t, Name, Exe)));
+        Assert.Equal(1, McpConfigFile.Change(new[] { path }, t => McpJsonConfig.Remove(t, Name), removing: true));
+        Assert.False(File.Exists(path + McpConfigFile.BackupSuffix));
+        Assert.Equal(new[] { "claude_desktop_config.json" }, Directory.GetFiles(dir).Select(f => Path.GetFileName(f)));
+        Assert.Equal(McpLink.NotAdded, JsonStatus(File.ReadAllText(path), Exe));
+    }
+
+    [Fact]
+    public void ChangePutsTheFirstFileBackWhenTheSecondFails()
+    {
+        Directory.CreateDirectory(dir);
+        var first = Path.Combine(dir, "store.json");
+        File.WriteAllText(first, "{\"a\":1}");
+        // A folder where the second file should be: it can't be replaced.
+        var second = Path.Combine(dir, "classic.json");
+        Directory.CreateDirectory(second);
+        var e = Assert.Throws<McpConfigException>(() => McpConfigFile.Change(new[] { first, second }, t => McpJsonConfig.Add(t, Name, Exe)));
+        Assert.Contains("put back", e.Message);
+        Assert.Equal("{\"a\":1}", File.ReadAllText(first));
+        Assert.DoesNotContain(Directory.GetFiles(dir), f => f.EndsWith(".tmp"));
+    }
+
+    [Fact]
+    public void JsonTurnedOffAndExtraKeys()
+    {
+        var on = McpJsonConfig.Add(null, Name, Exe);
+        var off = on.Replace("\"args\"", "\"disabled\": true,\n      \"args\"");
+        Assert.Equal(McpLink.TurnedOff, JsonStatus(off, Exe));
+        Assert.Equal(McpLink.Added, JsonStatus(on.Replace("\"args\"", "\"disabled\": false,\n      \"args\""), Exe));
+        // Add turns it back on.
+        Assert.Equal(McpLink.Added, JsonStatus(McpJsonConfig.Add(off, Name, Exe), Exe));
+        Assert.Equal(McpLink.Different, JsonStatus(on.Replace("\"args\"", "\"env\": {\"X\": \"1\"},\n      \"args\""), Exe));
+        Assert.Equal(McpLink.Different, JsonStatus(on.Replace("\"args\"", "\"timeout\": 5,\n      \"args\""), Exe));
+        Assert.Equal(McpLink.Added, JsonStatus(McpJsonConfig.Add(null, Name, Exe, stdioType: true), Exe));
+    }
+
+    [Theory]
+    [InlineData("{\"a\": {\"b\": 1, \"b\": 2}}")]
+    [InlineData("{\"a\": [{\"x\": 1, \"x\": 1}]}")]
+    [InlineData("{\"a\": \"\\ud800x\"}")]
+    [InlineData("{\"\\udc00\": 1}")]
+    public void JsonRepeatedKeysAnywhereAndBrokenTextAreRefused(string bad)
+    {
+        Assert.Equal(McpLink.Unreadable, JsonStatus(bad, Exe));
+        Assert.Throws<McpConfigException>(() => McpJsonConfig.Add(bad, Name, Exe));
+    }
+
+    [Fact]
+    public void JsonKeepsWholeEmoji()
+    {
+        Assert.Equal(McpLink.Added, JsonStatus(McpJsonConfig.Add("{\"e\": \"\\ud83d\\ude00 ✨\"}", Name, Exe), Exe));
+    }
+
+    [Fact]
+    public void TomlTripleQuotesInsideOneLineStrings()
+    {
+        var text = "x = \"'''\"\ny = '\"\"\"'\n\n[mcp_servers.openrewind]\ncommand = 'old'\n";
+        Assert.Equal(McpLink.Different, TomlStatus(text, Exe));
+        var added = McpTomlConfig.Add(text, Name, Exe);
+        Assert.Single(added.Split('\n'), l => l.StartsWith("[mcp_servers.openrewind]"));
+        Assert.StartsWith("x = \"'''\"\ny = '\"\"\"'\n", added);
+        Assert.Equal(McpLink.Added, TomlStatus(added, Exe));
+    }
+
+    [Fact]
+    public void TomlMultilineStringsInsideArrays()
+    {
+        var text = "x = [\n  \"\"\"\n[mcp_servers.openrewind]\n\"\"\",\n]\n";
+        Assert.Equal(McpLink.NotAdded, TomlStatus(text, Exe));
+        var added = McpTomlConfig.Add(text, Name, Exe);
+        Assert.StartsWith(text, added);
+        Assert.Equal(text, McpTomlConfig.Remove(added, Name));
+    }
+
+    [Fact]
+    public void TomlQuotedServersKeyIsTheSameTable()
+    {
+        foreach (var header in new[] { "[\"mcp_servers\".openrewind]", "['mcp_servers'.\"openrewind\"]" })
+        {
+            var text = $"{header}\ncommand = 'old'\n";
+            Assert.Equal(McpLink.Different, TomlStatus(text, Exe));
+            var added = McpTomlConfig.Add(text, Name, Exe);
+            Assert.Single(added.Split('\n'), l => l.StartsWith("[") && l.Contains("openrewind"));
+        }
+    }
+
+    [Theory]
+    [InlineData("[[mcp_servers.openrewind]]\ncommand = 'x'\n")]
+    [InlineData("[other]\nnote = \"mcp_servers openrewind\"\n")]
+    [InlineData("[mcp_servers.other]\nenv = { mcp_servers = \"openrewind\" }\n")]
+    public void TomlOtherMentionsAreLeftAlone(string text)
+    {
+        Assert.Equal(McpLink.Unreadable, TomlStatus(text, Exe));
+        Assert.Throws<McpConfigException>(() => McpTomlConfig.Add(text, Name, Exe));
+    }
+
+    [Fact]
+    public void TomlNamesThatOnlyStartTheSameAreFine()
+    {
+        var text = "[mcp_servers.openrewind_old]\ncommand = 'x'\n";
+        Assert.Equal(McpLink.NotAdded, TomlStatus(text, Exe));
+        Assert.Equal(text, McpTomlConfig.Remove(McpTomlConfig.Add(text, Name, Exe), Name));
+    }
+
+    [Fact]
+    public void TomlTurnedOff()
+    {
+        var off = McpTomlConfig.Add(null, Name, Exe) + "enabled = false\n";
+        Assert.Equal(McpLink.TurnedOff, TomlStatus(off, Exe));
+        Assert.Equal(McpLink.Added, TomlStatus(McpTomlConfig.Add(off, Name, Exe), Exe));
+        Assert.Equal(McpLink.Added, TomlStatus(McpTomlConfig.Add(null, Name, Exe) + "enabled = true\n", Exe));
     }
 
     [Fact]

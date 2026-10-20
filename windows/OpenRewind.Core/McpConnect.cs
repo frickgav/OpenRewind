@@ -16,6 +16,8 @@ public enum McpLink
     Added,
     /// An entry that starts another copy (an old path) or with other options; Add brings it up to date.
     Different,
+    /// This copy's entry, turned off in the app ("disabled": true, enabled = false). Add turns it back on.
+    TurnedOff,
     /// The file is there but OpenRewind can't read or safely change it (not valid JSON, an
     /// openrewind entry it did not write, …). Nothing is changed; the user sets it up by hand.
     Unreadable,
@@ -24,8 +26,8 @@ public enum McpLink
 /// How the AI app starts the server: the program and its arguments.
 public sealed record McpCommandLine(string Command, IReadOnlyList<string> Args)
 {
-    /// Paths on Windows ignore letter case; on the Mac they usually do too, but a path the
-    /// user typed is compared exactly there.
+    /// Paths on Windows ignore letter case, so the Windows app compares them that way; the Mac
+    /// app compares them exactly.
     public bool SameAs(string? command, IReadOnlyList<string>? args, bool ignoreCase) =>
         command != null && args != null
         && string.Equals(command, Command, ignoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)
@@ -60,14 +62,46 @@ public static class McpJsonConfig
         try { node = JsonNode.Parse(text, documentOptions: Strict); }
         catch (Exception e) when (e is JsonException or ArgumentException or InvalidOperationException) { throw new McpConfigException(NotJson); }
         if (node is not JsonObject root) throw new McpConfigException("it doesn't hold a JSON object");
-        // Reading every key once finds duplicate keys, which JsonObject only reports on first use.
-        try { _ = root.Count; } catch (ArgumentException) { throw new McpConfigException(NotJson); }
+        // Repeated keys anywhere, and text that isn't whole Unicode characters, are refused, as the Mac app does.
+        try { if (!Valid(root)) throw new McpConfigException(NotJson); }
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException) { throw new McpConfigException(NotJson); }
         var servers = root[ServersKey];
         if (servers == null) return (root, null);
         if (servers is not JsonObject so) throw new McpConfigException($"its “{ServersKey}” is not a JSON object");
-        try { _ = so.Count; } catch (ArgumentException) { throw new McpConfigException(NotJson); }
         return (root, so);
     }
+
+    /// Reads every key and string once. JsonObject reports a repeated key only on first use (ArgumentException).
+    static bool Valid(JsonNode? node)
+    {
+        switch (node)
+        {
+            case JsonObject o:
+                foreach (var (key, value) in o) if (!WholeText(key) || !Valid(value)) return false;
+                return true;
+            case JsonArray a:
+                foreach (var item in a) if (!Valid(item)) return false;
+                return true;
+            case JsonValue v when v.GetValueKind() == JsonValueKind.String:
+                return WholeText(v.GetValue<string>());
+            default:
+                return true;
+        }
+    }
+
+    /// No half of a surrogate pair on its own (JSON can spell one as "\ud800").
+    static bool WholeText(string s)
+    {
+        for (int i = 0; i < s.Length; i++)
+        {
+            if (char.IsHighSurrogate(s[i]) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1])) { i++; continue; }
+            if (char.IsSurrogate(s[i])) return false;
+        }
+        return true;
+    }
+
+    /// The keys the button writes; anything else in the entry means the user set it up their own way.
+    static readonly HashSet<string> OwnKeys = new() { "type", "command", "args", "env", "disabled" };
 
     public static McpLink Status(string? text, string name, McpCommandLine want, bool ignoreCase, out string? problem)
     {
@@ -77,6 +111,8 @@ public static class McpJsonConfig
         catch (McpConfigException e) { problem = e.Message; return McpLink.Unreadable; }
         if (servers?[name] is not JsonNode entry) return McpLink.NotAdded;
         if (entry is not JsonObject o) return McpLink.Different;
+        if (o.Any(p => !OwnKeys.Contains(p.Key))) return McpLink.Different;
+        if (o["env"] is JsonNode env && (env is not JsonObject eo || eo.Count > 0)) return McpLink.Different;
         var command = o["command"] is JsonValue c && c.TryGetValue(out string? cs) ? cs : null;
         List<string>? args = null;
         if (o["args"] is JsonArray a)
@@ -86,9 +122,10 @@ public static class McpJsonConfig
                 if (item is JsonValue v && v.TryGetValue(out string? s)) args.Add(s); else { args = null; break; }
         }
         else if (o["args"] == null) args = new List<string>();
-        // A server that also sets a URL, or isn't stdio, is not what the button adds.
-        if (o["url"] != null || (o["type"] is JsonValue t && t.TryGetValue(out string? ts) && ts != "stdio")) return McpLink.Different;
-        return want.SameAs(command, args, ignoreCase) ? McpLink.Added : McpLink.Different;
+        // A server that isn't stdio is not what the button adds.
+        if (o["type"] is JsonNode t && !(t is JsonValue tv && tv.TryGetValue(out string? ts) && ts == "stdio")) return McpLink.Different;
+        if (!want.SameAs(command, args, ignoreCase)) return McpLink.Different;
+        return o["disabled"] is JsonValue d && d.GetValueKind() == JsonValueKind.True ? McpLink.TurnedOff : McpLink.Added;
     }
 
     /// The file with the openrewind entry added, or replaced if one is there. `stdioType` writes
@@ -137,18 +174,24 @@ public static class McpTomlConfig
     /// The comment written above the table, so people reading the file know where it came from.
     public const string Marker = "# Added by OpenRewind (Connect AI Apps). Remove it there or delete this table.";
 
+    /// mcp_servers as a TOML key: bare or quoted.
+    const string Servers = @"(?:mcp_servers|""mcp_servers""|'mcp_servers')";
+
     static readonly Regex AnyHeader = new(@"^\s*\[", RegexOptions.Compiled);
-    static readonly Regex ServersHeader = new(@"^\s*\[\s*mcp_servers\s*\]\s*(#.*)?$", RegexOptions.Compiled);
-    static readonly Regex InlineServers = new(@"^\s*mcp_servers\s*=", RegexOptions.Compiled);
+    static readonly Regex ServersHeader = new($@"^\s*\[\s*{Servers}\s*\]\s*(#.*)?$", RegexOptions.Compiled);
+    static readonly Regex InlineServers = new($@"^\s*{Servers}\s*=", RegexOptions.Compiled);
+
+    static string Names(string name) => $@"(?:{Regex.Escape(name)}|""{Regex.Escape(name)}""|'{Regex.Escape(name)}')";
 
     static Regex OwnHeader(string name) =>
-        new($@"^\s*\[\s*mcp_servers\s*\.\s*(?:{Regex.Escape(name)}|""{Regex.Escape(name)}""|'{Regex.Escape(name)}')\s*(\.[^\]]*)?\]\s*(#.*)?$");
+        new($@"^\s*\[\s*{Servers}\s*\.\s*{Names(name)}\s*(\.[^\]]*)?\]\s*(#.*)?$");
 
-    static Regex DottedKey(string name) =>
-        new($@"^\s*mcp_servers\s*\.\s*(?:{Regex.Escape(name)}|""{Regex.Escape(name)}""|'{Regex.Escape(name)}')\s*[.=]");
+    static Regex DottedKey(string name) => new($@"^\s*{Servers}\s*\.\s*{Names(name)}\s*[.=]");
 
-    static Regex KeyInServers(string name) =>
-        new($@"^\s*(?:{Regex.Escape(name)}|""{Regex.Escape(name)}""|'{Regex.Escape(name)}')\s*[.=]");
+    static Regex KeyInServers(string name) => new($@"^\s*{Names(name)}\s*[.=]");
+
+    /// A line that names both mcp_servers and openrewind (as a whole word) anywhere outside a comment.
+    static Regex Mentions(string name) => new($@"mcp_servers.*(?<![\w-]){Regex.Escape(name)}(?![\w-])");
 
     /// One line of the file and what it is.
     sealed record Line(string Text, bool Own, bool OwnMain, bool Header);
@@ -160,23 +203,22 @@ public static class McpTomlConfig
         var own = OwnHeader(name);
         var dotted = DottedKey(name);
         var keyInServers = KeyInServers(name);
+        var mentions = Mentions(name);
         var lines = new List<Line>();
         bool inOwn = false, inServers = false, foreign = false, atRoot = true;
         string? multiline = null;
         var depth = 0;
         foreach (var raw in text.Replace("\r\n", "\n").Split('\n'))
         {
-            if (multiline != null)
+            if (multiline != null || depth > 0)
             {
-                // Inside a """ or ''' string: not a header or a key, whatever it looks like.
-                if (CountOf(raw, multiline) % 2 == 1) multiline = null;
-                lines.Add(new Line(raw, inOwn, false, false));
-                continue;
-            }
-            if (depth > 0)
-            {
-                // The rest of an array (or table) value that spans lines.
-                depth = Math.Max(0, depth + BracketDelta(raw));
+                // Inside a """ or ''' string, or the rest of an array or table value that spans
+                // lines: not a header or a key, whatever it looks like.
+                var inString = multiline != null;
+                var (open, delta) = Walk(raw, multiline);
+                multiline = open;
+                depth = Math.Max(0, depth + delta);
+                if (!inString && !inOwn && mentions.IsMatch(StripComment(raw))) foreign = true;
                 lines.Add(new Line(raw, inOwn, false, false));
                 continue;
             }
@@ -187,46 +229,73 @@ public static class McpTomlConfig
                 atRoot = false;
                 inOwn = ownMatch!.Success;
                 inServers = ServersHeader.IsMatch(raw);
+                // [[mcp_servers.openrewind]], or any other header naming it that isn't openrewind's table.
+                if (!inOwn && mentions.IsMatch(StripComment(raw))) foreign = true;
             }
-            else
+            else if (!inOwn)
             {
-                if (!inOwn)
-                {
-                    if (dotted.IsMatch(raw)) foreign = true;
-                    if (inServers && keyInServers.IsMatch(raw)) foreign = true;
-                    if (atRoot && InlineServers.IsMatch(raw)) foreign = true;
-                }
-                depth = Math.Max(0, BracketDelta(raw));
+                var body = StripComment(raw);
+                if (dotted.IsMatch(raw) || mentions.IsMatch(body)) foreign = true;
+                if (inServers && keyInServers.IsMatch(raw)) foreign = true;
+                if (atRoot && InlineServers.IsMatch(raw)) foreign = true;
             }
             lines.Add(new Line(raw, inOwn, header && inOwn && !ownMatch!.Groups[1].Success, header));
-            foreach (var q in new[] { "\"\"\"", "'''" })
-                if (CountOf(StripComment(raw), q) % 2 == 1) { multiline = q; depth = 0; break; }
+            var (opened, d) = Walk(raw, null);
+            multiline = opened;
+            depth = header ? 0 : Math.Max(0, d);
         }
         return (lines, foreign);
     }
 
-    /// Brackets and braces opened minus closed on a line, outside strings and comments.
-    static int BracketDelta(string line)
+    /// Reads one line as TOML does, starting inside the multi-line string `open` (""" or ''') if
+    /// there is one. Returns the multi-line string still open at its end, and brackets and braces
+    /// opened minus closed outside strings and comments.
+    static (string? Open, int Delta) Walk(string line, string? open)
     {
-        int d = 0;
-        char quote = '\0';
-        for (int i = 0; i < line.Length; i++)
+        int i = 0, d = 0;
+        while (i < line.Length)
         {
+            if (open != null)
+            {
+                var end = CloseOf(line, i, open);
+                if (end < 0) return (open, d);
+                i = end + 3;
+                open = null;
+                continue;
+            }
             var c = line[i];
-            if (quote != '\0') { if (c == '\\' && quote == '"') i++; else if (c == quote) quote = '\0'; continue; }
             if (c == '#') break;
-            if (c is '"' or '\'') quote = c;
-            else if (c is '[' or '{') d++;
+            if (string.CompareOrdinal(line, i, "\"\"\"", 0, 3) == 0) { open = "\"\"\""; i += 3; continue; }
+            if (string.CompareOrdinal(line, i, "'''", 0, 3) == 0) { open = "'''"; i += 3; continue; }
+            if (c == '"')
+            {
+                for (i++; i < line.Length && line[i] != '"'; i++) if (line[i] == '\\') i++;
+                i++;
+                continue;
+            }
+            if (c == '\'')
+            {
+                var close = line.IndexOf('\'', i + 1);
+                i = close < 0 ? line.Length : close + 1;
+                continue;
+            }
+            if (c is '[' or '{') d++;
             else if (c is ']' or '}') d--;
+            i++;
         }
-        return d;
+        return (open, d);
     }
 
-    static int CountOf(string s, string what)
+    /// Where the multi-line string `open` closes on the line, from `from`; -1 if it doesn't.
+    static int CloseOf(string line, int from, string open)
     {
-        int n = 0;
-        for (int i = s.IndexOf(what, StringComparison.Ordinal); i >= 0; i = s.IndexOf(what, i + what.Length, StringComparison.Ordinal)) n++;
-        return n;
+        if (open == "'''") return line.IndexOf("'''", from, StringComparison.Ordinal);
+        for (int i = from; i + 2 < line.Length; i++)
+        {
+            if (line[i] == '\\') { i++; continue; }
+            if (line[i] == '"' && line[i + 1] == '"' && line[i + 2] == '"') return i;
+        }
+        return -1;
     }
 
     /// The line up to a # that is not inside a quoted string.
@@ -256,6 +325,7 @@ public static class McpTomlConfig
         List<string>? args = new();
         var sawArgs = false;
         var extra = false;
+        var off = false;
         var inMain = false;
         foreach (var l in lines)
         {
@@ -269,11 +339,13 @@ public static class McpTomlConfig
             var value = body[(eq + 1)..].Trim();
             if (key == "command") command = ParseString(value);
             else if (key == "args") { sawArgs = true; args = ParseStringArray(value); }
-            // Anything else (env, enabled = false, a url, …) is not what the button writes.
+            else if (key == "enabled" && value is "false" or "true") off = value == "false";
+            // Anything else (env, a url, …) is not what the button writes.
             else extra = true;
         }
         if (!sawArgs) args = new List<string>();
-        return !extra && want.SameAs(command, args, ignoreCase) ? McpLink.Added : McpLink.Different;
+        if (extra || !want.SameAs(command, args, ignoreCase)) return McpLink.Different;
+        return off ? McpLink.TurnedOff : McpLink.Added;
     }
 
     /// The file with openrewind's table written, in place of any it had. Throws McpConfigException
@@ -307,7 +379,13 @@ public static class McpTomlConfig
             output.AddRange(table);
             output.Add("");
         }
-        return Join(output, crlf);
+        var result = Join(output, crlf);
+        // A file read wrongly could end up with two openrewind tables, which ChatGPT would refuse
+        // to load at all. Check the result the same way and write nothing if it isn't exactly one.
+        var (check, again) = Scan(result, name);
+        if (again || check.Count(l => l.OwnMain) != 1 || Status(result, name, want, false, out _) != McpLink.Added)
+            throw new McpConfigException($"OpenRewind couldn't work out where “{name}” goes in it");
+        return result;
     }
 
     /// The file without openrewind's table, or null when it has none (nothing to change).
@@ -474,36 +552,151 @@ public static class McpTomlConfig
         return null;
     }
 }
+/// The file changed between reading it and replacing it (the app wrote it meanwhile).
+public sealed class McpConfigChangedException : Exception
+{
+    public McpConfigChangedException(string path) : base($"{path} changed while OpenRewind was saving it") { }
+}
 
-/// Reads and writes AI apps' setup files without ever leaving one half-written: the old file is
-/// copied to "<name>.openrewind-backup" next to it, the new text goes to a temporary file in the
-/// same folder, and that replaces the file in one step. Nothing else is touched.
+/// Reads and writes AI apps' setup files without ever leaving one half-written: the new text goes
+/// to a new private temporary file in the same folder, which replaces the file in one step, and only
+/// if nothing else changed the file meanwhile. The previous version is kept as one
+/// "<name>.openrewind-backup" next to it (readable only by you), which Remove deletes again.
 public static class McpConfigFile
 {
     public const string BackupSuffix = ".openrewind-backup";
-    const string TempSuffix = ".openrewind-tmp";
 
-    /// The file's text, or null when it doesn't exist.
+    public const string NotUtf8 = "it isn't saved as UTF-8 text";
+
+    static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+    /// Owner read and write only, for new files, temporary files and backups.
+    const UnixFileMode Private = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+    /// The file's text, or null when it doesn't exist. Bytes that aren't UTF-8 (a file saved as
+    /// "ANSI") throw McpConfigException rather than being read as something else and written back.
     public static string? Read(string path)
     {
         path = Target(path);
-        return File.Exists(path) ? File.ReadAllText(path, Encoding.UTF8) : null;
+        return File.Exists(path) ? Decode(File.ReadAllBytes(path)) : null;
     }
 
-    /// Writes `text` over the file (or creates it and its folder). A file that is a link to another
-    /// (dotfiles kept elsewhere) is written where the link points, so the link stays.
-    public static void Write(string path, string text)
+    public static string Decode(byte[] bytes)
+    {
+        var start = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
+        try { return StrictUtf8.GetString(bytes, start, bytes.Length - start); }
+        catch (DecoderFallbackException) { throw new McpConfigException(NotUtf8); }
+    }
+
+    /// Writes `text` over the file (or creates it and its folder), if the file still holds
+    /// `expected` (null: doesn't exist); otherwise throws McpConfigChangedException and changes nothing.
+    /// A file that is a link to another (dotfiles kept elsewhere) is written where the link points.
+    public static void Write(string path, string text, string? expected, bool backup = true)
     {
         path = Target(path);
-        var dir = Path.GetDirectoryName(path)!;
-        Directory.CreateDirectory(dir);
-        var temp = path + TempSuffix;
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var exists = File.Exists(path);
-        if (exists) File.Copy(path, path + BackupSuffix, overwrite: true);
-        File.WriteAllText(temp, text, new UTF8Encoding(false));
-        // Keep a private file private (~/.claude.json is readable only by its owner).
-        if (exists && !OperatingSystem.IsWindows()) File.SetUnixFileMode(temp, File.GetUnixFileMode(path));
-        File.Move(temp, path, overwrite: true);
+        // Keep a private file private (~/.claude.json is readable only by its owner); new files are private.
+        var mode = exists && !OperatingSystem.IsWindows() ? File.GetUnixFileMode(path) : Private;
+        var temp = $"{path}.openrewind-{Guid.NewGuid():N}.tmp";
+        try
+        {
+            CreateNew(temp, new UTF8Encoding(false).GetBytes(text), mode);
+            string? now;
+            try { now = File.Exists(path) ? Decode(File.ReadAllBytes(path)) : null; }
+            catch (McpConfigException) { now = "\0changed"; }
+            if (now != expected) throw new McpConfigChangedException(path);
+            if (backup && exists)
+            {
+                var copy = path + BackupSuffix;
+                File.Delete(copy);
+                CreateNew(copy, File.ReadAllBytes(path), Private);
+            }
+            File.Move(temp, path, overwrite: true);
+        }
+        finally
+        {
+            try { File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    /// Takes away the backup Write keeps, if there is one.
+    public static void DeleteBackup(string path)
+    {
+        try { File.Delete(Target(path) + BackupSuffix); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Log.Write($"connect: cannot delete a backup: {e.Message}"); }
+    }
+
+    /// A new file with `bytes`, made with `mode` from the start so it is never readable by others.
+    static void CreateNew(string path, byte[] bytes, UnixFileMode mode)
+    {
+        var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write };
+        if (!OperatingSystem.IsWindows()) options.UnixCreateMode = mode;
+        using var stream = new FileStream(path, options);
+        stream.Write(bytes);
+        stream.Flush(flushToDisk: true);
+    }
+
+    /// Changes every file with `change` (null result: leave it), or none of them. Reads them all
+    /// first, writes them one by one, and puts back the ones already written if a later one fails.
+    /// When an app writes a file meanwhile, starts over with what it wrote, up to three times.
+    /// Removing (`removing`) keeps no backup and deletes the old one.
+    public static int Change(IReadOnlyList<string> files, Func<string?, string?> change, bool removing = false)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            try { return ChangeOnce(files, change, removing); }
+            catch (McpConfigChangedException e) when (attempt < 3) { Log.Write($"connect: {e.Message}; trying again"); }
+            catch (McpConfigChangedException e)
+            {
+                throw new McpConfigException($"{e.Message}. Quit the app and try again.");
+            }
+        }
+    }
+
+    static int ChangeOnce(IReadOnlyList<string> files, Func<string?, string?> change, bool removing)
+    {
+        var writes = new List<(string Path, string? Before, string After)>();
+        foreach (var f in files)
+        {
+            string? before, after;
+            try
+            {
+                before = Read(f);
+                after = change(before);
+            }
+            catch (McpConfigException e) { throw new McpConfigException($"OpenRewind didn't change {f} because {e.Message}. Fix that file, or set it up by hand below."); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { throw new McpConfigException($"OpenRewind can't read {f} ({e.Message})."); }
+            if (after != null && after != before) writes.Add((f, before, after));
+        }
+        var done = new List<(string Path, string? Before, string After)>();
+        foreach (var w in writes)
+        {
+            try { Write(w.Path, w.After, w.Before, backup: !removing); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or McpConfigChangedException)
+            {
+                foreach (var d in done) PutBack(d.Path, d.Before, d.After);
+                if (e is McpConfigChangedException) throw;
+                var also = done.Count > 0 ? $" The other file{(done.Count > 1 ? "s were" : " was")} put back as {(done.Count > 1 ? "they were" : "it was")}." : "";
+                throw new McpConfigException($"Couldn't save {w.Path} ({e.Message}).{also}");
+            }
+            Log.Write($"connect: changed {w.Path}");
+            done.Add(w);
+        }
+        if (removing) foreach (var f in files) DeleteBackup(f);
+        return done.Count;
+    }
+
+    /// Undoes one write: the old text back, or no file if there was none.
+    static void PutBack(string path, string? before, string after)
+    {
+        try
+        {
+            if (before == null) { if (Read(path) == after) File.Delete(Target(path)); }
+            else Write(path, before, after, backup: false);
+            Log.Write($"connect: put {path} back");
+        }
+        catch (Exception e) { Log.Write($"connect: cannot put {path} back: {e.Message}"); }
     }
 
     static string Target(string path)

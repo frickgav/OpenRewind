@@ -18,12 +18,12 @@ abstract class AiAppLink
     protected AiAppLink(McpCommandLine want) => Want = want;
 
     public abstract (McpLink Link, string? Problem) Status();
-    /// Adds or updates the entry; returns what to tell the user. Throws with a message for the user.
+    /// Adds or updates the entry; returns what to tell the user. Throws McpConfigException with a message for the user.
     public abstract string Add();
     public abstract string Remove();
 
-    /// The app's own process names on this PC, and a test of the path, so Claude Desktop is not
-    /// confused with Claude Code's claude.exe.
+    /// The app's own process names on this PC, and a test of the program's path, so that only the
+    /// desktop app itself is restarted: not Claude Code's claude.exe, the Codex CLI, or an editor extension.
     protected virtual string[] ProcessNames => Array.Empty<string>();
     protected virtual bool IsAppPath(string path) => false;
     public bool CanRestart => ProcessNames.Length > 0 && DesktopApp.Running(ProcessNames, IsAppPath).Count > 0;
@@ -31,46 +31,24 @@ abstract class AiAppLink
 
     protected static string Home => Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-    /// "Couldn't change <file>: <why>." The path is the user's own; nothing secret is in it.
-    protected static McpConfigException Cannot(string path, string why) => new($"OpenRewind didn't change {path} because {why}. Fix that file, or set it up by hand below.");
-
     /// The status of several files read as one: added only when every one has it.
-    protected (McpLink, string?) StatusOf(IEnumerable<string> files, Func<string?, (McpLink, string?)> one)
+    protected static (McpLink, string?) StatusOf(IEnumerable<string> files, Func<string?, (McpLink, string?)> one)
     {
         var all = new List<McpLink>();
         foreach (var f in files)
         {
             string? text;
             try { text = McpConfigFile.Read(f); }
+            catch (McpConfigException e) { return (McpLink.Unreadable, $"OpenRewind can't change {f} because {e.Message}. Set it up by hand below."); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return (McpLink.Unreadable, $"OpenRewind can't read {f} ({e.Message})."); }
             var (link, problem) = one(text);
             if (link == McpLink.Unreadable) return (link, $"OpenRewind can't change {f} because {problem}. Set it up by hand below.");
             all.Add(link);
         }
         if (all.Count == 0 || all.All(l => l == McpLink.NotAdded)) return (McpLink.NotAdded, null);
-        return (all.All(l => l == McpLink.Added) ? McpLink.Added : McpLink.Different, null);
-    }
-
-    /// Works out every file's new text first and writes only when all of them can be changed.
-    protected static int Change(IEnumerable<string> files, Func<string?, string?> change)
-    {
-        var writes = new List<(string Path, string Text)>();
-        foreach (var f in files)
-        {
-            string? text;
-            try { text = McpConfigFile.Read(f); }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { throw new McpConfigException($"OpenRewind can't read {f} ({e.Message})."); }
-            string? after;
-            try { after = change(text); }
-            catch (McpConfigException e) { throw Cannot(f, e.Message); }
-            if (after != null && after != text) writes.Add((f, after));
-        }
-        foreach (var (path, text) in writes)
-        {
-            McpConfigFile.Write(path, text);
-            Log.Write($"connect: changed {path}");
-        }
-        return writes.Count;
+        if (all.All(l => l == McpLink.Added)) return (McpLink.Added, null);
+        if (all.All(l => l is McpLink.Added or McpLink.TurnedOff)) return (McpLink.TurnedOff, null);
+        return (McpLink.Different, null);
     }
 }
 
@@ -98,13 +76,13 @@ sealed class JsonAppLink : AiAppLink
 
     public override string Add()
     {
-        Change(files(), t => McpJsonConfig.Add(t, McpSetup.Name, Want));
+        McpConfigFile.Change(files(), t => McpJsonConfig.Add(t, McpSetup.Name, Want));
         return $"Added. Quit and reopen {app} to use it.";
     }
 
     public override string Remove()
     {
-        Change(files(), t => McpJsonConfig.Remove(t, McpSetup.Name));
+        McpConfigFile.Change(files(), t => McpJsonConfig.Remove(t, McpSetup.Name), removing: true);
         return $"Removed. Quit and reopen {app} to finish.";
     }
 
@@ -120,7 +98,7 @@ sealed class JsonAppLink : AiAppLink
     public static JsonAppLink Cursor(McpCommandLine want) => new(want, "Cursor", "Cursor",
         "Adds OpenRewind to Cursor's mcp.json, for every project.",
         () => new List<string> { McpTargets.CursorFile(Home) },
-        new[] { "Cursor" }, p => p.Contains(@"\cursor\", StringComparison.OrdinalIgnoreCase));
+        new[] { "Cursor" }, p => p.EndsWith(@"\Programs\cursor\Cursor.exe", StringComparison.OrdinalIgnoreCase));
 }
 
 /// The ChatGPT desktop app (Work chats) and Codex: [mcp_servers.openrewind] in ~/.codex/config.toml.
@@ -133,24 +111,26 @@ sealed class ChatGptLink : AiAppLink
     public override string Title => "ChatGPT";
     public override string AppName => "ChatGPT";
     public override string About =>
-        "For Work chats in the ChatGPT desktop app, and Codex. Regular chats and chatgpt.com only reach servers on the "
-        + "internet, and OpenRewind never puts your history there.";
+        "For Work chats in the ChatGPT desktop app, and Codex. What OpenRewind returns there goes to OpenAI like anything "
+        + "else in the chat. Regular chats and chatgpt.com can't reach it.";
 
-    protected override string[] ProcessNames => new[] { "ChatGPT", "Codex" };
-    protected override bool IsAppPath(string path) => path.Contains("OpenAI", StringComparison.OrdinalIgnoreCase) || path.Contains(@"\WindowsApps\", StringComparison.OrdinalIgnoreCase);
+    /// Only the Microsoft Store app (WindowsApps\OpenAI.…). A Codex CLI from npm or an editor
+    /// extension also runs a codex.exe; those are never restarted.
+    protected override string[] ProcessNames => new[] { "ChatGPT" };
+    protected override bool IsAppPath(string path) => path.Contains(@"\WindowsApps\OpenAI.", StringComparison.OrdinalIgnoreCase);
 
     public override (McpLink Link, string? Problem) Status() =>
         StatusOf(new[] { File }, t => (McpTomlConfig.Status(t, McpSetup.Name, Want, ignoreCase: true, out var p), p));
 
     public override string Add()
     {
-        Change(new[] { File }, t => McpTomlConfig.Add(t, McpSetup.Name, Want));
+        McpConfigFile.Change(new[] { File }, t => McpTomlConfig.Add(t, McpSetup.Name, Want));
         return "Added. Quit and reopen ChatGPT, then ask in a Work chat.";
     }
 
     public override string Remove()
     {
-        Change(new[] { File }, t => McpTomlConfig.Remove(t, McpSetup.Name));
+        McpConfigFile.Change(new[] { File }, t => McpTomlConfig.Remove(t, McpSetup.Name), removing: true);
         return "Removed. Quit and reopen ChatGPT to finish.";
     }
 }
@@ -182,7 +162,7 @@ sealed class ClaudeCodeLink : AiAppLink
             if (Run(cli, args.ToArray()) && Status().Link == McpLink.Added) return "Added. New Claude Code sessions can use it.";
             Log.Write("connect: claude mcp add did not add it; writing the file instead");
         }
-        Change(new[] { File }, t => McpJsonConfig.Add(t, McpSetup.Name, Want, stdioType: true));
+        McpConfigFile.Change(new[] { File }, t => McpJsonConfig.Add(t, McpSetup.Name, Want, stdioType: true));
         return "Added. New Claude Code sessions can use it.";
     }
 
@@ -190,19 +170,23 @@ sealed class ClaudeCodeLink : AiAppLink
     {
         var cli = FindCli();
         if (cli != null && Run(cli, "mcp", "remove", "--scope", "user", McpSetup.Name) && Status().Link == McpLink.NotAdded)
+        {
+            McpConfigFile.DeleteBackup(File);
             return "Removed from Claude Code.";
-        Change(new[] { File }, t => McpJsonConfig.Remove(t, McpSetup.Name));
+        }
+        McpConfigFile.Change(new[] { File }, t => McpJsonConfig.Remove(t, McpSetup.Name), removing: true);
         return "Removed from Claude Code.";
     }
 
-    /// claude.exe from the native installer, or one on PATH. A claude.cmd from npm is skipped: it
-    /// would need cmd.exe to run, and the file is written directly instead.
+    /// claude.exe from the native installer, or one in a PATH folder (full paths only). A
+    /// claude.cmd from npm is skipped: it would need cmd.exe to run, and the file is written directly instead.
     static string? FindCli()
     {
         var places = new List<string> { Path.Combine(Home, ".local", "bin", "claude.exe") };
-        foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        foreach (var raw in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
         {
-            try { places.Add(Path.Combine(dir.Trim().Trim('"'), "claude.exe")); } catch (ArgumentException) { }
+            var dir = raw.Trim().Trim('"');
+            try { if (Path.IsPathFullyQualified(dir)) places.Add(Path.Combine(dir, "claude.exe")); } catch (ArgumentException) { }
         }
         // Not Claude Desktop's claude.exe, which has nothing to do with these commands.
         return places.FirstOrDefault(p => System.IO.File.Exists(p)
@@ -239,6 +223,9 @@ sealed class ClaudeCodeLink : AiAppLink
 /// Finds a desktop app's running processes and restarts it, from the Store (MSIX) or not.
 static class DesktopApp
 {
+    /// Folders where command-line tools and editor extensions live, never a desktop app.
+    static readonly string[] NotApps = { @"\node_modules\", @"\.vscode", @"\.cursor\", @"\extensions\" };
+
     public static List<Process> Running(string[] names, Func<string, bool> isApp)
     {
         var found = new List<Process>();
@@ -247,27 +234,36 @@ static class DesktopApp
             {
                 string? path = null;
                 try { path = p.MainModule?.FileName; } catch { }
-                if (path != null && isApp(path)) found.Add(p); else p.Dispose();
+                if (path != null && isApp(path) && !NotApps.Any(n => path.Contains(n, StringComparison.OrdinalIgnoreCase))) found.Add(p);
+                else p.Dispose();
             }
         return found;
     }
 
-    /// Ends every process of the app (Electron apps run several) and starts it again the way
-    /// Windows would: a Store app through its app id, others through the program it was started from.
+    /// Asks the app to close (as clicking its ✕ would), waits, and only ends what is still running
+    /// after that, without its child processes; then starts it again the way Windows would: a Store
+    /// app through its app id, others through the program it was started from.
     public static void Restart(string[] names, Func<string, bool> isApp)
     {
         var running = Running(names, isApp);
         if (running.Count == 0) return;
-        // The first process started is the app itself; the rest are its helpers.
-        var main = running.OrderBy(p => { try { return p.StartTime; } catch { return DateTime.MaxValue; } }).First();
+        // The process with the window is the app itself; the rest are its helpers.
+        var main = running.FirstOrDefault(p => { try { return p.MainWindowHandle != IntPtr.Zero; } catch { return false; } })
+                   ?? running.OrderBy(p => { try { return p.StartTime; } catch { return DateTime.MaxValue; } }).First();
         var exe = main.MainModule!.FileName;
         foreach (var p in running)
         {
-            try { p.Kill(entireProcessTree: true); } catch { }
+            try { p.CloseMainWindow(); } catch { }
         }
+        var until = DateTime.UtcNow.AddSeconds(5);
         foreach (var p in running)
         {
-            try { p.WaitForExit(5000); } catch { }
+            try { p.WaitForExit(Math.Max(0, (int)(until - DateTime.UtcNow).TotalMilliseconds)); } catch { }
+        }
+        // Apps that hide to the tray when their window closes are still running: end them.
+        foreach (var p in running)
+        {
+            try { if (!p.HasExited) { p.Kill(); p.WaitForExit(5000); } } catch { }
             p.Dispose();
         }
         Log.Write($"connect: restarting {Path.GetFileName(exe)}");
