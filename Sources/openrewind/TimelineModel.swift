@@ -64,6 +64,9 @@ final class TimelineModel: ObservableObject {
     @Published var clipStart: Date?
     @Published var clipEnd: Date?
     @Published var exportClip: ClipRange?
+    /// True while the timeline is on screen. A Save dialog checks it after it closes: the timeline may have been
+    /// closed (or App Lock locked) while it was up, and then nothing is read or saved.
+    var isShown = false
     /// Live Text on the shown screenshot, for copying what is selected (see LiveText.swift).
     weak var liveText: ImageAnalysisOverlayView?
     private var thumbCache: [Int64: NSImage] = [:]

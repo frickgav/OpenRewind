@@ -270,7 +270,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             a.informativeText = "Meeting summaries use your own AI key. Set up a provider in AI Settings first, then turn this on."
             a.addButton(withTitle: "Open AI Settings…")
             a.addButton(withTitle: "Cancel")
-            if a.runModal() == .alertFirstButtonReturn { showAISettings() }
+            if Dialogs.run(a) == .alertFirstButtonReturn { showAISettings() }
             return
         }
         let a = NSAlert()
@@ -278,7 +278,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         a.informativeText = Self.meetingConsentText(ai.kind.title)
         a.addButton(withTitle: "Turn On")
         a.addButton(withTitle: "Cancel")
-        guard a.runModal() == .alertFirstButtonReturn else { return }
+        guard Dialogs.run(a) == .alertFirstButtonReturn else { return }
         MeetingCenter.autoSummarize = true
         log("meeting summaries with AI on")
     }
@@ -305,7 +305,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             + "It uses your key and costs tokens. If you choose Turn Off, meeting summaries are turned off."
         a.addButton(withTitle: "Turn Off")
         a.addButton(withTitle: "Use \(ai.kind.title)")
-        if a.runModal() == .alertSecondButtonReturn {
+        if Dialogs.run(a) == .alertSecondButtonReturn {
             MeetingCenter.consent = MeetingNotes.consentKey(ai)
             log("meeting summaries moved to the new provider")
         } else {
@@ -741,7 +741,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let a = NSAlert()
             a.messageText = "\(m.name) needs whisper-cli"
             a.informativeText = "Install it with Homebrew: brew install whisper-cpp. Then pick the model again.\n\nNVIDIA Parakeet v3 needs nothing else."
-            a.runModal()
+            Dialogs.run(a)
         }
     }
 
@@ -755,7 +755,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSApp.activate(ignoringOtherApps: true)
             let a = NSAlert()
             a.messageText = "There is no transcribed audio from \(what)."
-            a.runModal()
+            Dialogs.run(a)
             return
         }
         let st = tx.status
@@ -807,7 +807,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSApp.abortModal()
             return nil
         }
-        a.runModal()
+        Dialogs.run(a)
         if let monitor { NSEvent.removeMonitor(monitor) }
 
         guard let sc = picked, sc != old else { registerHotKey(old); return }
@@ -819,7 +819,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let err = NSAlert()
             err.messageText = "\(sc.label) is already in use"
             err.informativeText = "Another app or macOS uses this shortcut. The shortcut stays \(old.label)."
-            err.runModal()
+            Dialogs.run(err)
         }
     }
 
@@ -953,7 +953,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let a = NSAlert()
             a.messageText = "Touch ID or a password is needed"
             a.informativeText = "\(why)\n\nSet a login password for your Mac account in System Settings → Users & Groups, then try again."
-            a.runModal()
+            Dialogs.run(a)
             return
         }
         appLock.enabled = true
@@ -1083,7 +1083,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         a.addButton(withTitle: button)
         a.addButton(withTitle: "Cancel")
         a.buttons.first?.hasDestructiveAction = destructive
-        return a.runModal() == .alertFirstButtonReturn
+        return Dialogs.run(a) == .alertFirstButtonReturn
     }
 
     // MARK: updates
@@ -1129,13 +1129,13 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 a.informativeText = "You have \(u.current)."
                 a.addButton(withTitle: u.canInstall ? "Update" : "Download")
                 a.addButton(withTitle: "Later")
-                if a.runModal() == .alertFirstButtonReturn { u.update() }
+                if Dialogs.run(a) == .alertFirstButtonReturn { u.update() }
                 return
             } else {
                 a.messageText = "OpenRewind is up to date"
                 a.informativeText = "You have the latest version, \(u.current)."
             }
-            a.runModal()
+            Dialogs.run(a)
         }
     }
 
@@ -1335,7 +1335,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 + "Blocked apps and sites are never indexed."
             a.addButton(withTitle: "Turn On")
             a.addButton(withTitle: "Cancel")
-            guard a.runModal() == .alertFirstButtonReturn else { return }
+            guard Dialogs.run(a) == .alertFirstButtonReturn else { return }
             defaults.set(true, forKey: meaningKey)
             startMeaning()
             log("search by meaning on")
