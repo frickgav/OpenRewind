@@ -40,6 +40,9 @@ sealed class AiChatForm : Form
     /// The overlay is taking the chat: close this window without the chat in it.
     public static void Release() { if (open is { IsDisposed: false }) open.Close(); }
 
+    /// Open and on screen (App Lock counts it as the history being in use).
+    public static bool IsShown => open is { IsDisposed: false, Visible: true };
+
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         // The chat outlives the window.

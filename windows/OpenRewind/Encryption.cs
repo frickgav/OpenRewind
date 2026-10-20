@@ -11,6 +11,8 @@ sealed class Encryption
     Task running = Task.CompletedTask;
     /// Files the last run could not convert (it tries again next launch).
     int failed;
+    /// The database could not be converted in the last run (it tries again next launch).
+    bool dbFailed;
 
     public Encryption(Engine engine, Settings settings)
     {
@@ -26,15 +28,32 @@ sealed class Encryption
         if (!settings.EncryptionDone) Migrate(settings.EncryptRecordings);
     }
 
-    /// The grey line under the switch.
+    /// The grey line under the switch. Read from what is on disk, not only from the setting.
     public string Status()
     {
         var verb = On ? "Encrypting" : "Decrypting";
+        if (engine.Db.IsConverting) return $"{verb} the database… (recording waits until it is done)";
         if (VaultMigration.Running)
             return VaultMigration.Total == 0 ? $"{verb} the database…" : $"{verb} recordings… {VaultMigration.Done:N0} of {VaultMigration.Total:N0}";
+        if (dbFailed) return $"The database could not be {(On ? "encrypted" : "decrypted")}; trying again next launch";
         if (failed > 0) return $"{failed:N0} files could not be {(On ? "encrypted" : "decrypted")}; trying again next launch";
-        if (!settings.EncryptionDone) return $"{verb} recordings…";
+        if (!settings.EncryptionDone || engine.Db.IsEncrypted != On) return $"{verb} recordings…";
         return On ? "Recordings and the database are encrypted" : "Recordings are stored as plain files";
+    }
+
+    /// Files that keep failing (damaged, or encrypted with another key) would be tried at every
+    /// launch. The menu offers to stop: they stay as they are and the switch counts as done.
+    public int Failed => failed;
+
+    public void SkipFailed()
+    {
+        if (MessageBox.Show($"{failed:N0} recordings could not be {(On ? "encrypted" : "decrypted")}; they may be damaged or encrypted with another key. " +
+                            "Stop trying? They stay as they are, and OpenRewind no longer tries them at every launch.",
+                            "Stop retrying?", MessageBoxButtons.OKCancel, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.OK) return;
+        Log.Write($"stopped retrying {failed} recordings that could not be converted");
+        failed = 0;
+        settings.EncryptionDone = true;
+        settings.Save();
     }
 
     public void TurnOn()
@@ -47,7 +66,20 @@ sealed class Encryption
                 "If your Windows account is reset or you move your recordings to another PC, you will need the recovery key. Without it, encrypted recordings are lost for good. Save it on the next screen and keep it somewhere safe.",
                 "Encrypt your recordings?", MessageBoxButtons.OKCancel, MessageBoxIcon.Information, MessageBoxDefaultButton.Button2) != DialogResult.OK) return;
         var home = engine.Config.Home;
-        var key = RecordingFile.Key ?? DataKeyStore.Load(home);
+        var key = RecordingFile.Key;
+        if (key == null)
+        {
+            var (stored, state) = DataKeyStore.Read(home);
+            if (state == DataKeyStore.State.Unreadable)
+            {
+                // Never replace a key we can't read: files encrypted with it would be lost for good.
+                MessageBox.Show("OpenRewind found its encryption key but can't unseal it (has your Windows password been reset?). Nothing was changed.\n\n" +
+                                "Restart OpenRewind and enter your recovery key when it asks, then try again.",
+                                "Encrypt Recordings", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            key = stored;
+        }
         if (key == null)
         {
             key = RecordingFile.NewKey();
@@ -94,6 +126,7 @@ sealed class Encryption
         var c = cts = new CancellationTokenSource();
         var before = running;
         failed = 0;
+        dbFailed = false;
         running = Task.Run(async () =>
         {
             try { await before; } catch { }
@@ -105,10 +138,15 @@ sealed class Encryption
                 ui?.Post(_ =>
                 {
                     failed = r.Failed;
+                    dbFailed = r.DatabaseFailed;
                     if (r.Finished && settings.EncryptRecordings == encrypt) { settings.EncryptionDone = true; settings.Save(); }
                 }, null);
             }
-            catch (Exception e) { Log.Write($"converting recordings failed: {e.Message}"); }
+            catch (Exception e)
+            {
+                Log.Write($"converting recordings failed: {e.Message}");
+                ui?.Post(_ => dbFailed = true, null);
+            }
         });
     }
 
@@ -129,6 +167,7 @@ sealed class Encryption
         if (dlg.ShowDialog() != DialogResult.OK) return false;
         try
         {
+            // Saved in the user's own folders, which only this Windows account can read by default.
             File.WriteAllText(dlg.FileName, RecoveryKey.File(key, DateTime.Now).Replace("\n", "\r\n"));
             Log.Write("recovery key saved");
             MessageBox.Show("Keep this file somewhere safe and private, like a password manager or a USB stick in a drawer. Anyone with it and a copy of your recordings can read them.",
@@ -157,17 +196,18 @@ sealed class Encryption
                                 "OpenRewind", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 continue;
             }
-            if (Database.IsEncryptedFile(config.DbPath))
+            // Check it against the database, or an encrypted recording when the database is plain.
+            var dbEncrypted = Database.IsEncryptedFile(config.DbPath);
+            var sample = dbEncrypted ? null : RecordingFile.FirstEncrypted(config.DataDir);
+            var opens = dbEncrypted ? Database.KeyOpens(config.DbPath, key) : sample == null || RecordingFile.KeyOpens(sample, key);
+            if (!opens)
             {
-                try { using var probe = new Database(config.DbPath, key); }
-                catch (DatabaseLockedException)
-                {
-                    MessageBox.Show("This recovery key does not open these recordings. It may belong to another computer or an older key.",
-                                    "OpenRewind", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    continue;
-                }
+                MessageBox.Show("This recovery key does not open these recordings. It may belong to another computer or an older key.",
+                                "OpenRewind", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                continue;
             }
-            try { DataKeyStore.Save(config.Home, key); } catch (Exception e) { Log.Write($"cannot save the encryption key: {e.Message}"); }
+            // It opens the recordings, so it may replace a stored key that can't be unsealed (kept as a .bak).
+            try { DataKeyStore.Save(config.Home, key, replace: true); } catch (Exception e) { Log.Write($"cannot save the encryption key: {e.Message}"); }
             Log.Write("encryption key restored from the recovery key");
             return key;
         }

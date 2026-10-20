@@ -20,6 +20,8 @@ static class Program
       OpenRewind delete <15m|1h|today|all|older:week>
                                   Delete recordings in that range
       OpenRewind doctor           Check what works on this PC
+      OpenRewind mcp              MCP server for AI apps, over stdin/stdout (also --mcp).
+                                  Turn on Settings → Allow AI Apps to Read My History first
 
     Options:
       --port N        API port (default 3031)
@@ -50,14 +52,16 @@ static class Program
         catch (Exception e)
         {
             Crash.Write("startup", e);
-            if (!args.Any(a => !a.StartsWith('-'))) Crash.Tell(e);
+            if (!args.Any(a => !a.StartsWith('-')) && !args.Contains("--mcp")) Crash.Tell(e);
             return 1;
         }
     }
 
     static int Run(string[] args)
     {
-        var command = args.FirstOrDefault(a => !a.StartsWith('-')) ?? "app";
+        var command = args.Contains("--mcp") ? "mcp" : args.FirstOrDefault(a => !a.StartsWith('-')) ?? "app";
+        // Started by an AI app with stdin/stdout as pipes: no console, no tray, no windows.
+        if (command == "mcp") return McpCommand.Run(args);
         // A WinExe has no console; print to the terminal that started us, if any.
         if (command != "app") Native.AttachConsole(Native.ATTACH_PARENT_PROCESS);
         if (args.Contains("-h") || args.Contains("--help") || command == "help") { Console.WriteLine(Usage); return 0; }
@@ -72,9 +76,11 @@ static class Program
         }
 
         // Encrypt Recordings: load the data key before the database, which may be encrypted with it.
-        var encrypt = Settings.Load(config.Home).EncryptRecordings;
+        // Also while a switch off is still decrypting (EncryptionDone false): some files are still encrypted.
+        var startSettings = Settings.Load(config.Home);
+        var encrypt = startSettings.EncryptRecordings;
         var key = DataKeyStore.Load(config.Home);
-        if (key == null && (encrypt || Database.IsEncryptedFile(config.DbPath)))
+        if (key == null && (encrypt || !startSettings.EncryptionDone || Database.IsEncryptedFile(config.DbPath)))
         {
             if (command == "app") key = Encryption.AskForRecoveryKey(config);
             if (key == null)
@@ -85,6 +91,8 @@ static class Program
         }
         RecordingFile.Key = key;
         RecordingFile.EncryptNew = encrypt && key != null;
+        RecordingFile.KeyLoader = () => DataKeyStore.Load(config.Home);
+        if (command == "app") RecordingFile.CleanTempCopies();
 
         Database db;
         try { db = new Database(config.DbPath, key, createEncrypted: RecordingFile.EncryptNew); }
@@ -200,7 +208,7 @@ static class Program
             {
                 Console.WriteLine($"data dir:        {config.Home}");
                 Console.WriteLine($"frames stored:   {db.Stats().Count}");
-                Console.WriteLine($"encryption:      {(RecordingFile.EncryptNew ? "on" : "off")} (database {(db.IsEncrypted ? "encrypted" : "plain")})");
+                Console.WriteLine($"encryption:      {(RecordingFile.EncryptNew ? "on" : "off")}{(startSettings.EncryptionDone ? "" : " (converting)")} (database {(db.IsEncrypted ? "encrypted" : "plain")})");
                 Console.WriteLine($"windows ocr:     {(Ocr.Available ? "ok" : "MISSING (add a language with OCR in Settings → Time & language)")}");
                 Console.WriteLine($"accessibility:   {(config.UseAccessibility ? "on (UI Automation)" : "off")}");
                 Console.WriteLine($"microphone:      {(AudioStream.HasDevice(NAudio.CoreAudioApi.DataFlow.Capture) ? "found" : "none")}");

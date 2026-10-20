@@ -348,6 +348,13 @@ final class BlocklistStore {
         return c
     }
 
+    /// Read again from UserDefaults, for a process that runs beside the app and sees no change
+    /// notifications (the MCP server).
+    func reload() -> Blocklist {
+        lock.lock(); cached = nil; lock.unlock()
+        return current
+    }
+
     var onboardingDone: Bool {
         get { defaults.bool(forKey: Self.onboardingKey) }
         set { defaults.set(newValue, forKey: Self.onboardingKey) }

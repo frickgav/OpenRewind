@@ -75,12 +75,19 @@ public sealed class Transcriber
     {
         while (!ct.IsCancellationRequested)
         {
-            if (db.NextPendingChunk() is AudioChunk chunk) await Task.Run(() => Transcribe(chunk), ct).ConfigureAwait(false);
-            else try { await Task.Delay(3000, ct).ConfigureAwait(false); } catch (TaskCanceledException) { return; }
+            var wait = 3000;
+            if (db.NextPendingChunk() is AudioChunk chunk)
+            {
+                // An encrypted clip and no key loaded: wait a minute (the key may come back) instead of using up its tries.
+                if (await Task.Run(() => Transcribe(chunk), ct).ConfigureAwait(false)) continue;
+                wait = 60_000;
+            }
+            try { await Task.Delay(wait, ct).ConfigureAwait(false); } catch (TaskCanceledException) { return; }
         }
     }
 
-    public void Transcribe(AudioChunk chunk)
+    /// False when the clip is encrypted and no key is loaded: it is left as it is (no try used up).
+    public bool Transcribe(AudioChunk chunk)
     {
         var sw = Stopwatch.StartNew();
         try
@@ -92,11 +99,17 @@ public sealed class Transcriber
             var words = segments.Sum(s => s.Text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length);
             Log.Write($"transcribed chunk {chunk.Id}: {segments.Count} segments, {words} words in {sw.Elapsed.TotalSeconds:0.0}s");
         }
+        catch (Exception e) when (RecordingFile.IsNoKey(e))
+        {
+            Log.Write($"transcribe chunk {chunk.Id} waits: it is encrypted and the key is not loaded");
+            return false;
+        }
         catch (Exception e)
         {
             Log.Write($"transcribe chunk {chunk.Id} failed: {e.Message}");
             db.MarkChunk(chunk.Id, "pending", e.Message);
         }
+        return true;
     }
 
     List<Segment> Whisper(string path)

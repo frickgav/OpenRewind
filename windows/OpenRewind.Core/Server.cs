@@ -132,6 +132,9 @@ public sealed class Api
             case "/":
             case "/index.html":
                 return new HttpResponse { ContentType = "text/html; charset=utf-8", Body = Encoding.UTF8.GetBytes(WebUI.Html) };
+            case "/health" when Locked?.Invoke() == true:
+                // While locked: only that it is up, nothing about when or how much was recorded.
+                return HttpResponse.Json(new SortedDictionary<string, object?> { ["status"] = "healthy", ["locked"] = true });
             case "/health":
                 var s = db.Stats();
                 var a = db.AudioStats();
