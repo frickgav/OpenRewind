@@ -10,7 +10,8 @@ struct TranscriberStatus {
 
 /// Turns pending audio chunks into text, one at a time, with the model picked in Settings →
 /// Transcription Model: local Whisper (whisper.cpp `whisper-cli`) or NVIDIA Parakeet v3 (ONNX Runtime).
-final class Transcriber {
+/// One run loop uses it at a time (chunks go one by one); `status` has its own lock.
+final class Transcriber: @unchecked Sendable {
     let config: Config
     let db: Database
     let model: SpeechModel
@@ -79,7 +80,9 @@ final class Transcriber {
         binary = bin
         modelPath = found
         let file = URL(fileURLWithPath: found)
-        engineTag = "whisper.cpp:" + file.deletingPathExtension().lastPathComponent
+        var stem = file.deletingPathExtension().lastPathComponent
+        if stem.hasSuffix(SpeechModels.ownSuffix) { stem = String(stem.dropLast(SpeechModels.ownSuffix.count)) }
+        engineTag = "whisper.cpp:" + stem
         displayName = name ?? "Whisper (\(file.lastPathComponent))"
         log("whisper: \(file.lastPathComponent)")
     }
@@ -116,11 +119,20 @@ final class Transcriber {
         return nil
     }
 
+    /// Transcription is seconds of work at a time: it runs here, not on a Swift concurrency thread
+    /// (there are only as many of those as cores, and other tasks need them).
+    private static let queue = DispatchQueue(label: "openrewind.transcriber", qos: .utility)
+
     func run() async {
         defer { unload() }
         while !Task.isCancelled {
             if let chunk = db.nextPendingChunk() {
-                transcribe(chunk)
+                await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+                    Transcriber.queue.async {
+                        self.transcribe(chunk)
+                        done.resume()
+                    }
+                }
             } else {
                 if parakeet != nil, Date().timeIntervalSince(lastUsed) > Transcriber.unloadAfter { unload() }
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -134,12 +146,24 @@ final class Transcriber {
         let errorDescription: String?
     }
 
+    /// The one place both engines read a recorded clip: 16 kHz mono samples. Anything that changes how
+    /// clips are stored (such as encrypting them) only has to change this.
+    static func loadClipSamples(_ path: String) throws -> [Float] {
+        try WAV.load16k(URL(fileURLWithPath: path))
+    }
+
     func transcribe(_ chunk: AudioChunk) {
         let started = Date()
         let segments: [(start: Double, end: Double, text: String)]
+        let clipSeconds: Double
         do {
-            segments = try model.engine == .parakeet ? parakeetLines(chunk.filePath) : whisper(chunk.filePath)
-            try db.saveTranscripts(chunk: chunk, segments: segments, engine: engineTag)
+            let samples = try Transcriber.loadClipSamples(chunk.filePath)
+            clipSeconds = Double(samples.count) / Double(ParakeetMath.sampleRate)
+            segments = try model.engine == .parakeet ? parakeetLines(samples) : whisper(samples)
+            guard try db.saveTranscripts(chunk: chunk, segments: segments, engine: engineTag) else {
+                log("chunk \(chunk.id) was deleted while it was transcribed; its text is dropped")
+                return
+            }
         } catch let e as ModelLoadError {
             log("cannot load \(model.name): \(e.localizedDescription)")
             loadFailed = true
@@ -153,14 +177,14 @@ final class Transcriber {
         }
         loadFailed = false
         let secs = Date().timeIntervalSince(started)
-        status = TranscriberStatus(lastAt: Date(), lastSeconds: secs, lastAudioSeconds: Transcriber.wavSeconds(chunk.filePath), problem: nil)
+        status = TranscriberStatus(lastAt: Date(), lastSeconds: secs, lastAudioSeconds: clipSeconds, problem: nil)
         let words = segments.reduce(0) { $0 + $1.text.split(separator: " ").count }
         log("transcribed chunk \(chunk.id): \(segments.count) segments, \(words) words in \(String(format: "%.1f", secs))s")
     }
 
-    private func parakeetLines(_ path: String) throws -> [(start: Double, end: Double, text: String)] {
+    private func parakeetLines(_ samples: [Float]) throws -> [(start: Double, end: Double, text: String)] {
         if parakeet == nil {
-            // Check the files against their pinned hashes before loading them (only slow the first time).
+            // Check the files against their pinned hashes before loading them (once per run of the app).
             if let bad = SpeechModels.problem(model, home: config.home) {
                 throw ModelLoadError(errorDescription: "\(bad); pick \(model.name) again in Settings → Transcription Model to download it again")
             }
@@ -171,7 +195,7 @@ final class Transcriber {
         }
         guard let engine = parakeet else { return [] }
         lastUsed = Date()
-        let lines = try engine.transcribe(WAV.load16k(URL(fileURLWithPath: path)))
+        let lines = try engine.transcribe(samples)
         lastUsed = Date()
         return lines.filter { !Transcriber.isNoise($0.text) }
     }
@@ -182,14 +206,23 @@ final class Transcriber {
         log("unloaded \(model.name) until there is audio to transcribe")
     }
 
-    /// Length of one of our 16 kHz 16-bit mono WAV chunks, from its size.
-    private static func wavSeconds(_ path: String) -> Double {
-        Double(max(0, (SpeechModels.fileSize(URL(fileURLWithPath: path)) ?? 44) - 44)) / 32000
-    }
+    private var whisperChecked = false
 
-    private func whisper(_ path: String) throws -> [(start: Double, end: Double, text: String)] {
+    private func whisper(_ samples: [Float]) throws -> [(start: Double, end: Double, text: String)] {
+        // A Whisper file OpenRewind downloaded is checked against its hash before its first use in each run.
+        if !whisperChecked, let f = model.files.first, modelPath == model.path(config.home, f).path,
+           let bad = SpeechModels.problem(model, home: config.home) {
+            throw ModelLoadError(errorDescription: "\(bad); pick \(model.name) again in Settings → Transcription Model to download it again")
+        }
+        whisperChecked = true
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("openrewind-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: tmp.appendingPathExtension("json")) }
+        let path = tmp.appendingPathExtension("wav").path
+        defer {
+            try? FileManager.default.removeItem(at: tmp.appendingPathExtension("json"))
+            try? FileManager.default.removeItem(atPath: path)
+        }
+        // whisper-cli reads a file: give it the clip as loadClipSamples read it.
+        try WAV.write(samples, sampleRate: ParakeetMath.sampleRate, to: URL(fileURLWithPath: path))
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binary)
         p.arguments = ["-m", modelPath, "-f", path, "-l", config.whisperLanguage, "-oj", "-of", tmp.path, "-np",

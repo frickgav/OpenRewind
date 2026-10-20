@@ -543,6 +543,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func pickModel(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
         let m = SpeechModels.byId(id)
+        if let warn = SpeechModels.languageWarning(m, language: engine.config.whisperLanguage),
+           !confirm(m.name, warn + "\n\nUse it anyway?", button: "Use It", destructive: false) { return }
         if !m.files.isEmpty, !SpeechModels.isDownloaded(m, home: engine.config.home) {
             ModelDownload.show(m, home: engine.config.home) { [weak self] in self?.useModel(m) }
             return
@@ -585,7 +587,10 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             : "for a while"
         let length = SpeechModels.about(seconds).replacingOccurrences(of: "about ", with: "")
         guard confirm("Re-transcribe \(what)?",
-                      "\(clips) clips (up to \(length) of audio) will be transcribed again with \(tx.displayName). This keeps the processor busy \(busy) and uses more battery. New recordings still go first, and the old text stays searchable until each clip is redone.",
+                      "\(clips) clips (up to \(length) of audio) will be transcribed again with \(tx.displayName). This keeps the processor busy \(busy) and uses more battery. New recordings still go first.\n\n"
+                        + "The new text replaces the old for good: the old text stays searchable only until each clip is redone. "
+                        + "Clips with no speech are left as they are, and meeting notes already made are kept (not made or sent again)."
+                        + (SpeechModels.languageWarning(tx.model, language: engine.config.whisperLanguage).map { "\n\n" + $0 } ?? ""),
                       button: "Re-transcribe", destructive: false) else { return }
         let db = engine.db, name = tx.displayName
         DispatchQueue.global(qos: .utility).async {

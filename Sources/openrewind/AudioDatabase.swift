@@ -89,23 +89,41 @@ extension Database {
     /// Audio clips recorded since `from` that Re-transcribe would run again, and their total length in seconds
     /// (clips are 30 s or shorter, so this counts 30 s each).
     func retranscribeCount(from: Date, clipSeconds: Double) -> (clips: Int, seconds: Double) {
-        let n = scalarInt("SELECT COUNT(*) FROM audio_chunks WHERE timestamp >= ? AND status IN ('transcribed', 'silent', 'failed')",
+        let n = scalarInt("SELECT COUNT(*) FROM audio_chunks WHERE timestamp >= ? AND status IN (\(Database.redoStatuses))",
                           [.text(Time.iso.string(from: from))])
         return (n, Double(n) * clipSeconds)
     }
 
+    /// Clips Re-transcribe runs again: ones with words, and ones that failed. Clips found silent stay
+    /// silent (a new model rarely finds speech where the old one found none, and a "pending" silent clip
+    /// would look like speech to Meetings and Insights until it is done).
+    static let redoStatuses = "'transcribed', 'failed'"
+
     /// Re-transcribe: queue the clips recorded since `from` again. Their old lines stay searchable
-    /// until the new ones replace them (`saveTranscripts`). Returns how many clips were queued.
+    /// until the new ones replace them for good (`saveTranscripts`). Meetings in that time keep the notes
+    /// they have: the new lines do not make new notes (nor send the transcript to an AI provider again).
+    /// Returns how many clips were queued.
     @discardableResult
     func requeueAudio(from: Date) -> Int {
         lock.lock(); defer { lock.unlock() }
-        var st: OpaquePointer?
-        let sql = "UPDATE audio_chunks SET status = 'pending', attempts = 0, failure_reason = NULL WHERE timestamp >= ? AND status IN ('transcribed', 'silent', 'failed')"
-        guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); return 0 }
-        defer { sqlite3_finalize(st) }
-        bind(st, 1, Time.iso.string(from: from))
-        guard sqlite3_step(st) == SQLITE_DONE else { log("sql error: \(errmsg)"); return 0 }
-        return Int(sqlite3_changes(db))
+        let iso = Time.iso.string(from: from)
+        func run(_ sql: String) -> Bool {
+            var st: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); return false }
+            defer { sqlite3_finalize(st) }
+            bind(st, 1, iso)
+            guard sqlite3_step(st) == SQLITE_DONE else { log("sql error: \(errmsg)"); return false }
+            return true
+        }
+        guard sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK else { return 0 }
+        guard run("UPDATE meetings SET redone = 1 WHERE end_time >= ?"),
+              run("UPDATE audio_chunks SET status = 'pending', attempts = 0, failure_reason = NULL WHERE timestamp >= ? AND status IN (\(Database.redoStatuses))") else {
+            sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            return 0
+        }
+        let n = Int(sqlite3_changes(db))
+        sqlite3_exec(db, "COMMIT", nil, nil, nil)
+        return n
     }
 
     func chunk(id: Int64) -> AudioChunk? {
@@ -131,9 +149,16 @@ extension Database {
 
     /// Insert all segments of one chunk and mark it transcribed, in one transaction. Lines an earlier
     /// run left for the same chunk (Re-transcribe) are replaced. `engine` names the model that wrote them.
-    func saveTranscripts(chunk: AudioChunk, segments: [(start: Double, end: Double, text: String)], engine: String = "whisper.cpp") throws {
+    /// Returns false (and saves nothing) when the clip was deleted while it was being transcribed.
+    @discardableResult
+    func saveTranscripts(chunk: AudioChunk, segments: [(start: Double, end: Double, text: String)], engine: String = "whisper.cpp") throws -> Bool {
         try exec("BEGIN")
         do {
+            // Deleted (Delete Recordings, or kept-for-days cleanup) after it was picked up: do not bring its words back.
+            if scalarInt("SELECT COUNT(*) FROM audio_chunks WHERE id = ?", [.int(chunk.id)]) == 0 {
+                try exec("ROLLBACK")
+                return false
+            }
             lock.lock()
             var del: OpaquePointer?
             guard sqlite3_prepare_v2(db, "DELETE FROM audio_transcriptions WHERE audio_chunk_id = ?", -1, &del, nil) == SQLITE_OK else {
@@ -162,6 +187,7 @@ extension Database {
             lock.unlock()
             markChunk(chunk.id, status: segments.isEmpty ? "silent" : "transcribed")
             try exec("COMMIT")
+            return true
         } catch {
             try? exec("ROLLBACK")
             throw error

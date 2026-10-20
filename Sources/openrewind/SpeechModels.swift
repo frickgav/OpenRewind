@@ -13,6 +13,8 @@ struct ModelFile {
 
 /// A speech-to-text model the user can pick in Settings → Transcription Model.
 /// `folder` is under ~/.openrewind/models ("" = that folder itself, where Whisper looks for ggml-*.bin).
+/// Downloaded Whisper files get their own names (ggml-small.openrewind.bin), so a ggml-small.bin the
+/// user put there is never replaced.
 struct SpeechModel {
     let id: String
     let name: String
@@ -36,8 +38,12 @@ enum SpeechModels {
     private static let whisperRepo = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/"
     private static let parakeetRepo = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/2bda32ec70b097a55adaa07d9a7173915b43cc78/"
 
+    /// Ending of the Whisper files OpenRewind downloads ("ggml-small.openrewind.bin").
+    static let ownSuffix = ".openrewind"
+
     private static func whisper(_ name: String, _ sha: String, _ size: Int64) -> ModelFile {
-        ModelFile(name: name, url: URL(string: whisperRepo + name)!, sha256: sha, size: size)
+        let local = (name as NSString).deletingPathExtension + ownSuffix + "." + (name as NSString).pathExtension
+        return ModelFile(name: local, url: URL(string: whisperRepo + name)!, sha256: sha, size: size)
     }
 
     private static func parakeet(_ name: String, _ sha: String, _ size: Int64) -> ModelFile {
@@ -81,6 +87,21 @@ enum SpeechModels {
 
     static func modelsDir(_ home: URL) -> URL { home.appendingPathComponent("models") }
 
+    /// What Parakeet v3 understands (ISO 639-1). It finds the language by itself and ignores --language.
+    static let parakeetLanguages: Set<String> = [
+        "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it",
+        "lv", "lt", "mt", "pl", "pt", "ro", "ru", "sk", "sl", "es", "sv", "uk",
+    ]
+
+    /// A warning when `language` (the Whisper --language setting) is one Parakeet does not know, else nil.
+    static func languageWarning(_ m: SpeechModel, language: String?) -> String? {
+        guard m.engine == .parakeet, let language else { return nil }
+        let code = language.trimmingCharacters(in: .whitespaces).lowercased()
+        if code.isEmpty || code == "auto" || parakeetLanguages.contains(code) { return nil }
+        return "\(m.name) does not understand the language set for transcription (\(code)): it knows 25 European languages. "
+            + "Its transcripts of other languages are not usable; keep a Whisper model for them."
+    }
+
     /// All files are there at the right size. Cheap, for menus; loading checks the hashes (`ensureVerified`).
     static func isDownloaded(_ m: SpeechModel, home: URL) -> Bool {
         m.files.allSatisfy { fileSize(m.path(home, $0)) == $0.size }
@@ -107,30 +128,38 @@ enum SpeechModels {
 
     // MARK: verification
 
-    /// Next to each verified file: "<sha256> <size> <modification time>". A file that changed since gets hashed again.
-    private static func stampURL(_ url: URL) -> URL { URL(fileURLWithPath: url.path + ".verified") }
+    /// What a file looked like when this run of the app hashed it. The inode change time cannot be set
+    /// back by hand, so a swapped file is always hashed again. (A stamp file next to the model would let
+    /// anyone who can write there skip the hash by restoring the date.)
+    private struct Identity: Equatable { let size: Int64, inode: UInt64, changed: Int, changedNs: Int, modified: Int, modifiedNs: Int }
+    private static let verifiedLock = NSLock()
+    private static var verified: [String: Identity] = [:]
 
-    private static func stamp(_ f: ModelFile, _ url: URL) -> String? {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.resolvingSymlinksInPath().path),
-              let date = attrs[.modificationDate] as? Date else { return nil }
-        return "\(f.sha256) \(f.size) \(Int64(date.timeIntervalSince1970 * 1000))"
+    private static func identity(_ path: String) -> Identity? {
+        var st = stat()
+        guard stat(path, &st) == 0 else { return nil }
+        return Identity(size: Int64(st.st_size), inode: UInt64(st.st_ino),
+                        changed: st.st_ctimespec.tv_sec, changedNs: st.st_ctimespec.tv_nsec,
+                        modified: st.st_mtimespec.tv_sec, modifiedNs: st.st_mtimespec.tv_nsec)
     }
 
-    /// True when the file on disk is exactly the pinned one. Hashes it once, then trusts the stamp
-    /// while the file stays the same size and age (hashing 650 MB on every start would be slow).
+    /// True when the file on disk is exactly the pinned one. Hashes it the first time in each run of the app
+    /// (about a second for 650 MB), and again whenever it changed.
     static func ensureVerified(_ url: URL, _ f: ModelFile) -> Bool {
-        guard fileSize(url) == f.size else { return false }
-        if let want = stamp(f, url), let have = try? String(contentsOf: stampURL(url), encoding: .utf8),
-           have.trimmingCharacters(in: .whitespacesAndNewlines) == want { return true }
-        guard sha256(of: url) == f.sha256.lowercased() else { return false }
-        writeStamp(url, f)
+        let path = url.resolvingSymlinksInPath().path
+        guard let id = identity(path), id.size == f.size else { return false }
+        verifiedLock.lock()
+        let known = verified[path]
+        verifiedLock.unlock()
+        if known == id { return true }
+        guard sha256(of: URL(fileURLWithPath: path)) == f.sha256.lowercased() else { return false }
+        remember(path)
         return true
     }
 
-    private static func writeStamp(_ url: URL, _ f: ModelFile) {
-        guard let s = stamp(f, url) else { return }
-        do { try s.write(to: stampURL(url), atomically: true, encoding: .utf8) }
-        catch { log("cannot write \(stampURL(url).path): \(error.localizedDescription)") }
+    private static func remember(_ path: String) {
+        guard let id = identity(path) else { return }
+        verifiedLock.lock(); verified[path] = id; verifiedLock.unlock()
     }
 
     static func sha256(of url: URL) -> String? {
@@ -142,10 +171,14 @@ enum SpeechModels {
     }
 
     /// Every file of the model is there and matches its hash; names the first one that is not.
+    /// A file that cannot be read counts as missing.
     static func problem(_ m: SpeechModel, home: URL) -> String? {
         for f in m.files where !ensureVerified(m.path(home, f), f) { return "\(f.name) is missing or damaged" }
         return nil
     }
+
+    /// A connection that sends nothing for this long fails with "no data …", keeping what came.
+    static let stallSeconds: TimeInterval = 60
 
     // MARK: download
 
@@ -187,7 +220,11 @@ enum SpeechModels {
         var req = URLRequest(url: f.url)
         req.setValue("OpenRewind", forHTTPHeaderField: "User-Agent")
         if fetch.have > 0 { req.setValue("bytes=\(fetch.have)-", forHTTPHeaderField: "Range") }
-        let session = URLSession(configuration: .default, delegate: fetch, delegateQueue: nil)
+        let config = URLSessionConfiguration.default
+        // The longest wait for the next bytes; the whole download may take as long as it takes.
+        config.timeoutIntervalForRequest = stallSeconds
+        config.timeoutIntervalForResource = 7 * 24 * 3600
+        let session = URLSession(configuration: config, delegate: fetch, delegateQueue: nil)
         let task = session.dataTask(with: req)
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
@@ -198,15 +235,18 @@ enum SpeechModels {
 
         let sha = fetch.hasher.finalize().map { String(format: "%02x", $0) }.joined()
         let size = fileSize(part) ?? 0
-        guard size == f.size, sha == f.sha256.lowercased() else {
+        // Cut short: keep what came, the next try asks for the rest (and hashes the start again).
+        if size < f.size {
+            throw DownloadError("\(f.name) stopped at \(formatSize(size)) of \(formatSize(f.size)); Try Again carries on where it stopped")
+        }
+        guard sha == f.sha256.lowercased() else {
             try? fm.removeItem(at: part)
-            throw DownloadError(size != f.size
-                ? "\(f.name) stopped at \(formatSize(size)) of \(formatSize(f.size)); try again"
-                : "\(f.name) does not match its checksum, so it was thrown away; try again")
+            throw DownloadError("\(f.name) does not match its checksum, so it was thrown away; try again")
         }
         try? fm.removeItem(at: url)
         try fm.moveItem(at: part, to: url)
-        writeStamp(url, f)
+        // Hashed on the way in: no need to read it again before loading it in this run.
+        remember(url.resolvingSymlinksInPath().path)
     }
 }
 
@@ -269,7 +309,7 @@ private final class FileFetch: NSObject, URLSessionDataDelegate {
         }
         hasher.update(data: data)
         done += Int64(data.count)
-        if done - lastReport >= 1 << 20 || done == file.size { progress(done); lastReport = done }
+        if done - lastReport >= 1 << 18 || done == file.size { progress(done); lastReport = done }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
@@ -277,7 +317,12 @@ private final class FileFetch: NSObject, URLSessionDataDelegate {
         out = nil
         session.finishTasksAndInvalidate()
         if let failure { finish?.resume(throwing: failure) }
-        else if let error { finish?.resume(throwing: (error as? URLError)?.code == .cancelled ? CancellationError() : error) }
+        else if let error as? URLError, error.code == .cancelled { finish?.resume(throwing: CancellationError()) }
+        else if let error as? URLError, error.code == .timedOut {
+            finish?.resume(throwing: SpeechModels.DownloadError(
+                "no data from the server for \(Int(SpeechModels.stallSeconds)) seconds; Try Again carries on where it stopped"))
+        }
+        else if let error { finish?.resume(throwing: error) }
         else { finish?.resume() }
         finish = nil
     }

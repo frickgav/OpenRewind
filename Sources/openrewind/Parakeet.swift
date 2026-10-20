@@ -6,6 +6,8 @@ import OnnxRuntimeBindings
 /// steps in Parakeet.cs. Pure parts (features, decoding, lines) are in ParakeetMath.
 final class ParakeetEngine {
     static let tag = "parakeet-tdt-0.6b-v3"
+    /// Size of the encoder's output vectors and of the prediction network's output and state (this model).
+    static let encDim = 1024, predDim = 640
     private let env: ORTEnv
     private let encoder: ORTSession
     private let decoder: ORTSession
@@ -13,6 +15,7 @@ final class ParakeetEngine {
     private let tokens: [String]
     private let blank: Int
     private let stateNames: [String]
+    private let decoderOutputs: [String]
 
     init(dir: URL, threads: Int) throws {
         env = try ORTEnv(loggingLevel: .error)
@@ -28,6 +31,14 @@ final class ParakeetEngine {
         // The two state inputs have export-made names ("states.1", "onnx::Slice_3"): take them in order.
         stateNames = try decoder.inputNames().filter { $0 != "targets" && $0 != "target_length" }
         guard stateNames.count == 2 else { throw ParakeetError("unexpected decoder inputs \(stateNames)") }
+        decoderOutputs = try decoder.outputNames()
+        guard decoderOutputs.count == 4 else { throw ParakeetError("unexpected decoder outputs \(decoderOutputs)") }
+        // A model that does not fit fails here, once, instead of on every clip.
+        let probe = try Decoding(self, enc: [Float](repeating: 0, count: ParakeetEngine.encDim), frames: 1)
+        let logits = try probe.joint(0)
+        guard logits.count == tokens.count + ParakeetMath.durations.count else {
+            throw ParakeetError("the joiner gives \(logits.count) scores for \(tokens.count) tokens")
+        }
     }
 
     struct ParakeetError: LocalizedError {
@@ -35,21 +46,25 @@ final class ParakeetEngine {
         init(_ s: String) { errorDescription = s }
     }
 
-    /// 16 kHz mono samples → lines with times in seconds from the start.
+    /// 16 kHz mono samples → lines with times in seconds from the start. Long audio goes through the
+    /// encoder in windows of at most 30 s (its memory grows with the square of the length).
     func transcribe(_ samples: [Float]) throws -> [(start: Double, end: Double, text: String)] {
-        guard samples.count >= ParakeetMath.hop * 10 else { return [] }
-        let (feats, frames) = ParakeetMath.features(samples)
-        let (enc, encFrames) = try encode(feats, frames)
-        let hits = try decode(enc, encFrames)
+        var hits: [(token: Int, frame: Int)] = []
+        for w in ParakeetMath.windows(samples) where w.length >= ParakeetMath.hop * 10 {
+            let (feats, frames) = ParakeetMath.features(Array(samples[w.start..<(w.start + w.length)]))
+            let (enc, encFrames) = try encode(feats, frames)
+            let offset = w.start / ParakeetMath.stepSamples
+            for hit in try Decoding(self, enc: enc, frames: encFrames).run() { hits.append((hit.token, hit.frame + offset)) }
+        }
         return ParakeetMath.segments(hits, tokens: tokens, audioSeconds: Double(samples.count) / Double(ParakeetMath.sampleRate))
     }
 
-    private static func tensor<T>(_ values: [T], _ type: ORTTensorElementDataType, _ shape: [Int]) throws -> ORTValue {
+    fileprivate static func tensor<T>(_ values: [T], _ type: ORTTensorElementDataType, _ shape: [Int]) throws -> ORTValue {
         let data = values.withUnsafeBufferPointer { NSMutableData(bytes: $0.baseAddress!, length: $0.count * MemoryLayout<T>.stride) }
         return try ORTValue(tensorData: data, elementType: type, shape: shape.map { NSNumber(value: $0) })
     }
 
-    private static func floats(_ v: ORTValue) throws -> [Float] {
+    fileprivate static func floats(_ v: ORTValue) throws -> [Float] {
         let data = try v.tensorData() as Data
         return data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
     }
@@ -61,60 +76,82 @@ final class ParakeetEngine {
         ], outputNames: ["outputs", "encoded_lengths"], runOptions: nil)
         guard let o = outs["outputs"], let l = outs["encoded_lengths"] else { throw ParakeetError("encoder gave no output") }
         let shape = try o.tensorTypeAndShapeInfo().shape.map { $0.intValue }
-        guard shape.count == 3 else { throw ParakeetError("encoder output has shape \(shape)") }
+        guard shape.count == 3, shape[1] == ParakeetEngine.encDim else { throw ParakeetError("encoder output has shape \(shape)") }
         let dim = shape[1], t = shape[2]
         let len = (try l.tensorData() as Data).withUnsafeBytes { $0.bindMemory(to: Int64.self).first ?? 0 }
         // [1, 1024, T] → one 1024-vector per frame, so the joiner gets contiguous slices.
         let src = try Self.floats(o)
+        guard src.count == dim * t else { throw ParakeetError("encoder output is \(src.count) values, not \(dim) × \(t)") }
         var data = [Float](repeating: 0, count: t * dim)
         for d in 0..<dim { for i in 0..<t { data[i * dim + d] = src[d * t + i] } }
-        return (data, min(Int(len), t))
+        return (data, max(0, min(Int(len), t)))
     }
 
-    private func decode(_ enc: [Float], _ frames: Int) throws -> [(token: Int, frame: Int)] {
-        let encDim = 1024, predDim = 640
-        var h = [Float](repeating: 0, count: 2 * predDim)
-        var c = [Float](repeating: 0, count: 2 * predDim)
+    /// One window's decoding: the prediction network's state and the encoder frames it scores.
+    private final class Decoding {
+        let e: ParakeetEngine
+        let enc: [Float]
+        let frames: Int
+        var h = [Float](repeating: 0, count: 2 * ParakeetEngine.predDim)
+        var c = [Float](repeating: 0, count: 2 * ParakeetEngine.predDim)
         var decOut: [Float] = []
-        var failure: Error?
-        let decoderOutputs = try decoder.outputNames()
-        func predict(_ token: Int) throws {
-            let outs = try decoder.run(withInputs: [
-                "targets": Self.tensor([Int32(token)], .int32, [1, 1]),
-                "target_length": Self.tensor([Int32(1)], .int32, [1]),
-                stateNames[0]: Self.tensor(h, .float, [2, 1, predDim]),
-                stateNames[1]: Self.tensor(c, .float, [2, 1, predDim]),
-            ], outputNames: Set(decoderOutputs), runOptions: nil)
-            // Outputs, in order: decoder output [1, 640, 1], lengths, then the two new states.
-            guard decoderOutputs.count == 4, let o = outs[decoderOutputs[0]], let nh = outs[decoderOutputs[2]], let nc = outs[decoderOutputs[3]] else {
-                throw ParakeetError("unexpected decoder outputs \(decoderOutputs)")
-            }
-            decOut = try Self.floats(o)
-            h = try Self.floats(nh)
-            c = try Self.floats(nc)
+
+        init(_ engine: ParakeetEngine, enc: [Float], frames: Int) throws {
+            e = engine; self.enc = enc; self.frames = frames
+            try predict(engine.blank)  // the prediction network starts from the blank token
         }
+
+        func predict(_ token: Int) throws {
+            let p = ParakeetEngine.predDim
+            let outs = try e.decoder.run(withInputs: [
+                "targets": ParakeetEngine.tensor([Int32(token)], .int32, [1, 1]),
+                "target_length": ParakeetEngine.tensor([Int32(1)], .int32, [1]),
+                e.stateNames[0]: ParakeetEngine.tensor(h, .float, [2, 1, p]),
+                e.stateNames[1]: ParakeetEngine.tensor(c, .float, [2, 1, p]),
+            ], outputNames: Set(e.decoderOutputs), runOptions: nil)
+            // Outputs, in order: decoder output [1, 640, 1], lengths, then the two new states.
+            guard let o = outs[e.decoderOutputs[0]], let nh = outs[e.decoderOutputs[2]], let nc = outs[e.decoderOutputs[3]] else {
+                throw ParakeetError("unexpected decoder outputs \(e.decoderOutputs)")
+            }
+            decOut = try ParakeetEngine.floats(o)
+            h = try ParakeetEngine.floats(nh)
+            c = try ParakeetEngine.floats(nc)
+            guard decOut.count == p, h.count == 2 * p, c.count == 2 * p else {
+                throw ParakeetError("the decoder's outputs are not the expected size")
+            }
+        }
+
         func joint(_ t: Int) throws -> [Float] {
-            let e = Array(enc[(t * encDim)..<((t + 1) * encDim)])
-            let outs = try joiner.run(withInputs: [
-                "encoder_outputs": Self.tensor(e, .float, [1, encDim, 1]),
-                "decoder_outputs": Self.tensor(decOut, .float, [1, predDim, 1]),
+            let d = ParakeetEngine.encDim
+            let v = Array(enc[(t * d)..<((t + 1) * d)])
+            let outs = try e.joiner.run(withInputs: [
+                "encoder_outputs": ParakeetEngine.tensor(v, .float, [1, d, 1]),
+                "decoder_outputs": ParakeetEngine.tensor(decOut, .float, [1, ParakeetEngine.predDim, 1]),
             ], outputNames: ["outputs"], runOptions: nil)
             guard let o = outs["outputs"] else { throw ParakeetError("joiner gave no output") }
-            return try Self.floats(o)
+            let logits = try ParakeetEngine.floats(o)
+            guard logits.count >= e.tokens.count + ParakeetMath.durations.count else {
+                throw ParakeetError("the joiner gave \(logits.count) scores for \(e.tokens.count) tokens")
+            }
+            return logits
         }
-        try predict(blank)  // the prediction network starts from the blank token
-        // ParakeetMath.greedyTdt takes plain closures: keep the first error and stop scoring after it.
-        let hits = ParakeetMath.greedyTdt(frames: frames, vocab: tokens.count, blank: blank, joint: { t in
-            guard failure == nil else { return [] }
-            do { return try joint(t) } catch { failure = error; return [] }
-        }, emit: { token in
-            guard failure == nil else { return }
-            do { try predict(token) } catch { failure = error }
-        })
-        if let failure { throw failure }
-        return hits
+
+        func run() throws -> [(token: Int, frame: Int)] {
+            var failure: Error?
+            // ParakeetMath.greedyTdt takes plain closures: keep the first error and stop scoring after it.
+            let hits = ParakeetMath.greedyTdt(frames: frames, vocab: e.tokens.count, blank: e.blank, joint: { t in
+                guard failure == nil else { return [] }
+                do { return try self.joint(t) } catch { failure = error; return [] }
+            }, emit: { token in
+                guard failure == nil else { return }
+                do { try self.predict(token) } catch { failure = error }
+            })
+            if let failure { throw failure }
+            return hits
+        }
     }
 }
+
 
 /// The parts of Parakeet that need no model: log-mel features exactly like NeMo's preprocessor,
 /// TDT greedy decoding, and turning tokens into timed lines. Mirrors ParakeetMath in Parakeet.cs.
@@ -125,6 +162,35 @@ enum ParakeetMath {
     /// Durations the TDT joiner predicts after the vocabulary scores.
     static let durations = [0, 1, 2, 3, 4]
     static let maxTokensPerFrame = 10
+    /// Samples per encoder step (80 ms): windows start on these, so frame numbers just add up.
+    static let stepSamples = hop * 8
+    /// Longest audio given to the encoder at once.
+    static let maxWindowSamples = 30 * sampleRate
+    /// A window is cut at the quietest 80 ms in its last few seconds, so words are rarely split.
+    static let cutSearchSamples = 4 * sampleRate
+
+    /// Pieces of at most 30 s that cover `samples` end to end. Each starts on an encoder step; cuts go
+    /// where it is quietest near the end of the window. Same as ParakeetMath.Windows in Parakeet.cs.
+    static func windows(_ samples: [Float]) -> [(start: Int, length: Int)] {
+        var list: [(start: Int, length: Int)] = []
+        let n = samples.count
+        var start = 0
+        while n - start > maxWindowSamples {
+            let end = start + maxWindowSamples
+            var best = end, quietest = Double.greatestFiniteMagnitude
+            var cut = end
+            while cut >= end - cutSearchSamples {
+                var energy = 0.0
+                for i in (cut - stepSamples / 2)..<(cut + stepSamples / 2) { energy += Double(samples[i]) * Double(samples[i]) }
+                if energy < quietest { quietest = energy; best = cut }
+                cut -= stepSamples
+            }
+            list.append((start, best - start))
+            start = best
+        }
+        if n > start { list.append((start, n - start)) }
+        return list
+    }
 
     /// A symmetric 400-point Hann window in the middle of the 512-point frame (as torch.stft pads it).
     static let window: [Double] = {

@@ -44,13 +44,22 @@ final class ModelDownload: ObservableObject, @unchecked Sendable {
         line = "Starting…"
         startedAt = Date()
         firstBytes = -1
+        progressLine = line
+        lastData = Date()
+        // Says so when nothing has come for a while (the download gives up after 60 s of nothing).
+        watch?.invalidate()
+        watch = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self, self.running else { return }
+            let quiet = Date().timeIntervalSince(self.lastData)
+            self.line = quiet >= 15 ? "\(self.progressLine) · no data for \(Int(quiet)) s" : self.progressLine
+        }
         let me = self, model = model, home = home
         task = Task.detached {
             do {
                 try await SpeechModels.download(model, home: home) { got, total in
                     DispatchQueue.main.async { me.show(got, of: total) }
                 }
-                await MainActor.run { me.line = "Checking the files…" }
+                await MainActor.run { me.watch?.invalidate(); me.line = "Checking the files…" }
                 if let problem = SpeechModels.problem(model, home: home) { throw SpeechModels.DownloadError(problem) }
                 await MainActor.run {
                     me.running = false
@@ -61,6 +70,7 @@ final class ModelDownload: ObservableObject, @unchecked Sendable {
             } catch {
                 log("downloading \(model.name) failed: \(error.localizedDescription)")
                 await MainActor.run {
+                    me.watch?.invalidate()
                     me.running = false
                     me.failed = true
                     me.line = "The download stopped: \(error.localizedDescription)"
@@ -72,6 +82,9 @@ final class ModelDownload: ObservableObject, @unchecked Sendable {
     private var startedAt = Date()
     /// Bytes already there from an earlier try, so the time left counts only what still comes.
     private var firstBytes: Int64 = -1
+    private var progressLine = ""
+    private var lastData = Date()
+    private var watch: Timer?
 
     /// On the main thread.
     private func show(_ got: Int64, of total: Int64) {
@@ -81,10 +94,14 @@ final class ModelDownload: ObservableObject, @unchecked Sendable {
         let secs = Date().timeIntervalSince(startedAt)
         let rate = Double(got - firstBytes) / max(0.5, secs)
         let left = rate > 0 && secs > 3 ? " · \(SpeechModels.about(Double(total - got) / rate)) left" : ""
-        line = "\(SpeechModels.formatSize(got)) of \(SpeechModels.formatSize(total))\(left)"
+        progressLine = "\(SpeechModels.formatSize(got)) of \(SpeechModels.formatSize(total))\(left)"
+        line = progressLine
+        lastData = Date()
     }
 
     func cancel() {
+        watch?.invalidate()
+        watch = nil
         task?.cancel()
         task = nil
         running = false

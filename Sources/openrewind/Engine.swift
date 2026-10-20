@@ -129,12 +129,14 @@ final class Engine {
                 log(old == nil ? "starting system audio again" : "system audio sent no sound for 60 s, restarting")
                 self.system = nil
                 self.systemRestarting = true
+                // Read here, on the main thread: Settings → Transcription Model changes `config` there.
+                let config = self.config, db = self.db
                 Task.detached {
                     defer { Task { @MainActor in self.systemRestarting = false } }
                     await old?.stop()
                     let fresh = SystemAudioCapture(writer: ChunkWriter(device: "system audio", isInput: false,
-                                                                       seconds: self.config.audioChunkSeconds,
-                                                                       config: self.config, db: self.db))
+                                                                       seconds: config.audioChunkSeconds,
+                                                                       config: config, db: db))
                     do {
                         try await fresh.start()
                         await MainActor.run { self.system = fresh }
