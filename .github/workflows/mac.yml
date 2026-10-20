@@ -2,9 +2,9 @@ name: Mac app
 
 on:
   push:
-    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", ".github/workflows/mac.yml"]
+    paths: ["Sources/**", "Package.swift", "Package.resolved", "THIRD_PARTY_NOTICES.txt", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", ".github/workflows/mac.yml"]
   pull_request:
-    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", ".github/workflows/mac.yml"]
+    paths: ["Sources/**", "Package.swift", "Package.resolved", "THIRD_PARTY_NOTICES.txt", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", ".github/workflows/mac.yml"]
   workflow_dispatch:
 
 permissions:
@@ -34,6 +34,12 @@ jobs:
         run: codesign --display --requirements - dist/OpenRewind.app 2>&1 | grep -E '^designated => .*(certificate (leaf|root)|anchor apple generic)'
       - name: Check the CLI starts
         run: dist/OpenRewind.app/Contents/MacOS/OpenRewind help
+      # The file format against the vectors the Windows tests use (so each app reads the other's
+      # files), and SQLCipher: encrypt, search, reopen, wrong key refused, read-only, decrypt.
+      - name: Encryption self-test
+        run: dist/OpenRewind.app/Contents/MacOS/OpenRewind selftest-encryption
+      - name: Check the notices ship
+        run: test -s dist/OpenRewind.app/Contents/Resources/THIRD_PARTY_NOTICES.txt
       # Start it as an AI app does (OpenRewind mcp, pipes for stdin/stdout) and talk MCP to it,
       # with the Settings switch off, then on with an empty history.
       - name: MCP check

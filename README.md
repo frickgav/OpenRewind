@@ -414,38 +414,69 @@ Both are off by default. Find them in **Settings → Encryption & Lock**, on the
 
 **Encrypt Recordings** encrypts new screenshots and audio clips with AES-256-GCM, and the database
 with [SQLCipher](https://www.zetetic.net/sqlcipher/). What is already recorded is encrypted in the
-background while recording goes on; quitting halfway is fine, it carries on at the next launch.
-Turning it off decrypts everything back the same way. The menu shows how far it has got.
+background; quitting halfway is fine, it carries on at the next launch. Turning it off decrypts
+everything back the same way. The menu shows how far it has got. The database is rewritten in one
+go first: recording waits until that is done (a few seconds, up to a minute or two for a very large
+history), and it needs free disk space for a second copy of the database.
 
 - **What it protects against:** someone who copies your disk, a backup or the `~/.openrewind`
   folder, and other user accounts on the same computer. Without your login they see only
   encrypted files.
 - **What it does not protect against:** apps running as you. OpenRewind has to record in the
   background without asking for a password, so the key is kept where your login unlocks it: the
-  login Keychain on the Mac (this Mac only), DPAPI for your Windows account on Windows
-  (`~/.openrewind/encryption-key.dpapi`). Anything that can run as you can ask for it too.
-- **Recovery key:** **Export Recovery Key…** saves the key as a text file (72 characters in 9 groups).
-  OpenRewind offers to save it when you turn encryption on. If the Keychain or your Windows account
-  is reset, or you move your recordings to another computer, OpenRewind asks for it at launch.
-  **If you lose the key and the Keychain or Windows account, the recordings are lost for good.**
-  Keep it somewhere safe, like a password manager. The same key works in the Mac and the Windows app.
+  login Keychain on the Mac, DPAPI for your Windows account on Windows
+  (`~/.openrewind/encryption-key.dpapi`). Anything that can run as you can ask for it too. The
+  login Keychain is a file (`~/Library/Keychains/login.keychain-db`) protected by your login
+  password; it is not tied to this Mac, so a copy of it plus your password opens the key.
+- **What was there before:** backups, Time Machine snapshots and cloud copies made before you turned
+  it on still hold the plain files, and the old plain files are deleted, not wiped, so they can stay
+  on the disk until it reuses the space. Turn it on before you record anything sensitive, or delete
+  the older backups.
+- **The log** (`~/.openrewind/openrewind.log`) is a plain file. With encryption on it no longer
+  names the app of each saved frame; earlier lines (from before it was on) still do.
+- **Recovery key:** **Export Recovery Key…** saves the key as a text file (72 characters in 9 groups)
+  that only you can read. OpenRewind offers to save it when you turn encryption on. If the Keychain
+  or your Windows account is reset, or you move your recordings to another computer, OpenRewind asks
+  for it at launch and checks it against your recordings. **If you lose the key and the Keychain or
+  Windows account, the recordings are lost for good.** Keep it somewhere safe, like a password
+  manager. The same key works in the Mac and the Windows app. OpenRewind never replaces a stored key
+  it cannot read, and keeps a copy of the old one when a recovery key replaces it.
 - Speech to text: whisper-cli needs a file, so each encrypted audio clip is decrypted to a private
-  file in your temp folder while it is transcribed (a few seconds) and deleted right after.
-- Files: an encrypted file starts with `ORENC`, a format version and a key id, then the nonce, the
-  encrypted data and the tag. Plain and encrypted files can sit side by side, so the switch can
-  stop anywhere. The SQLCipher libraries are
-  [skiptools/swift-sqlcipher](https://github.com/skiptools/swift-sqlcipher) 1.9.0 on the Mac (built
-  into the app) and `SQLitePCLRaw.bundle_e_sqlcipher` 2.1.10 on Windows.
+  file in your temp folder while it is transcribed (a few seconds) and deleted right after; copies
+  left by a crash are removed at the next launch.
+- AI apps (MCP) keep working with encryption on: `OpenRewind mcp` reads the key the same way the app
+  does (Keychain or DPAPI) and opens the database read-only.
+- Files (format version 2): an encrypted file is `ORENC`, the version, a key id (4 bytes), a 12-byte
+  nonce, the encrypted data and a 16-byte tag. The file key and the database key are both derived
+  from the one key you can export (HKDF-SHA256, salt `OpenRewind`, info `openrewind/files/v2` and
+  `openrewind/db/v2`), so they are never the same. Each file is also bound to its place under
+  `data/` (for example `2026-10-19/14-30-05.jpg`), so files swapped or moved inside the folder do
+  not open. Plain and encrypted files can sit side by side, so the switch can stop anywhere.
+- Libraries: [skiptools/swift-sqlcipher](https://github.com/skiptools/swift-sqlcipher) 1.9.0 on
+  the Mac (SQLCipher 4.15.0 with LibTomCrypt, built into the app and pinned to one commit in
+  `Package.resolved`), and `SQLitePCLRaw.bundle_e_sqlcipher` 2.1.10 on Windows, which carries an
+  older community build (SQLCipher 4.5.2). Both use the SQLCipher 4 default format, so a database
+  moves between them; the Windows one should move to a newer build when one is available. Their
+  licenses are in `THIRD_PARTY_NOTICES.txt`, which ships with both apps.
 - For developers: every reader of recordings goes through one loader, `RecordingFile.read(path)`
   on the Mac and `RecordingFile.Read(path)` on Windows. It returns the plain bytes of a plain or an
   encrypted file. New features that open screenshots or audio should call it too.
+  `OpenRewind selftest-encryption` (Mac) checks the format against the vectors in the Windows tests.
 
 **Require Touch ID or Password to Open Timeline** (Mac) / **Require Windows Hello to Open Timeline**
-(Windows) asks before showing the timeline, search, Ask AI, Blocked Apps & Sites, the data folder and
-setup. Recording keeps going while locked. An unlock lasts until the screen locks or the computer
-sleeps, or until **Lock Again After** has passed (5 minutes, 15 minutes (default), 1 hour, or only when
-the screen locks). While locked, the Local Search Server answers `423 Locked` for search, screenshots
-and audio. Windows Hello needs at least a PIN set up; a Mac needs a login password.
+(Windows) asks before showing the timeline, search, Ask AI, Insights, Blocked Apps & Sites, the data
+folder and setup, before opening a moment from an Ask AI answer, and before deleting recordings or
+changing how long they are kept. Recording keeps going while locked. An unlock lasts until the screen
+locks or the computer sleeps, or until **Lock Again After** has passed with none of those windows in
+use (5 minutes, 15 minutes (default), 1 hour, or only when the screen locks); then they close. While
+locked, the Local Search Server answers `423 Locked` for search, screenshots and audio, and `/health`
+says only that it is running. Windows Hello needs at least a PIN; without it (or after it is removed)
+your Windows password works instead, so you can always turn the lock off. A Mac needs a login password.
+
+The lock is against someone using your computer while you are away from it, not against programs
+running as you: those could turn it off in the settings file (`settings.json` on Windows,
+`defaults` on the Mac) or run `OpenRewind serve` from a terminal. Encrypt Recordings is what protects
+the files.
 
 ## Data
 
