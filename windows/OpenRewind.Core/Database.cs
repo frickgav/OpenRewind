@@ -2,9 +2,10 @@ using Microsoft.Data.Sqlite;
 
 namespace OpenRewind;
 
-/// BrowserUrl is the address of the browser tab in this frame, or "".
+/// BrowserUrl is the address of the browser tab in this frame, or "". Blocked: a blocked window or
+/// site was in front (the frame keeps only the app name; Insights leaves it out).
 public record Frame(long Id, string Timestamp, string AppName, string WindowName, bool Focused,
-                    string SnapshotPath, string Text, string TextSource, long Hash, string BrowserUrl = "");
+                    string SnapshotPath, string Text, string TextSource, long Hash, string BrowserUrl = "", bool Blocked = false);
 
 public record AudioChunk(long Id, string FilePath, string Timestamp, string Device, bool IsInput, string Status);
 
@@ -92,7 +93,6 @@ public sealed partial class Database : IDisposable
             text_source TEXT NOT NULL DEFAULT 'ocr',
             hash INTEGER NOT NULL DEFAULT 0
         );
-        CREATE INDEX IF NOT EXISTS idx_frames_ts ON frames(timestamp);
         CREATE INDEX IF NOT EXISTS idx_frames_app_ts ON frames(app_name, timestamp);
         CREATE VIRTUAL TABLE IF NOT EXISTS frames_fts USING fts5(
             text, app_name, window_name,
@@ -146,8 +146,45 @@ public sealed partial class Database : IDisposable
         // Added later: older databases do not have this column yet.
         if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'browser_url'") == 0)
             Exec("ALTER TABLE frames ADD COLUMN browser_url TEXT NOT NULL DEFAULT ''");
+        // Time order. Replaced by idx_frames_insights, which starts with the time too (see BuildSlowIndexesInBackground);
+        // only a database that does not have that one yet needs this.
+        if (ScalarLong("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_frames_insights'") == 0)
+            Exec("CREATE INDEX IF NOT EXISTS idx_frames_ts ON frames(timestamp)");
+        // Frames saved while a blocked window or site was in front. Older frames say 0. Mac: the same column.
+        if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'blocked'") == 0)
+            Exec("ALTER TABLE frames ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0");
         MigrateMeaning();
     }
+
+    /// Indexes that take a while on a big database (the whole frames table is read, screen text and
+    /// all: seconds, or about a minute on a slow disk). Built after launch on a connection of its own,
+    /// off the UI thread, so the app starts at once and reads keep working meanwhile. A failure (full
+    /// disk, another process writing) is logged and tried again next launch; Insights still works,
+    /// only slower. The Mac app does the same.
+    public static Task BuildSlowIndexesInBackground(string path) => Task.Run(() =>
+    {
+        try
+        {
+            using var c = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadWrite, Pooling = false }.ToString());
+            c.Open();
+            void Run(string sql) { using var cmd = c.CreateCommand(); cmd.CommandText = sql; cmd.ExecuteNonQuery(); }
+            Run("PRAGMA busy_timeout=30000;");
+            using (var has = c.CreateCommand())
+            {
+                has.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_frames_insights'";
+                if ((long)has.ExecuteScalar()! > 0) return;
+            }
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            // Insights reads time, app, window, address and the blocked mark in time order; with this
+            // index it never touches the screen text.
+            Run("CREATE INDEX IF NOT EXISTS idx_frames_insights ON frames(timestamp, app_name, window_name, browser_url, blocked)");
+            // The new index starts with the time, so the old time index only costs disk space and inserts.
+            Run("DROP INDEX IF EXISTS idx_frames_ts");
+            Run("DROP INDEX IF EXISTS idx_frames_activity");  // an earlier test build of Insights
+            Log.Write($"built the Insights index in {watch.Elapsed.TotalSeconds:0.0} s");
+        }
+        catch (Exception e) { Log.Write($"could not build the Insights index (will try again next launch): {e.Message}"); }
+    });
 
     // MARK: frames
 
@@ -155,8 +192,8 @@ public sealed partial class Database : IDisposable
     {
         lock (gate)
         {
-            using var cmd = Cmd("INSERT INTO frames (timestamp, app_name, window_name, focused, snapshot_path, text, text_source, hash, browser_url) VALUES (?,?,?,?,?,?,?,?,?); SELECT last_insert_rowid();",
-                f.Timestamp, f.AppName, f.WindowName, f.Focused ? 1 : 0, f.SnapshotPath, f.Text, f.TextSource, f.Hash, f.BrowserUrl);
+            using var cmd = Cmd("INSERT INTO frames (timestamp, app_name, window_name, focused, snapshot_path, text, text_source, hash, browser_url, blocked) VALUES (?,?,?,?,?,?,?,?,?,?); SELECT last_insert_rowid();",
+                f.Timestamp, f.AppName, f.WindowName, f.Focused ? 1 : 0, f.SnapshotPath, f.Text, f.TextSource, f.Hash, f.BrowserUrl, f.Blocked ? 1 : 0);
             return (long)cmd.ExecuteScalar()!;
         }
     }

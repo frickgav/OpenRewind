@@ -85,6 +85,8 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
   OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
 - **Search by Meaning** (off until you turn it on) finds moments by what they were about, not
   only the exact words. It runs on your computer. See [Search by Meaning](#search-by-meaning).
+- **Insights** (menu bar or tray → Insights…) shows where your time went today or this week,
+  worked out on your computer without AI. See [Insights](#insights).
 - **Claude, Cursor and other AI apps** can search your history too, through MCP, once you turn
   it on. See [Use with Claude and other AI apps (MCP)](#use-with-claude-and-other-ai-apps-mcp).
 
@@ -156,6 +158,48 @@ supplied that address, so text on screen can't trick the AI into a link that sen
 elsewhere. With a local model (Ollama, LM Studio) nothing leaves your computer at all; a custom
 server reached over plain http on another network gets a warning, since your key would travel
 unencrypted.
+
+## Insights
+
+Open it from the menu bar or tray (**Insights…**). Switch between **Day** and **Week**, and use
+‹ › (or ← →) for the day or week before or after. It shows:
+
+- **Active time**: how long you used the computer, and the change from the day or week before
+  (up to the same time while the day or week is still going).
+- **Apps** and **Websites**: time in each, as bars, the top 10 and then "Other", each with the change
+  from the day or week before.
+- **When you were active**: a strip of the day's hours, or for a week a grid of days by hours.
+- **Focus sessions**: the longest stretches of 10 minutes or more mostly in one app (short looks at
+  another app, under a minute, don't break one).
+- **App switches**: how often the app in front changed while you were using the computer.
+
+Click an app to open the timeline showing only that app, at the first moment you used it that
+day or week. Click a website or a focus session to jump to it.
+
+Everything is worked out on your computer from what was saved with each screenshot (time, app,
+window title, address); nothing is sent anywhere and no AI is used. The window follows
+**Settings → Timeline Look**.
+
+**Blocked apps and sites.** Screenshots saved while a blocked app, window or site was in front are
+marked as blocked and left out entirely, as is anything that matches your block list now (by app
+name, window title or address). One gap: screenshots saved by an older version while a blocked
+*site* or *window* was in front kept only the browser's name, and ones from a helper app of a blocked
+app (Docker.app shows "Docker Desktop") kept the helper's name, so that older time can still show
+under the browser or the helper app. Block the helper's name too to hide it.
+
+**How time is counted.** Time counts from one screenshot to the next. A break of more than 2
+minutes (locked, asleep or paused) does not count. A screen whose text doesn't change only gets one
+screenshot a minute; after 5 minutes of that, the rest counts as away until something changes,
+unless speech was recorded at the time (a call or a video, with **Record Audio** on), which counts
+as being there. With audio recording off, a long call or video can count as away after 5
+minutes. If you record from the terminal with `--interval` of 50 seconds or more, every screenshot
+looks like a still screen and active time is undercounted; keep the interval under 50 seconds.
+Ask AI's activity summary counts every gap up to 2 minutes without the still-screen rule, so its
+totals can be a little higher than Insights'.
+
+The first launch after updating builds a database index for Insights in the background (seconds,
+or about a minute for a very large history on a slow disk). Until it is done, Insights still works,
+just more slowly.
 
 ## Use with Claude and other AI apps (MCP)
 
@@ -239,6 +283,7 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
   search only finds that app's screen text (and speech heard while it was in front).
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
+- **Insights…** shows where your time went today or this week (see [Insights](#insights)).
 - **Settings → Timeline Shortcut**: **Change Shortcut…** waits for the new key combination
   (⌘, ⌥ or ⌃ with a key, or an F-key alone); **Reset** goes back to ⌥⌘T.
 - **Settings → Screenshot Resolution**: Full (100%), High (75%), Medium (50%, default) or

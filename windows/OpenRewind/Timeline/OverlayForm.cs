@@ -53,7 +53,7 @@ sealed class OverlayForm : Form
     /// Search words in snippets: plain yellow is hard to read on white.
     Color MatchColor => dark ? Yellow : Color.FromArgb(184, 107, 0);
 
-    static bool SystemUsesDark()
+    internal static bool SystemUsesDark()
     {
         try
         {
