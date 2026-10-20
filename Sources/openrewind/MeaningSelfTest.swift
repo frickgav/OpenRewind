@@ -3,8 +3,10 @@ import Foundation
 /// Hidden `openrewind meaning-check`, run in CI: Search by Meaning end to end on a throwaway database,
 /// with a made-up model so it runs on any Mac. Stores a few screenshots and a transcript, runs the
 /// indexer, and checks that every moment was saved with its vector, that searches find the right one
-/// (also after reopening the database), that a blocked window is never indexed, and that a write that
-/// fails leaves nothing behind and the cursor in place. Once as stored plainly, once encrypted.
+/// (also after reopening the database), that a blocked window is never indexed, that a write that
+/// fails leaves nothing behind and the cursor in place, that cursors from the builds that saved no
+/// vectors are started over only once, that a value is never left out of a statement, and that deleting
+/// screenshots takes every moment made from them along. Once as stored plainly, once encrypted.
 /// Windows covers the same in MeaningTests.cs.
 enum MeaningSelfTest {
     /// Words hashed into 256 numbers: close enough to a model that shared words make texts similar.
@@ -36,12 +38,38 @@ enum MeaningSelfTest {
             var db = try Database(path: path, key: key, createEncrypted: encrypted)
             check(db.isEncrypted == encrypted, "the database is \(db.isEncrypted ? "" : "not ")encrypted")
 
-            // A database from the builds that saved no vectors: cursors moved on, nothing stored. Opening it starts them over.
+            // A database from the builds that saved no vectors: cursors moved on, moments without a vector,
+            // and no marker yet. Opening it starts them over, once.
+            check(db.meaningState(Database.resetMarker) == "1", "a new database has no reset marker")
+            try db.exec("""
+                DELETE FROM meaning_state WHERE key = '\(Database.resetMarker)';
+                INSERT INTO meaning_moments (kind, timestamp, end_time, first_id, last_id, text) VALUES ('screen', 'a', 'b', 1, 1, 'left over');
+                """)
             db.setMeaningState(Database.frameCursor, "999")
             db.setMeaningState(Database.chunkCursor, "999")
             db = try Database(path: path, key: key)
             check(db.meaningState(Database.frameCursor) == nil && db.meaningState(Database.chunkCursor) == nil,
                   "cursors left from a database with no vectors were not started over")
+            check(db.scalarInt("SELECT COUNT(*) FROM meaning_moments", []) == 0, "moments left from a database with no vectors were kept")
+            check(db.meaningState(Database.resetMarker) == "1", "the reset left no marker")
+            // Still no vectors (nothing stored yet), but the reset was done: the next open keeps the cursors.
+            db.setMeaningState(Database.frameCursor, "0")
+            db = try Database(path: path, key: key)
+            check(db.meaningState(Database.frameCursor) == "0", "the cursors were started over again on the next open")
+
+            // A statement never runs with a value left out, one too many, or an empty blob.
+            let insertState = "INSERT INTO meaning_state (key, value) VALUES (?, ?)"
+            db.lock.lock()
+            let tooFew = db.runHeld(insertState, [.text("selftest")])
+            let tooMany = db.runHeld(insertState, [.text("selftest"), .text("1")], blob: Data([1]))
+            let emptyBlob = db.runHeld(insertState, [.text("selftest")], blob: Data())
+            let right = db.runHeld(insertState, [.text("selftest"), .text("2")])
+            db.lock.unlock()
+            check(!tooFew, "a statement ran with a value left out")
+            check(!tooMany, "a statement ran with a value too many")
+            check(!emptyBlob, "an empty blob was stored")
+            check(right && db.meaningState("selftest") == "2", "a statement with the right values did not run")
+            try db.exec("DELETE FROM meaning_state WHERE key = 'selftest'")
 
             let t0 = Date().addingTimeInterval(-3600)
             @discardableResult
@@ -49,7 +77,7 @@ enum MeaningSelfTest {
                 try db.insert(Frame(id: 0, timestamp: Time.iso.string(from: t0.addingTimeInterval(s)), appName: app, windowName: window,
                                     focused: true, snapshotPath: "", text: text, textSource: "ocr", hash: 0, blocked: blocked))
             }
-            try frame(0, "Notes", "Grocery list", "buy oat milk\nbananas and bread")
+            let grocery = try frame(0, "Notes", "Grocery list", "buy oat milk\nbananas and bread")
             try frame(2, "Notes", "Grocery list", "buy oat milk\nbananas and bread\nfresh basil")
             try frame(4, "Mail", "Invoice 1043", "invoice 1043 from Acme is due friday")
             try frame(6, "Bank", "Accounts", "account balance secret", blocked: true)
@@ -84,6 +112,14 @@ enum MeaningSelfTest {
             check(db.scalarInt("SELECT COUNT(*) FROM meaning_moments WHERE text LIKE '%secret%' OR app_name = 'Bank'", []) == 0,
                   "the blocked window was indexed")
             check((try? service.step()) == false, "the indexer found more to do after finishing")
+            check(db.meaningState(Database.resetMarker) == "1", "starting the index (a new model) dropped the reset marker")
+
+            // An empty vector is refused, not stored.
+            let emptyVector = Moment(isAudio: false, start: chunkTime, end: chunkTime, firstId: lastFrame, lastId: lastFrame,
+                                 appName: "Terminal", windowName: "deploy", url: "", text: "empty")
+            check(!db.saveMoment(emptyVector, model: StubEmbedder().modelId, vector: Data(), cursorKey: Database.frameCursor, cursor: lastFrame),
+                  "a moment with an empty vector was saved")
+            check(counts(db).moments == 4, "a moment with an empty vector was kept")
 
             func searches(_ service: MeaningService, _ when: String) {
                 let groceries = service.search("oat milk and bananas", MeaningQuery())
@@ -108,6 +144,18 @@ enum MeaningSelfTest {
             check(db.meaningState(Database.frameCursor) == String(lastFrame), "a failed save moved the cursor")
             check(MeaningService.backoff(failures: 1) == 60 && MeaningService.backoff(failures: 3) == 240
                   && MeaningService.backoff(failures: 50) == 3600, "the retry wait is wrong")
+            // The same moment failing again and again is skipped after a few tries; another one starts the count over.
+            var retry = MeaningService.Retry()
+            let stuck = MeaningService.SaveFailed(cursorKey: Database.frameCursor, cursor: extra)
+            var skips: [Bool] = []
+            for _ in 0..<MeaningService.triesPerMoment { skips.append(retry.failed(stuck).skip != nil) }
+            check(skips == Array(repeating: false, count: MeaningService.triesPerMoment - 1) + [true], "a stuck moment was skipped after \(skips)")
+            check(retry.failed(stuck).skip == nil, "the count did not start over after a skip")
+            check(retry.failed(MeaningService.SaveFailed(cursorKey: Database.chunkCursor, cursor: 1)).skip == nil
+                  && retry.failed(stuck).skip == nil, "a different moment did not start the count over")
+            check(retry.failed(stuck).pause == 3600, "the wait did not keep growing across moments")
+            retry.succeeded()
+            check(retry.failed(stuck).pause == 60, "a good round did not reset the wait")
             try db.exec("DROP TRIGGER selftest_refuse")
             do { try index() } catch { check(false, "indexing after the fix threw \(error)") }
             c = counts(db)
@@ -124,6 +172,21 @@ enum MeaningSelfTest {
             reopened.blocked = { Blocklist(apps: [], keywords: [], privateWindows: false) }
             searches(reopened, "reopened")
             check(reopened.search("lemon pasta garlic", MeaningQuery()).first?.appName == "Safari", "reopened: the new moment was not found")
+            check(db.meaningState(Database.frameCursor) == String(extra) && db.meaningState(Database.chunkCursor) == String(chunkId),
+                  "reopened: the cursors were started over although vectors exist")
+
+            // Deleting screenshots takes their moments along, in the same transaction. Here also one whose
+            // times don't match its frames (as one stored in a race would be): it goes because its frame is gone.
+            let slipped = Moment(isAudio: false, start: "2999-01-01T00:00:00.000Z", end: "2999-01-01T00:00:01.000Z", firstId: grocery,
+                                 lastId: grocery, appName: "Notes", windowName: "Grocery list", url: "", text: "buy oat milk")
+            check(db.saveMoment(slipped, model: StubEmbedder().modelId, vector: Vectors.quantize(StubEmbedder().embed("buy oat milk") ?? [1]),
+                                cursorKey: Database.frameCursor, cursor: extra), "could not store the extra moment")
+            check(db.deleteFrames(from: nil, to: t0.addingTimeInterval(3)) == 2, "the grocery screenshots were not deleted")
+            c = counts(db)
+            check(db.scalarInt("SELECT COUNT(*) FROM meaning_moments WHERE app_name = 'Notes' OR text LIKE '%oat milk%'", []) == 0,
+                  "moments of deleted screenshots are still there")
+            check(c.moments == 4 && c.vectors == 4, "after the delete: \(c.moments) moments, \(c.vectors) vectors")
+            check(reopened.search("oat milk and bananas", MeaningQuery()).allSatisfy { $0.appName != "Notes" }, "a search found deleted screenshots")
         } catch {
             check(false, "\(error)")
         }

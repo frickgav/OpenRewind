@@ -155,9 +155,11 @@ public sealed partial class Database
     /// Store a moment and move the cursor past it, together. The moment is left out (the cursor still
     /// moves) when its screenshots or clip were deleted while the vector was being made: its first or
     /// last frame is gone, or fewer frames are left between them than it was made from. With `keep`
-    /// false (the indexer was stopped meanwhile) nothing is written.
+    /// false (the indexer was stopped meanwhile) nothing is written. An empty vector is refused (it
+    /// would spoil searches: the first one read sets the size).
     public void SaveMoment(Moment m, string model, byte[] vector, string cursorKey, long cursor, Func<bool>? keep = null)
     {
+        if (vector.Length == 0) throw new ArgumentException("an empty vector is never stored", nameof(vector));
         lock (gate)
         {
             if (keep != null && !keep()) return;
@@ -276,14 +278,22 @@ public sealed partial class Database
         return new MeaningProgress(ScalarLong("SELECT COUNT(*) FROM meaning_vectors"), total - left, total, waiting);
     }
 
-    /// Retention and Delete Recordings: vectors go with the screenshots they were made from
-    /// (the trigger meaning_moments_ad removes the vector rows).
-    void ForgetScreenMoments(DateTime? from, DateTime? to)
+    /// Retention and Delete Recordings: vectors go with the screenshots they were made from (the
+    /// trigger meaning_moments_ad removes the vector rows). Run in the frame delete's transaction, after
+    /// the frames are gone, so the indexer can't store a moment of these frames in between. Moments that
+    /// overlap the range go, and so does any screen moment whose first or last frame no longer exists
+    /// (one that slipped in some other way). The Mac app does the same.
+    void ForgetScreenMoments(Microsoft.Data.Sqlite.SqliteTransaction tx, DateTime? from, DateTime? to)
     {
         var parts = new List<string> { "kind = 'screen'" }; var args = new List<object>();
         if (from is DateTime f) { parts.Add("end_time >= ?"); args.Add(Time.Iso(f)); }
         if (to is DateTime t) { parts.Add("timestamp < ?"); args.Add(Time.Iso(t)); }
-        Run($"DELETE FROM meaning_moments WHERE {string.Join(" AND ", parts)}", args.ToArray());
+        TxRun(tx, $"DELETE FROM meaning_moments WHERE {string.Join(" AND ", parts)}", args.ToArray());
+        TxRun(tx, """
+            DELETE FROM meaning_moments WHERE kind = 'screen'
+            AND (NOT EXISTS (SELECT 1 FROM frames WHERE frames.id = meaning_moments.first_id)
+                 OR NOT EXISTS (SELECT 1 FROM frames WHERE frames.id = meaning_moments.last_id))
+            """);
     }
 
     /// ...and with the audio clips (`chunkWhere` selects the clips being deleted).

@@ -237,6 +237,8 @@ struct MeaningProgress {
 /// - `meaning_state`: how far the indexer got, and with which model.
 extension Database {
     static let frameCursor = "frame_cursor", chunkCursor = "chunk_cursor"
+    /// Set once the cursors left by the builds that saved no vectors were started over (see migrateMeaning).
+    static let resetMarker = "reset_null_vectors"
     /// Rows a search reads per page. The database lock is let go between pages, so recording never waits long.
     static let scanPage = 4000
 
@@ -278,8 +280,13 @@ extension Database {
         """)
         // Earlier Mac builds saved no vector at all (a missing value) while the cursors still moved on.
         // With no vectors there is nothing to lose: start the cursors over so the past gets indexed.
-        if scalarInt("SELECT COUNT(*) FROM meaning_vectors", []) == 0 {
-            try exec("DELETE FROM meaning_moments; DELETE FROM meaning_state WHERE key IN ('\(Self.frameCursor)', '\(Self.chunkCursor)');")
+        // Only once (the marker stays, also through clearMeaning): an index that has simply stored
+        // nothing yet, or whose saves keep failing, is not walked again from the start at every launch.
+        if scalarInt("SELECT COUNT(*) FROM meaning_state WHERE key = ?", [.text(Self.resetMarker)]) == 0 {
+            if scalarInt("SELECT COUNT(*) FROM meaning_vectors", []) == 0 {
+                try exec("DELETE FROM meaning_moments; DELETE FROM meaning_state WHERE key IN ('\(Self.frameCursor)', '\(Self.chunkCursor)');")
+            }
+            try exec("INSERT OR REPLACE INTO meaning_state (key, value) VALUES ('\(Self.resetMarker)', '1');")
         }
     }
 
@@ -300,10 +307,10 @@ extension Database {
     private static let stateUpsert = "INSERT INTO meaning_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
 
     /// Runs one statement; the caller holds `lock`. `blob` is the last "?", after `args`. False on an
-    /// error (logged), and when the statement has a different number of "?" than values given, so a
-    /// value is never left out (it would be saved as NULL).
+    /// error (logged), when the statement has a different number of "?" than values given, so a
+    /// value is never left out (it would be saved as NULL), and for an empty `blob`.
     @discardableResult
-    private func runHeld(_ sql: String, _ args: [Arg], blob: Data? = nil) -> Bool {
+    func runHeld(_ sql: String, _ args: [Arg], blob: Data? = nil) -> Bool {
         var st: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); return false }
         defer { sqlite3_finalize(st) }
@@ -314,9 +321,10 @@ extension Database {
         }
         bindAll(st, args)
         if let blob {
-            // An empty Data has no address, which SQLite would store as NULL: bind a zero-length blob instead.
-            let rc = blob.isEmpty ? sqlite3_bind_zeroblob(st, Int32(given), 0)
-                : blob.withUnsafeBytes { sqlite3_bind_blob(st, Int32(given), $0.baseAddress, Int32($0.count), SQLITE_TRANSIENT) }
+            // An empty Data has no address, which SQLite would store as NULL; and an empty vector would
+            // spoil searches (the first one read sets the size). Never store one.
+            guard !blob.isEmpty else { log("sql error: an empty value for: \(sql.prefix(80))"); return false }
+            let rc = blob.withUnsafeBytes { sqlite3_bind_blob(st, Int32(given), $0.baseAddress, Int32($0.count), SQLITE_TRANSIENT) }
             guard rc == SQLITE_OK else { log("sql error: \(errmsg)"); return false }
         }
         guard sqlite3_step(st) == SQLITE_DONE else { log("sql error: \(errmsg)"); return false }
@@ -324,10 +332,12 @@ extension Database {
     }
 
     /// `keep`: checked under the database lock; false (the indexer was stopped meanwhile) writes nothing.
-    func setMeaningState(_ key: String, _ value: String, keep: (() -> Bool)? = nil) {
+    /// False when the write failed (logged).
+    @discardableResult
+    func setMeaningState(_ key: String, _ value: String, keep: (() -> Bool)? = nil) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        if let keep, !keep() { return }
-        runHeld(Self.stateUpsert, [.text(key), .text(value)])
+        if let keep, !keep() { return true }
+        return runHeld(Self.stateUpsert, [.text(key), .text(value)])
     }
 
     private func meaningCursor(_ key: String) -> Int64 { meaningState(key).flatMap { Int64($0) } ?? 0 }
@@ -352,7 +362,7 @@ extension Database {
     private func clearMeaningHeld() {
         runHeld("DELETE FROM meaning_vectors", [])
         runHeld("DELETE FROM meaning_moments", [])
-        runHeld("DELETE FROM meaning_state", [])
+        runHeld("DELETE FROM meaning_state WHERE key != ?", [.text(Self.resetMarker)])
     }
 
     /// Screenshots after `after` (id) taken before `before` (ISO), oldest first, without the picture.
@@ -524,13 +534,21 @@ extension Database {
         return MeaningProgress(moments: scalarInt("SELECT COUNT(*) FROM meaning_vectors", []), done: done, total: total, waiting: waiting)
     }
 
-    /// Retention and Delete Recordings: vectors go with the screenshots they were made from
-    /// (the trigger meaning_moments_ad removes the vector rows).
-    func forgetScreenMoments(from: Date?, to: Date?) {
+    /// Retention and Delete Recordings: vectors go with the screenshots they were made from (the
+    /// trigger meaning_moments_ad removes the vector rows). Run in the frame delete's transaction, after
+    /// the frames are gone, with `lock` held throughout, so the indexer can't store a moment of these
+    /// frames in between. Moments that overlap the range go, and so does any screen moment whose first
+    /// or last frame no longer exists (one that slipped in some other way). False on an error.
+    func forgetScreenMomentsLocked(from: Date?, to: Date?) -> Bool {
         var parts = ["kind = 'screen'"], args: [Arg] = []
         if let from { parts.append("end_time >= ?"); args.append(.text(Time.iso.string(from: from))) }
         if let to { parts.append("timestamp < ?"); args.append(.text(Time.iso.string(from: to))) }
-        run("DELETE FROM meaning_moments WHERE \(parts.joined(separator: " AND "))", args)
+        return runLocked("DELETE FROM meaning_moments WHERE \(parts.joined(separator: " AND "))", args) != nil
+            && runLocked("""
+                DELETE FROM meaning_moments WHERE kind = 'screen'
+                AND (NOT EXISTS (SELECT 1 FROM frames WHERE frames.id = meaning_moments.first_id)
+                     OR NOT EXISTS (SELECT 1 FROM frames WHERE frames.id = meaning_moments.last_id))
+                """, []) != nil
     }
 
     /// ...and with the audio clips (`chunkWhere` selects the clips being deleted).
@@ -616,10 +634,16 @@ final class MeaningService {
     let db: Database
     private let lock = NSLock()
     private var _embedder: Embedder?
+    private var _paused = false
     /// Nil until turned on (or when this Mac has no sentence model).
     var embedder: Embedder? {
         get { lock.lock(); defer { lock.unlock() }; return _embedder }
         set { lock.lock(); _embedder = newValue; lock.unlock() }
+    }
+    /// True while saves keep failing (the indexer waits and tries again); the menu says so.
+    private(set) var paused: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _paused }
+        set { lock.lock(); _paused = newValue; lock.unlock() }
     }
     var pace: () -> MeaningPace = { .active }
     var blocked: () -> Blocklist = { BlocklistStore.shared.current }
@@ -641,6 +665,7 @@ final class MeaningService {
 
     func start() {
         guard thread == nil else { return }
+        paused = false
         wake.lock(); cancelled = false; let gen = generation; wake.unlock()
         let t = Thread { [weak self] in self?.loop(gen) }
         t.qualityOfService = .background
@@ -673,33 +698,72 @@ final class MeaningService {
     }
 
     private struct Stopped: Error {}
-    /// A moment could not be stored (the database said why in the log). The cursor stays put.
+    /// A moment could not be stored, or a cursor not moved (the database said why in the log). The
+    /// cursor stays put. `cursorKey` and `cursor`: where it would have moved to.
     struct SaveFailed: Error, CustomStringConvertible {
+        var cursorKey: String
+        var cursor: Int64
         var description: String { "a moment could not be saved" }
     }
 
-    /// Rounds in a row that ended in an error. Each one doubles the wait (1 minute up to 1 hour), so a
-    /// write that keeps failing is tried, and logged, a few times an hour instead of over and over.
-    private var failures = 0
-
     static func backoff(failures: Int) -> TimeInterval { min(3600, 60 * pow(2, Double(max(0, min(failures, 7) - 1)))) }
 
+    /// Tries of one moment before it is skipped (with a log line), so a moment that can never be saved
+    /// does not hold up everything after it. With the waits above that is about 15 minutes.
+    static let triesPerMoment = 5
+
+    /// The indexer's errors in a row. Each one doubles the wait (1 minute up to 1 hour), so a write that
+    /// keeps failing is tried, and logged, a few times an hour instead of over and over.
+    struct Retry {
+        private(set) var failures = 0
+        private var stuck: (key: String, cursor: Int64)?
+        private var tries = 0
+
+        mutating func succeeded() { failures = 0; stuck = nil; tries = 0 }
+
+        /// How long to wait, and the moment to skip when the same one failed `triesPerMoment` times in a row.
+        mutating func failed(_ error: Error) -> (pause: TimeInterval, skip: SaveFailed?) {
+            failures += 1
+            let pause = MeaningService.backoff(failures: failures)
+            guard let f = error as? SaveFailed else { stuck = nil; tries = 0; return (pause, nil) }
+            if let s = stuck, s.key == f.cursorKey, s.cursor == f.cursor { tries += 1 } else { stuck = (f.cursorKey, f.cursor); tries = 1 }
+            guard tries >= MeaningService.triesPerMoment else { return (pause, nil) }
+            stuck = nil; tries = 0
+            return (pause, f)
+        }
+    }
+
     private func loop(_ gen: Int) {
+        var retry = Retry()
         while !isCancelled {
             var pause: TimeInterval
             if embedder == nil { pause = 5 } else {
                 do {
                     let worked = try autoreleasepool { try step(gen: gen) }
-                    failures = 0
+                    retry.succeeded()
+                    paused = false
                     pause = worked ? 0 : 30
                 } catch is Stopped { return }
                 catch {
-                    failures += 1
-                    pause = Self.backoff(failures: failures)
+                    paused = true
+                    let r = retry.failed(error)
+                    pause = r.pause
                     log("search by meaning: \(error); trying again in \(Int(pause / 60)) min")
+                    if let skip = r.skip, db.setMeaningState(skip.cursorKey, String(skip.cursor), keep: keeper(gen)) {
+                        log("search by meaning: skipped a moment that could not be saved \(Self.triesPerMoment) times")
+                    }
                 }
             }
             if pause > 0, rest(pause) { return }
+        }
+    }
+
+    /// Checked under the database lock before every write: false once the indexer of `g` was stopped.
+    private func keeper(_ g: Int) -> () -> Bool {
+        return { [weak self] in
+            guard let self else { return false }
+            self.wake.lock(); defer { self.wake.unlock() }
+            return self.generation == g && !self.cancelled
         }
     }
 
@@ -708,12 +772,7 @@ final class MeaningService {
     func step(now: Date = Date(), gen: Int? = nil) throws -> Bool {
         guard let e = embedder else { return false }
         wake.lock(); let g = gen ?? generation; wake.unlock()
-        // Checked under the database lock before every write.
-        let keep: () -> Bool = { [weak self] in
-            guard let self else { return false }
-            self.wake.lock(); defer { self.wake.unlock() }
-            return self.generation == g && !self.cancelled
-        }
+        let keep = keeper(g)
         db.meaningUseModel(e.modelId, keep: keep)
         let list = blocked()
         var worked = false
@@ -725,13 +784,19 @@ final class MeaningService {
                 Self.hides(list, app: $0.appName, window: $0.windowName, url: $0.url)
             }
             for m in moments { try save(e, m, cursorKey: Database.frameCursor, cursor: m.lastId, keep: keep); worked = true }
-            if done > fc { db.setMeaningState(Database.frameCursor, String(done), keep: keep); worked = true }
+            if done > fc {
+                guard db.setMeaningState(Database.frameCursor, String(done), keep: keep) else { throw SaveFailed(cursorKey: Database.frameCursor, cursor: done) }
+                worked = true
+            }
         }
 
         let cc = db.meaningState(Database.chunkCursor).flatMap { Int64($0) } ?? 0
         let (segments, doneChunks) = db.meaningAudio(after: cc, limit: Self.chunkBatch)
         for m in MomentChunker.audio(segments) { try save(e, m, cursorKey: Database.chunkCursor, cursor: m.lastId, keep: keep); worked = true }
-        if doneChunks > cc { db.setMeaningState(Database.chunkCursor, String(doneChunks), keep: keep); worked = true }
+        if doneChunks > cc {
+            guard db.setMeaningState(Database.chunkCursor, String(doneChunks), keep: keep) else { throw SaveFailed(cursorKey: Database.chunkCursor, cursor: doneChunks) }
+            worked = true
+        }
         return worked
     }
 
@@ -739,14 +804,15 @@ final class MeaningService {
     private func save(_ e: Embedder, _ m: Moment, cursorKey: String, cursor: Int64, keep: @escaping () -> Bool) throws {
         if !keep() { throw Stopped() }
         let t0 = Date()
-        if let v = e.embed(MomentChunker.embedText(m)) {
-            // Stop this round on a failed write: the rest of the batch would fail the same way, and
-            // the cursor must not move past moments that were never stored.
-            guard db.saveMoment(m, model: e.modelId, vector: Vectors.quantize(v), cursorKey: cursorKey, cursor: cursor, keep: keep) else {
-                throw SaveFailed()
+        // Stop this round on a failed write: the rest of the batch would fail the same way, and
+        // the cursor must not move past moments that were never stored.
+        if let v = e.embed(MomentChunker.embedText(m)).map(Vectors.quantize), !v.isEmpty {
+            guard db.saveMoment(m, model: e.modelId, vector: v, cursorKey: cursorKey, cursor: cursor, keep: keep) else {
+                throw SaveFailed(cursorKey: cursorKey, cursor: cursor)
             }
         } else {
-            db.setMeaningState(cursorKey, String(cursor), keep: keep)  // nothing the model can read: move on
+            // Nothing the model can read (or an empty vector, never stored): move on.
+            guard db.setMeaningState(cursorKey, String(cursor), keep: keep) else { throw SaveFailed(cursorKey: cursorKey, cursor: cursor) }
         }
         if !keep() { throw Stopped() }
         let factor: Double

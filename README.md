@@ -151,7 +151,10 @@ about hiring" finds the call where someone said "we need another engineer".
 Turn it on in **Settings → Search by Meaning**. OpenRewind then builds an index in the
 background: it goes through your old recordings first and then keeps up with new ones. It works
 slowly while you use the computer, slower still on battery (or in Low Power Mode on a Mac), and
-faster when you are away. The line under the switch shows how far it has got.
+faster when you are away. The line under the switch shows how far it has got. If the index
+can't be saved (for example, the disk is full), the line says **Paused**. OpenRewind tries again
+after 1 minute, then waits twice as long each time, up to 1 hour. After 5 failed tries in a row
+it skips that one moment. The reason is in `openrewind.log`.
 
 Once it is on, the timeline's search box has a **Keyword | Meaning** switch. Meaning shows the
 closest moments first; click one to go there, as with keyword search. The browser search page and
@@ -172,7 +175,8 @@ How it works:
 - Blocked apps, sites and windows are never indexed, and are hidden from results if you block
   them later. As with Ask AI, audio is not filtered by app. Apps you unblock are only indexed from
   then on.
-- Deleting recordings (by hand or with Keep Recordings For) deletes their vectors too. Turning
+- Deleting recordings (by hand or with Keep Recordings For) deletes their vectors and text too, in
+  the same step as the recordings, so nothing from them stays searchable. Turning
   Search by Meaning off deletes the whole index; Windows keeps the downloaded model so turning it
   back on downloads nothing.
 - The Mac model and the Windows model are different, so their scores are not comparable. The Mac

@@ -505,6 +505,68 @@ public class MeaningTests : IDisposable
     }
 
     [Fact]
+    public void DeletingFramesTakesEveryMomentMadeFromThem()
+    {
+        var old = DateTime.UtcNow.AddDays(-3);
+        var a = AddFrame(old, "Chrome", "Acme portal", "Invoice 1042 due Friday");
+        AddFrame(DateTime.UtcNow.AddHours(-1), "Notes", "Weekend", "take the puppy to the park");
+        var s = Indexed(Nothing, out _);
+        Assert.Equal(2, s.Progress().Moments);
+        // One whose times don't match its frame (as one stored in a race would be): it goes because its frame is gone.
+        db.SaveMoment(new Moment(false, "2999-01-01T00:00:00.000Z", "2999-01-01T00:00:01.000Z", a, a, "Chrome", "Acme portal", "",
+                                 "Invoice 1042 due Friday", 1), "fake-1", new byte[] { 1, 2, 3 }, Database.FrameCursor, a);
+        Assert.Equal(3, s.Progress().Moments);
+
+        Assert.Equal(1, db.DeleteFrames(null, DateTime.UtcNow.AddDays(-1)));
+        Assert.Equal(1, s.Progress().Moments);
+        Assert.DoesNotContain(s.Search("invoice payment", new MeaningQuery(), Nothing), h => h.Text.Contains("1042"));
+        Assert.Single(db.MomentsById(new long[] { 1, 2, 3 }));   // the vectors went with their moments (trigger)
+    }
+
+    [Fact]
+    public void AnEmptyVectorIsNeverStored()
+    {
+        var id = AddFrame(DateTime.UtcNow.AddHours(-1), "Notes", "x", "walk the dog");
+        Assert.Throws<ArgumentException>(() => db.SaveMoment(new Moment(false, Time.Now(), Time.Now(), id, id, "Notes", "x", "", "walk the dog", 1),
+                                                             "fake-1", Array.Empty<byte>(), Database.FrameCursor, id));
+        Assert.Equal(0, db.MeaningProgress(DateTime.UtcNow).Moments);
+        Assert.Null(db.MeaningState(Database.FrameCursor));
+    }
+
+    [Fact]
+    public void AFailedSaveKeepsTheCursorAndIsRetriedThenSkipped()
+    {
+        var t = DateTime.UtcNow.AddHours(-1);
+        AddFrame(t, "Chrome", "Acme portal", "Invoice 1042 due Friday");
+        var s = Indexed(Nothing, out _);
+        var cursor = db.MeaningState(Database.FrameCursor);
+        db.Exec("CREATE TRIGGER test_refuse BEFORE INSERT ON meaning_vectors BEGIN SELECT RAISE(ABORT, 'refused by the test'); END;");
+        var b = AddFrame(t.AddMinutes(10), "Notes", "Weekend", "take the puppy to the park");
+        var failed = Assert.Throws<MeaningSaveFailed>(() => s.Step());
+        Assert.Equal((Database.FrameCursor, b), (failed.CursorKey, failed.Cursor));
+        Assert.Equal(cursor, db.MeaningState(Database.FrameCursor));   // not moved past the moment
+        Assert.Equal(1, s.Progress().Moments);                          // and nothing half-saved
+        db.Exec("DROP TRIGGER test_refuse");
+        while (s.Step()) { }
+        Assert.Equal(2, s.Progress().Moments);
+        Assert.Equal(b.ToString(), db.MeaningState(Database.FrameCursor));
+
+        // The wait doubles from 1 minute up to 1 hour; the same moment is skipped after a few tries.
+        Assert.Equal(TimeSpan.FromMinutes(1), MeaningRetry.Backoff(1));
+        Assert.Equal(TimeSpan.FromMinutes(4), MeaningRetry.Backoff(3));
+        Assert.Equal(TimeSpan.FromHours(1), MeaningRetry.Backoff(50));
+        var retry = new MeaningRetry();
+        var skips = Enumerable.Range(0, MeaningRetry.TriesPerMoment).Select(_ => retry.Failed(failed).Skip != null).ToList();
+        Assert.Equal(Enumerable.Repeat(false, MeaningRetry.TriesPerMoment - 1).Append(true), skips);
+        Assert.Null(retry.Failed(failed).Skip);   // the count starts over after a skip
+        Assert.Null(retry.Failed(new MeaningSaveFailed(Database.ChunkCursor, 1, new Exception())).Skip);
+        Assert.Null(retry.Failed(failed).Skip);   // ...and after another moment failed
+        Assert.Equal(TimeSpan.FromHours(1), retry.Failed(new IOException()).Wait);
+        retry.Succeeded();
+        Assert.Equal(TimeSpan.FromMinutes(1), retry.Failed(failed).Wait);
+    }
+
+    [Fact]
     public void ScanReadsPageByPageWithoutHoldingTheLock()
     {
         var id = AddFrame(DateTime.UtcNow.AddHours(-1), "Chrome", "Acme portal", "Invoice 1042 due Friday");

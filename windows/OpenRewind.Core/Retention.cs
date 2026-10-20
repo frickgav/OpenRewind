@@ -47,14 +47,16 @@ public sealed partial class Database
         int n;
         lock (gate)
         {
-            // Meaning moments and meeting titles taken from these frames go first (outside the transaction: their own statements).
-            if (ScalarLong($"SELECT COUNT(*) FROM frames {where}", args) > 0) { ForgetScreenMoments(from, to); ForgetMeetingWindows(from, to); }
+            // Meeting titles taken from these frames go first (outside the transaction: their own statement).
+            if (ScalarLong($"SELECT COUNT(*) FROM frames {where}", args) > 0) ForgetMeetingWindows(from, to);
             using var tx = conn.BeginTransaction();
             n = (int)TxScalar(tx, $"SELECT COUNT(*) FROM frames {where}", args);
             if (n == 0) { tx.Rollback(); return 0; }
             stills = TxStrings(tx, $"SELECT snapshot_path FROM frames {where}", args);
             var videos = TxStrings(tx, $"SELECT DISTINCT video_path FROM frames {and} video_path != ''", args);
             TxRun(tx, $"DELETE FROM frames {where}", args);  // FTS rows go with it (trigger frames_ad)
+            // Search by Meaning moments of these frames, in this transaction: none can outlive its frames.
+            ForgetScreenMoments(tx, from, to);
             foreach (var v in videos)
             {
                 if (TxScalar(tx, "SELECT COUNT(*) FROM frames WHERE video_path = ? AND video_path != ''", v) == 0)
