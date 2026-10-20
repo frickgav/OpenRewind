@@ -612,7 +612,8 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
   [Choosing a transcription model](#choosing-a-transcription-model).
 - **Settings → Local Search Server** turns on the API and browser search page at
   `http://127.0.0.1:3031`. Off by default. Only this Mac can connect. The terminal
-  commands `record` and `serve` always start it.
+  commands `record` and `serve` always start it. Blocked apps and sites are left out of it, as
+  in Ask AI.
 - **Settings → Search by Meaning** (off by default) indexes your recordings in the background
   so you can search by meaning, with the model that comes with macOS. See
   [Search by Meaning](#search-by-meaning).
@@ -752,6 +753,17 @@ permission is optional; it gives cleaner text than OCR.
 
 On when you run `record` or `serve` from the terminal, or after **Settings → Local Search Server** in the app.
 
+Nothing the block list covers comes back: screenshots of a blocked app, a blocked site, a private
+window or a window or address with a blocked word are left out of `/search` (also `mode=meaning`),
+and `/frames/{id}` answers `404` for them, the same rule as Ask AI and AI apps. That includes
+screenshots saved before you blocked them, when the blocked app, site or window was the one in front.
+An older screenshot of another app can still show a blocked window behind it, and its text can
+include text from that window. `/apps` leaves out blocked apps. Audio transcripts are not filtered
+by app (a clip has no app). The `total` in `pagination` counts only what can be shown, on every page.
+
+If a search would have to skip more than 20,000 hidden screenshots, it stops there: `pagination`
+then has `"truncated": true`, and `total` counts only what comes before that point.
+
 | Route | What |
 |-------|------|
 | `GET /health` | Status, frame count, permissions |
@@ -767,7 +779,7 @@ On when you run `record` or `serve` from the terminal, or after **Settings → L
 `score`, and leave out blocked apps and sites. A screen result is a moment: `timestamp` is where
 it starts and `text` is the moment's text.
 
-Response: `{"data":[{"type":"OCR","content":{"frame_id","text","timestamp","app_name","window_name","file_path","text_source"}},{"type":"Audio","content":{"chunk_id","transcription","timestamp","start_time","end_time","device_name","device_type"}}],"pagination":{"limit","offset","total"}}`
+Response: `{"data":[{"type":"OCR","content":{"frame_id","text","timestamp","app_name","window_name","file_path","text_source"}},{"type":"Audio","content":{"chunk_id","transcription","timestamp","start_time","end_time","device_name","device_type"}}],"pagination":{"limit","offset","total"}}` (plus `"truncated": true` when a search stopped early, see above)
 
 ## Encryption and App Lock
 

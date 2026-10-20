@@ -30,6 +30,14 @@ public class SearchQuery
     public string? EndTime;
     public int Limit = 20;
     public int Offset = 0;
+    /// The local server's scan (Api.VisibleCount, Api.EachVisibleFrame): leave out frames marked blocked and
+    /// these app names (lower case) in SQL, so hidden frames are mostly never read.
+    public bool SkipBlocked;
+    public IReadOnlyList<string> SkipApps = Array.Empty<string>();
+    /// Only frames older than this one (by time, then id): the next page of a scan.
+    public (string Timestamp, long Id)? Before;
+
+    public SearchQuery Copy() => (SearchQuery)MemberwiseClone();
 }
 
 /// Thin SQLite wrapper with the exact schema the Mac app uses:
@@ -42,8 +50,10 @@ public sealed partial class Database : IDisposable
     readonly object gate = new();
     readonly string path;
     /// The frame columns to read. A read-only open (the MCP server) may see a database the recording app
-    /// has not migrated yet; it then reads every frame as a still.
+    /// has not migrated yet; each missing column then reads as its default (a still, not blocked).
     readonly string cols = FullCols;
+    /// The blocked mark, or 0 when that column is missing (see `cols`).
+    readonly string blockedCol = "f.blocked";
 
     /// `key` opens an encrypted database; `createEncrypted` makes a new one encrypted with it.
     public Database(string path, byte[]? key = null, bool createEncrypted = false)
@@ -66,8 +76,9 @@ public sealed partial class Database : IDisposable
         this.path = Path.GetFullPath(path);
         conn = Connect(this.path, IsEncryptedFile(this.path) ? key ?? throw new DatabaseLockedException() : null, SqliteOpenMode.ReadOnly);
         Exec("PRAGMA busy_timeout=5000;");
-        if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name IN ('display', 'video_path', 'video_frame', 'video_time')") < 4)
-            cols = StillCols;
+        var have = Strings("SELECT name FROM pragma_table_info('frames')").ToHashSet();
+        cols = FrameCols(have);
+        if (!have.Contains("blocked")) blockedCol = "0";
     }
 
     /// After the data folder moved from ~/.openscreen (see Config), point the stored screenshot
@@ -221,12 +232,20 @@ public sealed partial class Database : IDisposable
         }
     }
 
-    const string FullCols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, f.display, f.video_path, f.video_frame, f.video_time";
-    const string StillCols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, '', '', 0, 0.0";
+    const string FullCols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, f.display, f.video_path, f.video_frame, f.video_time, f.blocked";
+
+    /// FullCols with each column a read-only open does not find replaced by its default.
+    static string FrameCols(HashSet<string> have)
+    {
+        string C(string name, string missing) => have.Contains(name) ? "f." + name : missing;
+        return "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, "
+               + $"{C("display", "''")}, {C("video_path", "''")}, {C("video_frame", "0")}, {C("video_time", "0.0")}, {C("blocked", "0")}";
+    }
 
     public Frame? FrameById(long id) => Frames($"SELECT {cols} FROM frames f WHERE f.id = ?", id).FirstOrDefault();
 
-    public (List<Frame> Rows, int Total) Search(SearchQuery s)
+    /// FROM and WHERE of a search, with their arguments in order.
+    (string From, string Where, List<object> Args) SearchSql(SearchQuery s)
     {
         var where = new List<string>();
         var args = new List<object>();
@@ -240,11 +259,52 @@ public sealed partial class Database : IDisposable
         if (!string.IsNullOrEmpty(s.WindowName)) { where.Add("f.window_name LIKE ?"); args.Add($"%{s.WindowName}%"); }
         if (s.StartTime != null) { where.Add("f.timestamp >= ?"); args.Add(s.StartTime); }
         if (s.EndTime != null) { where.Add("f.timestamp <= ?"); args.Add(s.EndTime); }
-        var whereSql = where.Count == 0 ? "" : "WHERE " + string.Join(" AND ", where);
+        if (s.SkipBlocked) where.Add($"{blockedCol} = 0");
+        if (s.SkipApps.Count > 0)
+        {
+            where.Add($"lower(f.app_name) NOT IN ({string.Join(", ", s.SkipApps.Select(_ => "?"))})");
+            args.AddRange(s.SkipApps);
+        }
+        if (s.Before is { } b) { where.Add("(f.timestamp, f.id) < (?, ?)"); args.Add(b.Timestamp); args.Add(b.Id); }
+        return (from, where.Count == 0 ? "" : "WHERE " + string.Join(" AND ", where), args);
+    }
+
+    public (List<Frame> Rows, int Total) Search(SearchQuery s)
+    {
+        var (from, whereSql, args) = SearchSql(s);
         var total = (int)ScalarLong($"SELECT COUNT(*) FROM {from} {whereSql}", args.ToArray());
         var rows = Frames($"SELECT {cols} FROM {from} {whereSql} ORDER BY f.timestamp DESC LIMIT ? OFFSET ?",
                           args.Concat(new object[] { s.Limit, s.Offset }).ToArray());
         return (rows, total);
+    }
+
+    /// How many frames match, by app and (when asked) by window title and address: all the block list
+    /// looks at in a stored frame besides the blocked mark, so the server can count only what it shows.
+    /// Each group is a frame with just those fields set.
+    public List<(Frame Frame, int Count)> SearchGroups(SearchQuery s, bool byTitle, bool byUrl)
+    {
+        var (from, whereSql, args) = SearchSql(s);
+        return Rows($"SELECT f.app_name, {(byTitle ? "f.window_name" : "''")}, {(byUrl ? "f.browser_url" : "''")}, COUNT(*) FROM {from} {whereSql} GROUP BY 1, 2, 3",
+                    r => (new Frame(0, "", r.GetString(0), r.GetString(1), true, "", "", "", 0, r.GetString(2)), (int)r.GetInt64(3)), args.ToArray());
+    }
+
+    /// Up to `s.Limit` matches older than `s.Before`, newest first, without their text or picture: id, time,
+    /// app, window, address and the blocked mark (what the block list needs). `s.Offset` is not used.
+    public List<Frame> SearchKeys(SearchQuery s)
+    {
+        var (from, whereSql, args) = SearchSql(s);
+        args.Add(s.Limit);
+        return Rows($"SELECT f.id, f.timestamp, f.app_name, f.window_name, f.browser_url, {blockedCol} FROM {from} {whereSql} ORDER BY f.timestamp DESC, f.id DESC LIMIT ?",
+                    r => new Frame(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), true, "", "", "", 0, r.GetString(4), Blocked: r.GetInt64(5) != 0),
+                    args.ToArray());
+    }
+
+    /// Whole frames by id; ids that are gone are left out.
+    public Dictionary<long, Frame> FramesByIds(IReadOnlyCollection<long> ids)
+    {
+        if (ids.Count == 0) return new();
+        return Frames($"SELECT {cols} FROM frames f WHERE f.id IN ({string.Join(", ", ids.Select(_ => "?"))})", ids.Cast<object>().ToArray())
+            .GroupBy(f => f.Id).ToDictionary(g => g.Key, g => g.First());
     }
 
     public List<(string App, int Frames)> Apps(string? since)
@@ -509,8 +569,24 @@ public sealed partial class Database : IDisposable
                 var out_ = new List<Frame>();
                 while (r.Read())
                     out_.Add(new Frame(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetInt64(4) != 0,
-                                       r.GetString(5), r.GetString(6), r.GetString(7), r.GetInt64(8), r.GetString(9),
+                                       r.GetString(5), r.GetString(6), r.GetString(7), r.GetInt64(8), r.GetString(9), Blocked: r.GetInt64(14) != 0,
                                        Display: r.GetString(10), VideoPath: r.GetString(11), VideoFrame: (int)r.GetInt64(12), VideoTime: r.GetDouble(13)));
+                return out_;
+            }
+            catch (SqliteException e) { Log.Write($"sql error: {e.Message}"); return new(); }
+        }
+    }
+
+    List<T> Rows<T>(string sql, Func<SqliteDataReader, T> read, params object[] args)
+    {
+        lock (gate)
+        {
+            try
+            {
+                using var cmd = Cmd(sql, args);
+                using var r = cmd.ExecuteReader();
+                var out_ = new List<T>();
+                while (r.Read()) out_.Add(read(r));
                 return out_;
             }
             catch (SqliteException e) { Log.Write($"sql error: {e.Message}"); return new(); }

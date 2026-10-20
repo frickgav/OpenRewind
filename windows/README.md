@@ -85,7 +85,8 @@ on older recordings and on how time is counted). Click an app, site
   [Choosing a transcription model](../README.md#choosing-a-transcription-model).
 - **Settings → Local Search Server** turns on the API and browser search page at
   http://127.0.0.1:3031. Off by default. Only this PC can connect. The terminal commands
-  `record` and `serve` always start it.
+  `record` and `serve` always start it. Blocked apps and sites are left out of it, as in Ask AI
+  (see [API](../README.md#api)).
 - **Settings → Search by Meaning** (off by default) indexes your recordings in the background so
   the timeline's search box gets a **Keyword | Meaning** switch. Turning it on downloads a model once
   (about 90 MB, all-MiniLM-L6-v2 from Hugging Face, checked against a fixed SHA-256) into
@@ -198,6 +199,9 @@ OpenRewind records audio without it; the clips are transcribed once it is set up
 .\OpenRewind.exe mcp             # MCP server for AI apps over stdin/stdout (what they start)
 .\OpenRewind.exe --help
 ```
+
+`record`, `once` and `serve` use the block list from Settings, and see changes you make there while
+they run.
 
 ## Build it
 

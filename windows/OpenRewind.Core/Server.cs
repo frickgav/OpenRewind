@@ -107,6 +107,8 @@ public sealed class Server : IDisposable
 }
 
 /// REST routes for scripts and the browser search page, the same as the Mac app's.
+/// Frames of apps, sites and windows on the block list are left out of everything it serves (text,
+/// screenshots, app names), including ones saved before the user blocked them; same rule as Ask AI.
 public sealed class Api
 {
     readonly Database db;
@@ -124,13 +126,17 @@ public sealed class Api
     /// Search by Meaning, while it is on (mode=meaning on /search).
     readonly Func<MeaningService?> meaning;
 
+    /// The block list, asked for once per request: the one recording uses (Blocklist.Current) unless a test passes one.
+    readonly Func<Blocklist> blocked;
+
     public Api(Database db, Config config, Func<Dictionary<string, object?>>? healthExtras = null, Func<Frame, byte[]?>? frameJpeg = null,
-               Func<MeaningService?>? meaning = null)
+               Func<MeaningService?>? meaning = null, Func<Blocklist>? blocked = null)
     {
         this.db = db; this.config = config;
         this.healthExtras = healthExtras ?? (() => new());
         this.frameJpeg = frameJpeg;
         this.meaning = meaning ?? (() => null);
+        this.blocked = blocked ?? (() => Blocklist.Current);
     }
 
     public HttpResponse Handle(HttpRequest req)
@@ -162,15 +168,17 @@ public sealed class Api
                 return HttpResponse.Json(h);
         }
         if (Locked?.Invoke() == true) return HttpResponse.Error(LockedMessage, 423);
+        var list = blocked();
         switch (req.Path)
         {
             case "/search":
-                return Search(req.Query);
+                return Search(req.Query, list);
             case "/apps":
+                // Blocked apps are not listed at all.
                 var since = req.Query.TryGetValue("start_time", out var st) ? Time.Parse(st) : null;
-                return HttpResponse.Json(new { data = db.Apps(since).Select(x => new { app_name = x.App, frames = x.Frames }) });
+                return HttpResponse.Json(new { data = db.Apps(since).Where(x => !list.BlocksApp(x.App, x.App)).Select(x => new { app_name = x.App, frames = x.Frames }) });
         }
-        if (req.Path.StartsWith("/frames/")) return FrameImage(req.Path["/frames/".Length..]);
+        if (req.Path.StartsWith("/frames/")) return FrameImage(req.Path["/frames/".Length..], list);
         if (req.Path.StartsWith("/audio/")) return AudioFile(req.Path["/audio/".Length..]);
         return HttpResponse.Error("not found", 404);
     }
@@ -178,7 +186,55 @@ public sealed class Api
     /// The largest `offset` the search accepts.
     public const int MaxOffset = 1_000_000;
 
-    HttpResponse Search(Dictionary<string, string> q)
+    /// Frames read per database call while paging through a search; the lock is let go between calls.
+    public const int ScanPage = 1000;
+
+    /// Stop reading after this many hidden frames: a block list that covers most of the history ends the
+    /// results early (`truncated` in the answer) rather than reading all of it.
+    public const int MaxHiddenScan = 20_000;
+
+    /// `s` with the parts of the block list that SQL can apply: frames marked blocked and blocked app names.
+    /// HidesFrame still checks every frame read; this only means most hidden frames are never read.
+    static SearchQuery Skipping(SearchQuery s, Blocklist list)
+    {
+        var q = s.Copy();
+        q.SkipBlocked = true;
+        q.SkipApps = list.AppKeys.Take(500).ToList();
+        return q;
+    }
+
+    /// How many frames of the search `list` leaves in, exactly. Counted in SQL by app, title and address
+    /// (all HidesFrame looks at once frames marked blocked are left out), so hidden frames never add to it.
+    public static int VisibleCount(Database db, SearchQuery s, Blocklist list)
+    {
+        var byTitle = list.PrivateWindows || list.Keywords.Count > 0;
+        var byUrl = list.Keywords.Count > 0 || list.Sites.Count > 0;
+        return db.SearchGroups(Skipping(s, list), byTitle, byUrl).Where(g => !list.HidesFrame(g.Frame)).Sum(g => g.Count);
+    }
+
+    /// Calls `body` with each frame of the search that `list` leaves in, newest first and without its text,
+    /// until `body` returns false. Pages by time, so a frame recorded meanwhile never shifts a page and no
+    /// frame comes twice. True when it stopped early, at `maxHidden` hidden frames.
+    public static bool EachVisibleFrame(Database db, SearchQuery s, Blocklist list, int page, Func<Frame, bool> body, int maxHidden = MaxHiddenScan)
+    {
+        var q = Skipping(s, list);
+        q.Limit = Math.Clamp(page, 1, ScanPage);
+        q.Before = null;
+        int hidden = 0;
+        while (true)
+        {
+            var rows = db.SearchKeys(q);
+            foreach (var f in rows)
+            {
+                if (!list.HidesFrame(f)) { if (!body(f)) return false; }
+                else if (++hidden >= maxHidden) return true;
+            }
+            if (rows.Count < q.Limit || rows.Count == 0) return false;
+            q.Before = (rows[^1].Timestamp, rows[^1].Id);
+        }
+    }
+
+    HttpResponse Search(Dictionary<string, string> q, Blocklist list)
     {
         string? Get(string k) => q.TryGetValue(k, out var v) ? v : null;
         var type = (Get("content_type") ?? "all").ToLowerInvariant();
@@ -205,49 +261,80 @@ public sealed class Api
         var wantScreen = type != "audio";
         // Audio has no app/window, so those filters mean "screen only".
         var wantAudio = (type == "audio" || type == "all") && string.IsNullOrEmpty(s.AppName) && string.IsNullOrEmpty(s.WindowName);
-        // To page through a merged list: take the top (offset + limit) of each source, merge by time, then slice.
+        if (Get("mode")?.ToLowerInvariant() == "meaning") return SearchByMeaning(s, list, wantScreen, wantAudio, offset, limit, Clip);
+
+        // Screen and audio merged newest first; the page is places offset..offset+limit-1 of that list.
         var fetch = offset + limit;
-        if (Get("mode")?.ToLowerInvariant() == "meaning") return SearchByMeaning(s, wantScreen, wantAudio, offset, limit, Clip);
-        var items = new List<(string Ts, object Item)>();
-        int total = 0;
+        var audio = new List<Transcript>();
+        int total = 0, audioTotal = 0;
+        if (wantAudio) { (audio, audioTotal) = db.SearchAudio(s, fetch); total += audioTotal; }
+        var hits = new List<object>();   // Frame or Transcript
+        int placed = 0, nextAudio = 0, shown = 0;
+        bool truncated = false;
+        void Place(object h) { if (placed >= offset) hits.Add(h); placed++; }
+        // Audio newer than `time` (all of it when null), while the page is not full.
+        void PlaceAudio(string? time)
+        {
+            while (nextAudio < audio.Count && placed < fetch && (time == null || string.CompareOrdinal(audio[nextAudio].Timestamp, time) > 0))
+                Place(audio[nextAudio++]);
+        }
         if (wantScreen)
         {
-            s.Limit = fetch; s.Offset = 0;
-            var (rows, n) = db.Search(s);
-            total += n;
-            items.AddRange(rows.Select(f => (f.Timestamp, (object)new
+            total += VisibleCount(db, s, list);
+            truncated = EachVisibleFrame(db, s, list, Math.Max(fetch, 200), f =>
             {
-                type = "OCR",
-                content = new
-                {
-                    frame_id = f.Id, text = Clip(f.Text), timestamp = f.Timestamp, app_name = f.AppName, window_name = f.WindowName,
-                    focused = f.Focused, file_path = f.VideoPath.Length > 0 ? f.VideoPath : f.SnapshotPath, text_source = f.TextSource,
-                    offset_index = f.VideoFrame, tags = Array.Empty<string>(),
-                },
-            })));
+                PlaceAudio(f.Timestamp);
+                if (placed >= fetch) return false;
+                Place(f);
+                shown++;
+                return placed < fetch;
+            });
+            // Cut short: count only the screenshots that can be reached, so a client stops paging.
+            if (truncated) total = audioTotal + shown;
         }
-        if (wantAudio)
+        PlaceAudio(null);
+
+        // The scan read no text: read the page's frames in full.
+        var full = db.FramesByIds(hits.OfType<Frame>().Select(f => f.Id).ToList());
+        var page = new List<object>();
+        foreach (var h in hits)
         {
-            var (rows, n) = db.SearchAudio(s, fetch);
-            total += n;
-            items.AddRange(rows.Select(t => (t.Timestamp, (object)new
+            if (h is Frame k)
             {
-                type = "Audio",
-                content = new
+                // Gone meanwhile (deleted): left out.
+                if (!full.TryGetValue(k.Id, out var f) || list.HidesFrame(f)) continue;
+                page.Add(new
                 {
-                    chunk_id = t.ChunkId, transcription_id = t.Id, transcription = Clip(t.Text), timestamp = t.Timestamp,
-                    start_time = t.StartTime, end_time = t.EndTime, device_name = t.Device, device_type = t.IsInput ? "Input" : "Output",
-                    file_path = t.FilePath, speaker = (object?)null, tags = Array.Empty<string>(),
-                },
-            })));
+                    type = "OCR",
+                    content = new
+                    {
+                        frame_id = f.Id, text = Clip(f.Text), timestamp = f.Timestamp, app_name = f.AppName, window_name = f.WindowName,
+                        focused = f.Focused, file_path = f.VideoPath.Length > 0 ? f.VideoPath : f.SnapshotPath, text_source = f.TextSource,
+                        offset_index = f.VideoFrame, tags = Array.Empty<string>(),
+                    },
+                });
+            }
+            else if (h is Transcript t)
+            {
+                page.Add(new
+                {
+                    type = "Audio",
+                    content = new
+                    {
+                        chunk_id = t.ChunkId, transcription_id = t.Id, transcription = Clip(t.Text), timestamp = t.Timestamp,
+                        start_time = t.StartTime, end_time = t.EndTime, device_name = t.Device, device_type = t.IsInput ? "Input" : "Output",
+                        file_path = t.FilePath, speaker = (object?)null, tags = Array.Empty<string>(),
+                    },
+                });
+            }
         }
-        var page = items.OrderByDescending(i => i.Ts, StringComparer.Ordinal).Skip(offset).Take(limit).Select(i => i.Item);
-        return HttpResponse.Json(new { data = page, pagination = new { limit, offset, total } });
+        object pagination = truncated ? new { limit, offset, total, truncated } : new { limit, offset, total };
+        return HttpResponse.Json(new { data = page, pagination });
     }
 
     /// mode=meaning: the moments closest in meaning to q, best first, in the same shape as the word search
     /// plus a "score". Blocked apps and sites are left out.
-    HttpResponse SearchByMeaning(SearchQuery s, bool screen, bool audio, int offset, int limit, Func<string, string> clip)
+    HttpResponse SearchByMeaning(SearchQuery s, Blocklist list, bool screen, bool audio, int offset, int limit, Func<string, string> clip)
     {
         if (meaning() is not MeaningService m || m.Embedder == null) return HttpResponse.Error("Search by Meaning is off", 400);
         if (string.IsNullOrWhiteSpace(s.Q)) return HttpResponse.Json(new { data = Array.Empty<object>(), pagination = new { limit, offset, total = 0 } });
@@ -256,7 +343,7 @@ public sealed class Api
         {
             Start = s.StartTime, End = s.EndTime, Screen = screen, Audio = audio, Limit = Math.Min(200, offset + limit),
             Match = (app, window) => Has(app, s.AppName) && Has(window, s.WindowName),
-        });
+        }, list);
         var page = hits.Skip(offset).Take(limit).Select(h =>
         {
             if (h.IsAudio)
@@ -295,9 +382,10 @@ public sealed class Api
         return Serve(c.FilePath, "audio/wav", "audio file missing");
     }
 
-    HttpResponse FrameImage(string idStr)
+    HttpResponse FrameImage(string idStr, Blocklist list)
     {
-        if (!long.TryParse(idStr, out var id) || db.FrameById(id) is not Frame f) return HttpResponse.Error("frame not found", 404);
+        // A blocked frame answers as if it did not exist.
+        if (!long.TryParse(idStr, out var id) || db.FrameById(id) is not Frame f || list.HidesFrame(f)) return HttpResponse.Error("frame not found", 404);
         // Only frames of our own data dir, whichever way the picture is stored.
         if (!InDataDir(f.VideoPath.Length > 0 ? f.VideoPath : f.SnapshotPath)) return HttpResponse.Error("snapshot missing", 404);
         if (frameJpeg == null) return Serve(f.SnapshotPath, "image/jpeg", "snapshot missing");

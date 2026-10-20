@@ -9,8 +9,9 @@ Usage:
   openrewind app             Run the menu bar app (what OpenRewind.app runs)
   openrewind serve           Serve API/UI only, no recording
   openrewind once            Capture one frame and exit
-  openrewind ingest <image> [--app NAME] [--window TITLE]
-                             OCR an image file and store it (for testing)
+  openrewind ingest <image> [--app NAME] [--window TITLE] [--url ADDRESS] [--blocked]
+                             OCR an image file and store it (for testing; --blocked marks it
+                             as saved while a blocked window was in front)
   openrewind ingest-audio <file>
                              Transcribe an audio file and store it (for testing)
   openrewind delete <15m|1h|today|all|older:week>
@@ -106,6 +107,7 @@ func value(after flag: String) -> String? {
 }
 
 func startServer() {
+    engine.serverBlocklist = { BlocklistStore.shared.reload() }
     do { try engine.startServer() } catch { log("cannot start server: \(error)"); exit(1) }
 }
 
@@ -172,7 +174,7 @@ case "ingest":
     }
     let win = ActiveWindow(appName: value(after: "--app") ?? "Imported", windowName: value(after: "--window") ?? path, pid: 0)
     do {
-        let id = try recorder.ingest(image: img, window: win, pid: nil)
+        let id = try recorder.ingest(image: img, window: win, pid: nil, blocked: args.contains("--blocked"), url: value(after: "--url") ?? "")
         print(id.map { "stored frame \($0)" } ?? "skipped (duplicate)")
     } catch { log("ingest failed: \(error)"); exit(1) }
 

@@ -66,6 +66,10 @@ public sealed class Blocklist
             .Concat(PrivateWindows ? new[] { "private" } : Array.Empty<string>())
             .Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList();
 
+    /// The blocked apps' ids and names in lower case (with OPENREWIND_EXCLUDE): the local server leaves
+    /// these out in SQL before HidesFrame checks each frame.
+    public IReadOnlyList<string> AppKeys => keys.Select(k => k.ToLowerInvariant()).Distinct().OrderBy(k => k, StringComparer.Ordinal).ToList();
+
     public bool BlocksApp(string? id, string? name) =>
         (!string.IsNullOrEmpty(id) && keys.Contains(id)) || (!string.IsNullOrEmpty(name) && keys.Contains(name));
 
@@ -79,6 +83,12 @@ public sealed class Blocklist
     /// (search results, the timeline, anything that reads stored frames).
     public bool BlocksFrame(string? appName, string? windowName, string? url) =>
         BlocksWindow(null, appName, windowName) || BlocksUrl(url);
+
+    /// True for a stored frame saved while a blocked window or site was in front, or one the list covers now
+    /// (same rule as Ask AI and AI apps): by app, private window, blocked word in the title or address, or
+    /// blocked site. The local search server leaves these out. Mac: Blocklist.hides(_ f: Frame).
+    public bool HidesFrame(Frame f) =>
+        f.Blocked || BlocksWindow(f.AppName, f.AppName, f.WindowName) || BlocksUrl(f.BrowserUrl) || HasKeyword(f.BrowserUrl);
 
     public bool HasKeyword(string? title) => keywordRx != null && !string.IsNullOrEmpty(title) && keywordRx.IsMatch(title);
 
