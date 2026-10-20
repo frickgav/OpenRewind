@@ -50,7 +50,7 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   when on, it sends yesterday's history to the AI provider it was turned on for, once a day.
 - **Ask AI…** answers questions about your history with your own key, and **Meetings…** lists your
   calls with their transcripts (see [Ask AI](../README.md#ask-ai) and [Meetings](../README.md#meetings)).
-  When a call starts, a popup above the tray asks whether to take notes (**Settings → Ask Before Taking
+  Within seconds of joining a call, a popup above the tray asks whether to take notes (**Settings → Ask Before Taking
   Meeting Notes**, on by default). **Settings → Summarize Meetings with AI** (off by default) sends the
   transcript of each call you take notes for to your AI provider when it ends, for a summary and
   action items.
@@ -72,6 +72,11 @@ on older recordings and on how time is counted). Click an app, site
   or Until I Delete Them (default). Older recordings are deleted at launch and every hour.
 - **Settings → Delete Recordings**: last 15 minutes, last hour, today, all screen,
   all audio, or everything (asks first).
+- **Settings → Transcription Model**: Whisper (Automatic, the default), Whisper Base, Small or
+  Large v3 Turbo, or NVIDIA Parakeet v3, which needs no other setup: pick it and it downloads
+  (670 MB). **Re-transcribe Recent Audio** runs older clips through the new model; the new text
+  replaces the old for good. Parakeet stays loaded (about 1 GB) while audio recording is on. See
+  [Choosing a transcription model](../README.md#choosing-a-transcription-model).
 - **Settings → Local Search Server** turns on the API and browser search page at
   http://127.0.0.1:3031. Off by default. Only this PC can connect. The terminal commands
   `record` and `serve` always start it.
@@ -121,7 +126,7 @@ on older recordings and on how time is counted). Click an app, site
 | Text | Accessibility tree, then Apple Vision OCR | UI Automation tree, then Windows OCR (`Windows.Media.Ocr`) |
 | Microphone | AVAudioEngine | WASAPI |
 | System audio | ScreenCaptureKit | WASAPI loopback (no permission needed) |
-| Speech to text | whisper.cpp `whisper-cli` | whisper.cpp `whisper-cli.exe` |
+| Speech to text | whisper.cpp `whisper-cli`, or Parakeet v3 on ONNX Runtime | whisper.cpp `whisper-cli.exe`, or Parakeet v3 on ONNX Runtime |
 | Search by Meaning | macOS sentence embedding (built in) | all-MiniLM-L6-v2 with ONNX Runtime (downloaded once) |
 | Database, API, search page | SQLite + FTS5, port 3031 | the same |
 | App | Menu bar, ⌥⌘T | Tray, Ctrl+Alt+T |
@@ -135,13 +140,16 @@ Microphone → Let desktop apps access your microphone**.
 
 ## Whisper
 
-Speech is turned into text by [whisper.cpp](https://github.com/ggml-org/whisper.cpp),
-on your PC. OpenRewind records audio without it; the clips are transcribed once it is set up:
+The easiest way to get transcripts: **Settings → Transcription Model → NVIDIA Parakeet v3**. It
+downloads by itself and needs nothing else (25 European languages). For Whisper (99 languages),
+speech is turned into text by [whisper.cpp](https://github.com/ggml-org/whisper.cpp), on your PC.
+OpenRewind records audio without it; the clips are transcribed once it is set up:
 
 1. From the [whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases), download
    `whisper-bin-x64.zip` and unzip it into `%USERPROFILE%\.openrewind\whisper`
    (so that `whisper-cli.exe` is in that folder or in `whisper\Release`).
-2. Download a model, for example
+2. Pick a Whisper size in **Settings → Transcription Model** to download it, or download a model
+   yourself, for example
    [`ggml-large-v3-turbo-q5_0.bin`](https://huggingface.co/ggerganov/whisper.cpp/tree/main)
    (good, ~550 MB) or `ggml-base.en.bin` (fast, English only, ~150 MB), into
    `%USERPROFILE%\.openrewind\models`.

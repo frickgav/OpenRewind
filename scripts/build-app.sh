@@ -26,6 +26,9 @@ sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" packaging/Info.plist >
 
 # Icon PNGs come from branding/logo.png via scripts/make-icons.py.
 iconutil -c icns packaging/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
+# Licenses of what is linked into the app (ONNX Runtime, …).
+cp LICENSE "$APP/Contents/Resources/LICENSE.txt"
+cp THIRD_PARTY_NOTICES.txt "$APP/Contents/Resources/THIRD_PARTY_NOTICES.txt"
 
 # Signing. macOS keeps Screen Recording / Accessibility / Microphone permission for the signing
 # identity, so every build has to use the same one or updates lose them (see "Signing" in the README).

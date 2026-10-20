@@ -28,6 +28,8 @@ Options:
   --chunk S       Audio chunk length in seconds (default 30)
   --whisper-model PATH   ggml Whisper model (default: auto-detect)
   --language L    Whisper language code, or auto (default auto)
+  --model ID      Transcription model for this run: whisper-auto, whisper-base, whisper-small,
+                  whisper-large-v3-turbo or parakeet-v3 (default: the one picked in Settings)
   --home DIR      Data folder (default ~/.openrewind, or $OPENREWIND_HOME)
 
 Env:
@@ -179,6 +181,9 @@ case "doctor":
     print("audio chunks:    \(a.chunks) (\(a.pending) pending), \(a.segments) transcript segments")
     print("whisper-cli:     \(Transcriber.findBinary(config.whisperBinary) ?? "MISSING (brew install whisper-cpp)")")
     print("whisper model:   \(Transcriber.findModel(config.whisperModel, home: config.home) ?? "MISSING")")
+    let picked = SpeechModels.byId(config.transcriptionModel)
+    let ready = picked.files.isEmpty || SpeechModels.isDownloaded(picked, home: config.home)
+    print("transcription:   \(picked.name)\(ready ? "" : " (not downloaded: pick it in Settings → Transcription Model)")")
     if !Capture.hasScreenPermission { Capture.requestScreenPermission() }
     if !Accessibility.isTrusted { Accessibility.promptForTrust() }
 

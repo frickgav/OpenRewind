@@ -3,7 +3,8 @@ using System.Text;
 
 namespace OpenRewind;
 
-/// A call OpenRewind found: a meeting app or site in front while there was sound. Stored in the
+/// A call OpenRewind found: a call window in front, or a meeting app or site in front while there
+/// was sound. Stored in the
 /// `meetings` table, the same on the Mac (Meetings.swift).
 /// Status: "live" (may still grow), "ended", "summarized" or "failed" (the AI summary did not work).
 public sealed record Meeting(long Id, DateTime Start, DateTime End, string App, string AppName, string Title, string Url,
@@ -119,13 +120,66 @@ public static class MeetingApps
             // A meeting code like /abc-defg-hij, not Meet's start page.
             if (host == "meet.google.com" && path.Length > 1 && path.Trim('/').Contains('-')) return "Google Meet";
             if (host is "teams.microsoft.com" or "teams.live.com" or "teams.cloud.microsoft") return TeamsView(w) ? null : "Microsoft Teams";
-            if ((host == "zoom.us" || host.EndsWith(".zoom.us")) && (path.StartsWith("/wc/") || path.StartsWith("/j/"))) return "Zoom";
+            // A meeting in the web client (/wc/123/join, /j/123), not its home or chat (/wc/home).
+            if ((host == "zoom.us" || host.EndsWith(".zoom.us"))
+                && (path.StartsWith("/j/") || (path.StartsWith("/wc/") && (path.Any(char.IsDigit) || path.Contains("join"))))) return "Zoom";
             if (host == "webex.com" || host.EndsWith(".webex.com")) return "Webex";
             if (host == "app.slack.com" && path.Contains("/huddle")) return "Slack huddle";
         }
         // Browsers that do not give their address: Meet's tab title is "Meet - abc-defg-hij".
-        if (w.StartsWith("meet - ") || w.StartsWith("meet – ")) return "Google Meet";
+        if (MeetTitle.IsMatch(w)) return "Google Meet";
         return null;
+    }
+
+    /// "Meet - abc-defg-hij", "Meet – Weekly sync", also after a browser profile name ("Personal:
+    /// Meet - Weekly sync" in Dia and Arc). Meet's start page is "Google Meet". Group 1 is the title
+    /// without the profile.
+    static readonly System.Text.RegularExpressions.Regex MeetTitle =
+        new(@"^(?:[^:|\-–—]{1,40}:\s+)?(meet\s+[-–—]\s+\S.*)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    /// Like Match, but only for a window that is clearly a call by itself: a Meet meeting, Zoom's
+    /// meeting window or web client, a Teams call or meeting window, a Webex meeting, a FaceTime call
+    /// or a Slack huddle. These start a meeting (and the "Take notes?" popup) without waiting for
+    /// sound. Other meeting-app windows (Zoom with no title, a Teams window named after its meeting)
+    /// count only while other people can be heard. Mac: MeetingApps.call in Meetings.swift.
+    public static string? Call(string app, string window, string url)
+    {
+        if (Match(app, window, url) is not string label) return null;
+        var w = window.Replace("​", "").Trim().ToLowerInvariant();
+        string host = "", path = "";
+        if (Uri.TryCreate(url, UriKind.Absolute, out var u) && (u.Scheme == "https" || u.Scheme == "http"))
+        {
+            host = u.Host.ToLowerInvariant();
+            path = u.AbsolutePath.ToLowerInvariant();
+        }
+        var web = host is "zoom.us" or "webex.com" || host.EndsWith(".zoom.us") || host.EndsWith(".webex.com");
+        var yes = label switch
+        {
+            "Google Meet" or "Slack huddle" => true,
+            // The web client, or the app's meeting window ("Zoom Meeting", "Zoom Webinar").
+            "Zoom" => web || w.StartsWith("zoom meeting") || w.StartsWith("zoom webinar"),
+            "Microsoft Teams" => TeamsCall(w) || path.Contains("meetup-join") || (host == "teams.live.com" && path.StartsWith("/meet/")),
+            "Webex" => web ? path.StartsWith("/meet/") || path.Contains("/join") || path.Contains("meeting") || path.StartsWith("/wbxmjs/")
+                           : w.Length > 0 && !WebexHome.Contains(w),
+            // The main window is just "FaceTime"; a call's window is named after the people in it.
+            "FaceTime" => w.Length > 0 && w != "facetime",
+            _ => false,
+        };
+        return yes ? label : null;
+    }
+
+    static readonly HashSet<string> WebexHome = new()
+    {
+        "webex", "webex meetings", "cisco webex meetings", "cisco webex", "home", "settings", "messaging", "meetings", "calling",
+        "contacts", "teams", "vidcast", "whiteboards", "preferences",
+    };
+
+    /// Teams' call and meeting windows: "Meeting with Sam Lee | Microsoft Teams", "Call with Sam Lee | …",
+    /// "Meeting compact view | …".
+    static bool TeamsCall(string w)
+    {
+        var first = w.Split(" | ")[0].Trim();
+        return first.StartsWith("meeting") || first.StartsWith("call with") || first.StartsWith("calling ") || first.EndsWith("(meeting)");
     }
 
     /// Zoom's home, chat and settings windows: not a call.
@@ -148,7 +202,7 @@ public static class MeetingApps
     static readonly string[] Suffixes =
     {
         "microsoft teams", "zoom", "zoom meeting", "webex", "slack", "google chrome", "chrome", "mozilla firefox", "firefox",
-        "microsoft edge", "edge", "brave", "opera", "vivaldi", "arc", "safari", "personal", "work",
+        "microsoft edge", "edge", "brave", "opera", "vivaldi", "arc", "dia", "safari", "personal", "work",
     };
 
     /// "Weekly sync | Microsoft Teams" → "Weekly sync"; browser names at the end go too.
@@ -163,6 +217,8 @@ public static class MeetingApps
             if (!Suffixes.Contains(tail)) break;
             t = t[..cut].Trim();
         }
+        // "Personal: Meet - Weekly sync": the browser profile is not part of the name.
+        if (MeetTitle.Match(t) is { Success: true } meet) t = meet.Groups[1].Value;
         // Titles that only name the app say nothing.
         return t.ToLowerInvariant() is "zoom" or "zoom meeting" or "zoom workplace" or "microsoft teams" or "webex" or "facetime" or "meet" ? "" : t;
     }
@@ -179,8 +235,10 @@ public sealed record MeetingAudio(DateTime Start, DateTime End, bool Mic);
 /// `Titles`: the window titles seen, one per line.
 public sealed record MeetingSpan(DateTime Start, DateTime End, string App, string AppName, string Title, string Url, bool Live, string Titles = "");
 
-/// Finds meetings in what is already recorded. A meeting starts when a meeting app or site is in
-/// front while there is system audio (other people). It goes on while the app is in front; sound
+/// Finds meetings in what is already recorded. A meeting starts when a call window or page is in
+/// front (MeetingApps.Call: a Meet meeting, Zoom's meeting window, …), or when another window of a
+/// meeting app or site is in front while there is system audio (other people) for at least a
+/// minute. It goes on while the app is in front; sound
 /// without it keeps it going only for a while after the app was last in front: 30 minutes for the
 /// microphone (the user talking while sharing another window), 15 for other sound (a video). It
 /// ends after 3 minutes with none of these, and calls in the same app less than 10 minutes apart
@@ -199,7 +257,8 @@ public static class MeetingDetector
     public static readonly TimeSpan MergeGap = TimeSpan.FromMinutes(10);
     public static readonly TimeSpan MinLength = TimeSpan.FromMinutes(1);
 
-    sealed record Seen(DateTime Start, DateTime End, string Label, string App, string Title, string Url);
+    /// `Call`: a call window or page, which starts a meeting without waiting for sound.
+    sealed record Seen(DateTime Start, DateTime End, string Label, string App, string Title, string Url, bool Call);
 
     /// `frames` oldest first. Frames the block list hides never count as a meeting app.
     public static List<MeetingSpan> Detect(IReadOnlyList<MeetingFrame> frames, IReadOnlyList<MeetingAudio> audio, Blocklist blocked, DateTime now)
@@ -213,7 +272,8 @@ public static class MeetingDetector
             var next = i + 1 < frames.Count ? frames[i + 1].Time : now;
             var end = Min(next, f.Time + FrameSpan);
             if (end < f.Time) end = f.Time;
-            seen.Add(new Seen(f.Time, end, label, f.App, MeetingApps.CleanTitle(f.Window), WebAddress(f.Url)));
+            seen.Add(new Seen(f.Time, end, label, f.App, MeetingApps.CleanTitle(f.Window), WebAddress(f.Url),
+                              MeetingApps.Call(f.App, f.Window, f.Url) != null));
         }
         if (seen.Count == 0) return new();
         // Seen is oldest first, and each one ends before the next starts, so both are sorted.
@@ -239,12 +299,16 @@ public static class MeetingDetector
             else stretches.Add(x);
         }
 
-        // A stretch is a meeting from the first moment the app was in front while others could be
-        // heard. The microphone alone (a chat window open while the room is noisy) never starts one.
+        // A stretch is a meeting from the first moment a call window was in front, or the app was in
+        // front while others could be heard. The microphone alone (a chat window open while the room
+        // is noisy) never starts one, and a stretch without a call window must last a minute.
         var spans = new List<MeetingSpan>();
         foreach (var (s0, e0) in stretches)
         {
             DateTime? start = null;
+            var call = false;
+            for (int i = CountUpTo(seen, s => s.Start, s0, strict: true); i < seen.Count && seen[i].Start <= e0; i++)
+                if (seen[i].Call) { start = seen[i].Start; call = true; break; }
             for (int i = CountUpTo(seen, s => s.Start, s0, strict: true); i < seen.Count && seen[i].Start <= e0; i++)
             {
                 var s = seen[i];
@@ -255,7 +319,7 @@ public static class MeetingDetector
                     : j + 1 < others.Count && others[j + 1].Start <= s.End + Touch ? others[j + 1].Start : null;
                 if (t is DateTime heard && (start == null || heard < start)) start = heard;
             }
-            if (start is not DateTime begin || e0 - begin < MinLength) continue;
+            if (start is not DateTime begin || (!call && e0 - begin < MinLength)) continue;
             var inside = new List<Seen>();
             for (int i = CountUpTo(seen, s => s.End, begin); i < seen.Count && seen[i].Start <= e0; i++) inside.Add(seen[i]);
             if (inside.Count == 0)
@@ -494,7 +558,7 @@ public static class MeetingNotes
     }
 }
 
-/// Runs every minute: finds meetings in the last few hours and stores them. Mac: MeetingTracker in Meetings.swift.
+/// Finds meetings in the last few hours and stores them (Update, every minute; Spot, every 10 seconds). Mac: MeetingTracker in Meetings.swift.
 public static class MeetingTracker
 {
     /// How far back each run looks (further for a meeting still going on).
@@ -550,13 +614,41 @@ public static class MeetingTracker
                 // Looked at all of it again and it is not a call after all (the sound was noise): drop it.
                 // Otherwise (the computer slept, the app was closed for a day, part of it was deleted)
                 // it is over: keep it as it was last seen.
+                // A call the user said Take Notes for stays, whatever the recordings say now.
                 var covered = m.Start >= from;
                 var recorded = frames.Any(f => f.Time >= m.Start && f.Time <= m.End) || audio.Any(a => a.Start <= m.End && a.End >= m.Start);
-                if (covered && recorded) { db.DeleteMeeting(m.Id); continue; }
+                if (covered && recorded && m.Choice != MeetingChoice.Take) { db.DeleteMeeting(m.Id); continue; }
                 db.SetMeetingStatus(m.Id, MeetingStatus.Ended);
                 if (db.MeetingById(m.Id) is Meeting m3) ended.Add(m3);
             }
             return ended;
+        }
+    }
+
+    /// How often the quick check (Spot) runs between full runs, so the popup shows within seconds.
+    public static readonly TimeSpan SpotEvery = TimeSpan.FromSeconds(10);
+    /// How often the full run (Update) runs.
+    public static readonly TimeSpan UpdateEvery = TimeSpan.FromMinutes(1);
+    /// How far back the quick check looks for a call window or page.
+    public static readonly TimeSpan SpotLookback = TimeSpan.FromMinutes(2);
+
+    /// The quick check: when a call window or page (MeetingApps.Call) was in front in the last two
+    /// minutes and no meeting is stored for that call yet, stores one now, live, starting when the
+    /// call was first seen, so it can be asked about right away instead of after the next full run.
+    /// Returns the new meeting, or null.
+    public static Meeting? Spot(Database db, Blocklist blocked, DateTime now)
+    {
+        lock (Gate)
+        {
+            var from = now - SpotLookback;
+            if (db.MeetingsDeletedThrough() is DateTime cut && cut > from) from = cut < now ? cut : now;
+            var frames = db.MeetingFrames(from, now);
+            // Without sound, only call windows make a meeting.
+            if (MeetingDetector.Detect(frames, Array.Empty<MeetingAudio>(), blocked, now).LastOrDefault() is not MeetingSpan s) return null;
+            // Already stored (the full run found it, or this call was asked about before a short break).
+            if (db.MeetingsBetween(s.Start - MeetingDetector.MergeGap, now)
+                  .Any(m => (m.Start <= s.End && m.End >= s.Start) || m.App == s.App)) return null;
+            return db.MeetingById(db.InsertMeeting(s with { Live = true }, MeetingStatus.Live));
         }
     }
 

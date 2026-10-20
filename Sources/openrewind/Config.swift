@@ -16,6 +16,8 @@ struct Config {
     var whisperModel: String?
     var whisperBinary: String?
     var whisperLanguage = "auto"
+    /// Settings → Transcription Model (an id from SpeechModels), or --model for this run.
+    var transcriptionModel: String?
 
     var dbPath: URL { home.appendingPathComponent("db.sqlite") }
     var dataDir: URL { home.appendingPathComponent("data") }
@@ -24,6 +26,7 @@ struct Config {
         let homeDir = Config.env("HOME").map { URL(fileURLWithPath: $0) } ?? defaultHome()
         var c = Config(home: homeDir)
         c.whisperModel = Config.env("WHISPER_MODEL")
+        c.transcriptionModel = SpeechModels.picked
         var it = arguments.makeIterator()
         while let a = it.next() {
             switch a {
@@ -38,6 +41,7 @@ struct Config {
             case "--whisper-model": c.whisperModel = it.next()
             case "--whisper-bin": c.whisperBinary = it.next()
             case "--language": if let v = it.next() { c.whisperLanguage = v }
+            case "--model": if let v = it.next() { c.transcriptionModel = v }
             case "--home": if let v = it.next() { c.home = URL(fileURLWithPath: v) }
             default: break
             }
