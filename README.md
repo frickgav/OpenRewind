@@ -331,13 +331,17 @@ on your computer; audio never leaves it.
 
 - Picking a model that is not on the computer yet shows its size and downloads it, with a progress
   bar. Files come from a fixed commit on Hugging Face and are checked against their SHA-256 before
-  they are used; a download that stops carries on where it left off next time. They are saved in
-  `~/.openrewind/models` (Whisper files where Whisper already looks; Parakeet in
-  `models/parakeet-tdt-0.6b-v3-int8`). Delete a file to free the space.
+  they are used (again the first time they are used after each start of the app). A download that
+  stops, or gets no data for 60 seconds, carries on where it left off with **Try Again**. They are
+  saved in `~/.openrewind/models`: Whisper files where Whisper already looks, under their own names
+  (`ggml-small.openrewind.bin`, so a `ggml-small.bin` you put there yourself is never replaced);
+  Parakeet in `models/parakeet-tdt-0.6b-v3-int8`. Delete a file to free the space.
 - The new model is used for audio recorded from then on. **Re-transcribe Recent Audio** (last hour,
   day or week) runs older clips through it too. It says how many clips that is and about how long it
-  keeps the processor busy; new recordings still go first, and the old text stays searchable until
-  each clip is redone.
+  keeps the processor busy; new recordings still go first. The new text **replaces the old for good**
+  (the old text stays searchable only until each clip is redone). Clips where no speech was found
+  are left as they are, and meeting notes already made are kept: re-transcribing does not make them
+  again or send the transcript to your AI provider again.
 - The menu shows the model in use, when it last finished a clip and how long that took, and how many
   clips are waiting.
 - Each transcript line records which model wrote it (`audio_transcriptions.engine`:
@@ -346,17 +350,24 @@ on your computer; audio never leaves it.
 - Parakeet languages: Bulgarian, Croatian, Czech, Danish, Dutch, English, Estonian, Finnish, French,
   German, Greek, Hungarian, Italian, Latvian, Lithuanian, Maltese, Polish, Portuguese, Romanian,
   Russian, Slovak, Slovenian, Spanish, Swedish and Ukrainian. It finds the language by itself; the
-  `--language` option only applies to Whisper. For other languages pick a Whisper model.
-- Parakeet runs on [ONNX Runtime](https://onnxruntime.ai) (MIT), built into the app. While it has
-  audio to do it holds about 1 GB of memory, and lets go of it after 5 minutes with nothing to do. On
-  a 4-core Linux test machine (the Windows code) a 30 s clip took 3.3 s, about 9 times faster than real time.
+  `--language` option only applies to Whisper. For other languages pick a Whisper model: when
+  `--language` is set to one Parakeet does not know, picking Parakeet (or re-transcribing with it)
+  warns first.
+- Parakeet runs on [ONNX Runtime](https://onnxruntime.ai) (MIT), built into the app (its notice is in
+  `THIRD_PARTY_NOTICES.txt`, which ships with both apps). It holds about 1 GB of memory while it is
+  loaded and lets go of it after 5 minutes with no audio to do. **While audio recording is on, a clip
+  arrives every 30 seconds, so it stays loaded the whole time**; turn audio off, or pick Whisper, to
+  get that memory back. Long audio (`ingest-audio` of a talk, or a long `--chunk`) goes through the
+  model in pieces of at most 30 seconds, so memory stays the same however long it is. On a 4-core
+  Linux test machine (the Windows code) a 30 s clip took 3.4–3.6 s, about 9 times faster than real
+  time, and 5 minutes took 25 s.
 - From the terminal, `--model parakeet-v3` (or `whisper-small`, …) picks a model for one run, for
   example `openrewind ingest-audio talk.wav --model parakeet-v3`.
 
 [NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) is made by NVIDIA
 and licensed [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/). OpenRewind downloads the
-int8 [ONNX export](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8)
-made by the [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) project (Apache-2.0), unchanged.
+version [converted to ONNX and quantized to int8](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8)
+by the [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) project (Apache-2.0), and uses it as it is.
 Whisper models are [OpenAI's Whisper](https://github.com/openai/whisper) (MIT) in the ggml format of
 [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT).
 
@@ -580,4 +591,5 @@ Delete the folder to wipe everything, or from the terminal:
 
 ## License
 
-[MIT](LICENSE). Use it, change it, share it.
+[MIT](LICENSE). Use it, change it, share it. What the apps include from others, and under which
+licenses, is in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).
