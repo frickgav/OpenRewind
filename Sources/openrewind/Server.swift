@@ -203,10 +203,16 @@ struct API {
         return .json(["data": Array(page), "pagination": ["limit": limit, "offset": offset, "total": total]])
     }
 
+    /// Inside our own data dir (with the trailing slash, so a sibling folder like data-x/ is not).
+    private func isInDataDir(_ path: String) -> Bool {
+        let dir = config.dataDir.standardizedFileURL.path
+        return path.hasPrefix(dir.hasSuffix("/") ? dir : dir + "/")
+    }
+
     private func audioFile(_ idStr: String) -> HTTPResponse {
         guard let id = Int64(idStr), let c = db.chunk(id: id) else { return .error("audio not found", status: 404) }
         let path = URL(fileURLWithPath: c.filePath).standardizedFileURL.path
-        guard path.hasPrefix(config.dataDir.standardizedFileURL.path),
+        guard isInDataDir(path),
               let data = FileManager.default.contents(atPath: path) else {
             return .error("audio file missing", status: 404)
         }
@@ -219,7 +225,7 @@ struct API {
         // (Compress Older Recordings).
         let file = f.videoPath.isEmpty ? f.snapshotPath : f.videoPath
         let path = URL(fileURLWithPath: file).standardizedFileURL.path
-        guard !file.isEmpty, path.hasPrefix(config.dataDir.standardizedFileURL.path), FileManager.default.fileExists(atPath: path) else {
+        guard !file.isEmpty, isInDataDir(path), FileManager.default.fileExists(atPath: path) else {
             return .error("snapshot missing", status: 404)
         }
         // A JPEG still goes out as it is. Chrome and Firefox cannot show HEIC, and a video frame is no file: send JPEG.

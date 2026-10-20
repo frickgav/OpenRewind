@@ -54,8 +54,8 @@ on older recordings and on how time is counted). Click an app, site
   or Until I Delete Them (default). Older recordings are deleted at launch and every hour.
 - **Settings → Delete Recordings**: last 15 minutes, last hour, today, all screen,
   all audio, or everything (asks first).
-- **Settings → Compress Older Recordings** keeps screenshots older than an hour as video (HEVC,
-  or H.264 when the PC has no HEVC codec), for about 5 to 10 times less disk space. Off by default,
+- **Settings → Compress Older Recordings** keeps screenshots older than an hour as H.264 video
+  (not HEVC, which needs an optional codec to play on many PCs), for about 5 to 10 times less disk space. Off by default,
   because it is new; it reads "(not available on this PC)" when Windows has no working video
   encoder (some N editions without the Media Feature Pack). Turning it off stops making videos;
   ones already made keep playing. Details in the

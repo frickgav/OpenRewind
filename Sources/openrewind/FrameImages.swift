@@ -7,38 +7,59 @@ import ImageIO
 import VideoToolbox
 
 /// The one way to get a frame's picture, whether it is a still file or a frame inside a video
-/// (Compress Older Recordings). The timeline, search highlights, the local API and Ask AI all read through here.
-/// Video frames are decoded by a few cached image generators that seek exactly (zero tolerance) and kept
-/// in a small LRU, so scrubbing stays quick. Windows has the same in FrameImages.cs.
+/// (Compress Older Recordings). The timeline, search highlights, the local API, Ask AI and the MCP server
+/// all read through here. Video frames are decoded by a few cached image generators that seek exactly
+/// (zero tolerance) and kept in a small LRU (at most 48 frames and 256 MB), so scrubbing stays quick.
+/// A decode holds only its own video's lock, so cached frames and other videos are served meanwhile.
+/// Windows has the same in FrameImages.cs.
 final class FrameImages {
     static let shared = FrameImages()
+    private static let cacheBytes = 256 << 20
+
+    /// One open video: its generator, and a lock so one decode runs on it at a time.
+    private final class Video {
+        let generator: AVAssetImageGenerator
+        let lock = NSLock()
+        init(_ path: String) { generator = FrameImages.generator(path) }
+    }
 
     private let lock = NSLock()
     /// Decoded video frames by "path#frame".
-    private let frames = Lru<String, CGImage>(capacity: 48)
+    private let frames = Lru<String, CGImage>(capacity: 48, weight: { $0.bytesPerRow * $0.height }, maxWeight: FrameImages.cacheBytes)
     /// Open videos, so the next frame of the same one does not open the file again.
-    private let generators = Lru<String, AVAssetImageGenerator>(capacity: 4)
+    private let videos = Lru<String, Video>(capacity: 4)
+    /// Goes up on every release: a decode that ran across one doesn't cache what it got.
+    private var releases = 0
 
-    /// The picture, or nil when it is gone or can't be read.
-    func image(_ f: FrameSource) -> CGImage? {
+    /// The picture, or nil when it is gone or can't be read. `cache: false` for one-off reads (the compactor
+    /// reading a whole video) that would only push the timeline's frames out of the cache.
+    func image(_ f: FrameSource, cache: Bool = true) -> CGImage? {
         guard f.isVideo else { return f.stillPath.isEmpty ? nil : ImageTools.load(URL(fileURLWithPath: f.stillPath)) }
         let key = Self.key(f.videoPath, f.videoFrame)
-        lock.lock(); defer { lock.unlock() }
-        if let hit = frames.get(key) { return hit }
-        let gen: AVAssetImageGenerator
-        if let g = generators.get(f.videoPath) {
-            gen = g
+        lock.lock()
+        if let hit = frames.get(key) { lock.unlock(); return hit }
+        let video: Video
+        if let v = videos.get(f.videoPath) {
+            video = v
         } else {
-            guard FileManager.default.fileExists(atPath: f.videoPath) else { return nil }
-            gen = Self.generator(f.videoPath)
-            generators.set(f.videoPath, gen)
+            guard FileManager.default.fileExists(atPath: f.videoPath) else { lock.unlock(); return nil }
+            video = Video(f.videoPath)
+            videos.set(f.videoPath, video)
         }
-        guard let img = Self.frame(gen, at: CMTime(seconds: f.videoTime, preferredTimescale: 600)) else {
+        let seen = releases
+        lock.unlock()
+
+        video.lock.lock()
+        let img = Self.frame(video.generator, at: CMTime(seconds: f.videoTime, preferredTimescale: 600))
+        video.lock.unlock()
+
+        lock.lock(); defer { lock.unlock() }
+        guard let img else {
             log("cannot read frame \(f.videoFrame) of \((f.videoPath as NSString).lastPathComponent)")
-            generators.removeAll { $0 == f.videoPath }
+            videos.removeAll { $0 == f.videoPath }
             return nil
         }
-        frames.set(key, img)
+        if cache && releases == seen { frames.set(key, img) }
         return img
     }
 
@@ -78,7 +99,8 @@ final class FrameImages {
     /// Close a video and forget its frames (before it is deleted or replaced).
     func release(_ videoPath: String) {
         lock.lock(); defer { lock.unlock() }
-        generators.removeAll { $0 == videoPath }
+        releases += 1
+        videos.removeAll { $0 == videoPath }
         let prefix = videoPath + "#"
         frames.removeAll { $0.hasPrefix(prefix) }
     }
@@ -86,12 +108,12 @@ final class FrameImages {
     private static func key(_ path: String, _ frame: Int) -> String { path + "#\(frame)" }
 
     /// A small gray copy for checking a video frame against its screenshot. The screenshot is first cut to
-    /// the even size the video has, so both are shrunk the same way (thin lines of text would otherwise
-    /// land on different thumbnail pixels).
+    /// the even size a video has, and both are shrunk smoothly, so thin lines of text land on the same
+    /// thumbnail pixels (a video scaled down from a very large screenshot compares the same way).
     static func comparable(_ image: CGImage) -> [UInt8] {
         let w = Compaction.even(image.width), h = Compaction.even(image.height)
         let cut = (w == image.width && h == image.height) ? image : image.cropping(to: CGRect(x: 0, y: 0, width: w, height: h)) ?? image
-        return ImageTools.thumbnail(cut)
+        return ImageTools.thumbnail(cut, quality: .high)
     }
 
     /// A generator that returns exactly the frame asked for, at its stored size.
@@ -140,7 +162,7 @@ final class Box<T>: @unchecked Sendable {
 }
 
 /// VideoCodec for the compactor: AVAssetWriter, HEVC when this Mac has a hardware HEVC encoder, else H.264.
-/// Read back with AVAssetImageGenerator.
+/// Every Mac this app runs on (macOS 14) decodes both. Read back with AVAssetImageGenerator.
 final class AVCodec: VideoCodec {
     private let lock = NSLock()
     private var probed: (codec: String?, error: String?)?
@@ -155,43 +177,60 @@ final class AVCodec: VideoCodec {
     }
 
     func measure(_ frame: FrameSource) -> (width: Int, height: Int)? {
-        if frame.isVideo { return FrameImages.shared.image(frame).map { ($0.width, $0.height) } }
+        if frame.isVideo { return FrameImages.shared.image(frame, cache: false).map { ($0.width, $0.height) } }
         return FrameImages.stillSize(frame.stillPath)
     }
 
     func write(_ frames: [FrameSource], width: Int, height: Int, to path: String) throws -> String {
         guard let codec = usable else { throw Self.error("no video encoder on this Mac (\(probeError ?? "unknown"))") }
         try Self.encode(count: frames.count, width: width, height: height, hevc: codec == "hevc", to: path) {
-            FrameImages.shared.image(frames[$0])
+            FrameImages.shared.image(frames[$0], cache: false)
         }
         return codec
     }
 
-    func verify(_ path: String, _ frames: [FrameSource]) -> Bool {
+    func verify(_ path: String, _ frames: [FrameSource], width: Int, height: Int) -> Bool {
         guard !frames.isEmpty else { return false }
+        let name = (path as NSString).lastPathComponent
         let asset = AVURLAsset(url: URL(fileURLWithPath: path), options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         guard let duration = FrameImages.wait({ try await asset.load(.duration) }),
               duration.seconds >= (Double(frames.count) - 0.5) / Compaction.fps else {
-            log("\((path as NSString).lastPathComponent) is shorter than its \(frames.count) frames")
+            log("\(name) is shorter than its \(frames.count) frames")
             return false
         }
         let gen = FrameImages.generator(path)
-        for i in Set([0, frames.count - 1]).sorted() {
+        for i in Compaction.checkedFrames(frames.count) {
             guard let decoded = FrameImages.frame(gen, at: Compaction.time(ofFrame: i)),
-                  let source = FrameImages.shared.image(frames[i]) else { return false }
-            guard decoded.width == Compaction.even(source.width), decoded.height == Compaction.even(source.height) else {
-                log("\((path as NSString).lastPathComponent): frame \(i) is \(decoded.width)x\(decoded.height), expected \(source.width)x\(source.height)")
+                  let source = FrameImages.shared.image(frames[i], cache: false) else { return false }
+            guard decoded.width == width, decoded.height == height else {
+                log("\(name): frame \(i) is \(decoded.width)x\(decoded.height), expected \(width)x\(height)")
                 return false
             }
             guard Compaction.similar(FrameImages.comparable(decoded), FrameImages.comparable(source)) else {
-                log("\((path as NSString).lastPathComponent): frame \(i) does not look like its picture")
+                log("\(name): frame \(i) does not look like its picture")
                 return false
             }
         }
         return true
     }
 
+    func writeStill(_ frame: FrameSource, to path: String) throws {
+        guard let img = FrameImages.shared.image(frame, cache: false) else { throw Self.error("the frame could not be read") }
+        guard let data = ImageTools.jpegData(img, quality: 0.8) else { throw Self.error("the frame could not be saved as JPEG") }
+        try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+    }
+
     func release(_ path: String) { FrameImages.shared.release(path) }
+
+    /// Whether the videos already made still play (a folder restored from another Mac, a damaged file):
+    /// opens up to `max` of them and reads their first frame. For doctor.
+    static func checkVideos(_ db: Database, max: Int = 100) -> (checked: Int, bad: Int) {
+        let all = db.segments()
+        let pick = all.count <= max ? all : (0..<max).map { all[$0 * all.count / max] }
+        var bad = 0
+        for seg in pick where FrameImages.shared.image(FrameSource(stillPath: "", videoPath: seg.path), cache: false) == nil { bad += 1 }
+        return (pick.count, bad)
+    }
 
     private func probe() -> (codec: String?, error: String?) {
         lock.lock(); defer { lock.unlock() }
@@ -201,21 +240,23 @@ final class AVCodec: VideoCodec {
         return p
     }
 
-    /// Encode and decode a short test clip: hardware HEVC first, then H.264. Returns the codec that worked.
+    /// Encode and decode a short test clip with odd proportions (not a multiple of 16, like many screens):
+    /// hardware HEVC first, then H.264. Returns the codec that worked.
     private static func runProbe() -> (codec: String?, error: String?) {
         var error: String?
-        let pictures = (0..<3).compactMap(testPicture)
+        let w = 362, h = 206
+        let pictures = (0..<3).compactMap { testPicture($0, width: w, height: h) }
         guard pictures.count == 3 else { return (nil, "cannot draw test pictures") }
         for hevc in [true, false] {
             let path = FileManager.default.temporaryDirectory
                 .appendingPathComponent("openrewind-probe-\(getpid())-\(hevc ? "hevc" : "h264").mp4").path
             defer { try? FileManager.default.removeItem(atPath: path) }
             do {
-                try encode(count: 3, width: 320, height: 180, hevc: hevc, to: path) { pictures[$0] }
+                try encode(count: 3, width: w, height: h, hevc: hevc, to: path) { pictures[$0] }
                 let gen = FrameImages.generator(path)
                 for i in [0, 2, 1] {
-                    guard let back = FrameImages.frame(gen, at: Compaction.time(ofFrame: i)), back.width == 320, back.height == 180,
-                          Compaction.similar(ImageTools.thumbnail(back), ImageTools.thumbnail(pictures[i])) else {
+                    guard let back = FrameImages.frame(gen, at: Compaction.time(ofFrame: i)), back.width == w, back.height == h,
+                          Compaction.similar(FrameImages.comparable(back), FrameImages.comparable(pictures[i])) else {
                         throw Self.error("frame \(i) did not read back the same")
                     }
                 }
@@ -228,15 +269,15 @@ final class AVCodec: VideoCodec {
         return (nil, error)
     }
 
-    /// Something like a screen: a title bar and a box that moves.
-    static func testPicture(_ i: Int) -> CGImage? {
-        guard let ctx = CGContext(data: nil, width: 320, height: 180, bitsPerComponent: 8, bytesPerRow: 0,
+    /// Something like a screen: a title bar, lines like text, and a box that moves.
+    static func testPicture(_ i: Int, width: Int = 320, height: Int = 180) -> CGImage? {
+        guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
                                   space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                   bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
         ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
-        ctx.fill(CGRect(x: 0, y: 0, width: 320, height: 180))
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
         ctx.setFillColor(CGColor(red: 0.27, green: 0.51, blue: 0.71, alpha: 1))
-        ctx.fill(CGRect(x: 0, y: 156, width: 320, height: 24))
+        ctx.fill(CGRect(x: 0, y: height - 24, width: width, height: 24))
         ctx.setFillColor(CGColor(red: 1, green: 0.65, blue: 0, alpha: 1))
         ctx.fill(CGRect(x: 20 + i * 90, y: 40, width: 80, height: 80))
         ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
@@ -244,9 +285,10 @@ final class AVCodec: VideoCodec {
         return ctx.makeImage()
     }
 
-    /// Writes `count` pictures as an MP4: picture i at i / fps seconds, width x height pixels (a picture a
-    /// pixel bigger loses its last row or column). Keyframe every Compaction.keyframeInterval frames and no
-    /// B-frames, so one frame never needs more than that many decoded to show it.
+    /// Writes `count` pictures as an MP4: picture i at i / fps seconds, width x height pixels. A picture
+    /// within a pixel of that size loses its odd last row or column; any other is scaled to fit (very wide
+    /// captures, see Compaction.fit). Keyframe every Compaction.keyframeInterval frames and no B-frames, so
+    /// one frame never needs more than that many decoded to show it.
     static func encode(count: Int, width: Int, height: Int, hevc: Bool, to path: String, picture: (Int) -> CGImage?) throws {
         let url = URL(fileURLWithPath: path)
         try? FileManager.default.removeItem(at: url)
@@ -306,8 +348,13 @@ final class AVCodec: VideoCodec {
                 if let ctx {
                     ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
                     ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
-                    // Top-left aligned: an odd last row or column falls off the bottom or right.
-                    ctx.draw(img, in: CGRect(x: 0, y: height - img.height, width: img.width, height: img.height))
+                    if abs(img.width - width) <= 1 && abs(img.height - height) <= 1 {
+                        // Top-left aligned: an odd last row or column falls off the bottom or right.
+                        ctx.draw(img, in: CGRect(x: 0, y: height - img.height, width: img.width, height: img.height))
+                    } else {
+                        ctx.interpolationQuality = .high
+                        ctx.draw(img, in: CGRect(x: 0, y: 0, width: width, height: height))
+                    }
                 }
                 CVPixelBufferUnlockBaseAddress(pb, [])
                 guard ctx != nil else { throw error("cannot draw into a video frame") }
@@ -338,7 +385,8 @@ final class AVCodec: VideoCodec {
 }
 
 /// Runs the compactor in the background: two minutes after launch, every 15 minutes, and soon after a
-/// delete that left a video with frames to drop. One pass at a time, at utility priority.
+/// delete that left a video with frames to drop (also when that delete comes during a pass: one more pass
+/// follows). One pass at a time, at utility priority.
 final class VideoJob {
     let codec: AVCodec
     private let compactor: VideoCompactor
@@ -346,6 +394,8 @@ final class VideoJob {
     private var timer: DispatchSourceTimer?
     private let state = NSLock()
     private var running = false
+    /// A kick came while a pass was running: run again when it ends.
+    private var pending = false
     private var stopping = false
     private var on: Bool
 
@@ -376,18 +426,31 @@ final class VideoJob {
         timer = t
     }
 
-    /// Start a pass now unless one is running.
+    /// Start a pass now; when one is running, run another right after it.
     func kick() {
         state.lock()
-        if running || stopping { state.unlock(); return }
+        if stopping { state.unlock(); return }
+        if running { pending = true; state.unlock(); return }
         running = true
         state.unlock()
         queue.async { [self] in
-            defer { state.lock(); running = false; state.unlock() }
-            let compress = enabled && codec.usable != nil
-            let r = compactor.runOnce(compress: compress, now: Date(), keepGoing: { !self.isStopping }, keepCompressing: { self.enabled })
-            if r.frames + r.rewritten + r.failed > 0 {
-                log("compress older recordings: \(r.frames) frames into \(r.videos) videos (\(codec.usable ?? "-")), \(r.rewritten) rewritten, \(r.failed) failed")
+            while true {
+                let compress = enabled && codec.usable != nil
+                let r = compactor.runOnce(compress: compress, now: Date(), keepGoing: { !self.isStopping }, keepCompressing: { self.enabled })
+                if r.frames + r.rewritten + r.unpacked + r.failed > 0 {
+                    log("compress older recordings: \(r.frames) frames into \(r.videos) videos (\(codec.usable ?? "-")), \(r.rewritten) rewritten, " +
+                        "\(r.unpacked) turned back into pictures, \(r.failed) failed")
+                }
+                state.lock()
+                if pending && !stopping {
+                    pending = false
+                    state.unlock()
+                    continue
+                }
+                running = false
+                pending = false
+                state.unlock()
+                return
             }
         }
     }

@@ -19,7 +19,6 @@ static class MF
     public static Guid MT_GEOMETRIC_APERTURE = new("66758743-7e5f-400d-980a-aa8596c85696");
     public static Guid MediaType_Video = new("73646976-0000-0010-8000-00aa00389b71");
     public static Guid VideoFormat_H264 = new("34363248-0000-0010-8000-00aa00389b71");
-    public static Guid VideoFormat_HEVC = new("43564548-0000-0010-8000-00aa00389b71");
     public static Guid VideoFormat_NV12 = new("3231564e-0000-0010-8000-00aa00389b71");
     public static Guid READWRITE_ENABLE_HARDWARE_TRANSFORMS = new("a634a91c-822b-41b9-a494-4de4643612b0");
     public static Guid SINK_WRITER_DISABLE_THROTTLING = new("08b845d8-2b74-4afe-9d53-be16d2d5ae4f");

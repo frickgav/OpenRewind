@@ -183,6 +183,15 @@ case "doctor":
     print("video storage:   \(videoCheck().text)")
     let v = db.videoStats()
     print("videos:          \(v.segments) (\(v.bytes >> 20) MB, saving \(v.saved >> 20) MB)")
+    if v.segments > 0 {
+        let c = AVCodec.checkVideos(db)
+        print(c.bad == 0 ? "videos play:     ok (\(c.checked) checked)"
+                         : "videos play:     \(c.bad) of \(c.checked) checked DO NOT OPEN on this Mac")
+    }
+    let stuck = db.stuckRewrites()
+    if stuck > 0 {
+        print("videos to redo:  \(stuck) still hold deleted frames (rewritten in the background; turned back into pictures if that keeps failing)")
+    }
     if !Capture.hasScreenPermission { Capture.requestScreenPermission() }
     if !Accessibility.isTrusted { Accessibility.promptForTrust() }
 

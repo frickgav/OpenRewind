@@ -4,8 +4,10 @@ import UniformTypeIdentifiers
 
 /// `openrewind video-check`: runs Compress Older Recordings for real on made-up screenshots in a temp
 /// folder (encode, check, commit, delete stills), reads every frame back in a jumbled order, deletes part
-/// of the video and checks the rewrite. CI runs it; it is also a quick check on a new Mac.
-/// Windows has the same check in VideoSelfTest.cs.
+/// of the video and checks the rewrite, deletes a row behind the app's back (the backstop rewrites it),
+/// runs doctor's check, compresses a capture wider than encoders take, and turns a video that can't be
+/// written again back into pictures. CI runs it; it is also a quick check on a new Mac.
+/// Windows has the same check in VideoSelfTest.cs, and unit tests for these steps in VideoTests.cs.
 enum VideoSelfTest {
     static func run() -> Bool {
         let codec = AVCodec()
@@ -21,19 +23,7 @@ enum VideoSelfTest {
             // Odd size on purpose: videos are cut to even sizes.
             let w = 965, h = 543, n = 45
             let start = Compaction.windowStart(now.addingTimeInterval(-7200))
-            var thumbs: [Int64: [UInt8]] = [:]
-            for i in 0..<n {
-                guard let pic = screen(i, w, h) else { print("cannot draw test pictures"); return false }
-                let ts = Time.iso.string(from: start.addingTimeInterval(Double(i * 2)))
-                let dir = config.dataDir.appendingPathComponent(String(ts.prefix(10)))
-                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                let file = dir.appendingPathComponent(ts.replacingOccurrences(of: ":", with: "-") + ".jpg")
-                try ImageTools.write(pic, to: file, type: .jpeg, quality: 0.8)
-                let id = try db.insert(Frame(id: 0, timestamp: ts, appName: "Test", windowName: "Window \(i)", focused: true,
-                                             snapshotPath: file.path, text: "frame \(i)", textSource: "ocr", hash: 0, display: "test"))
-                guard let still = FrameImages.shared.image(FrameSource(stillPath: file.path)) else { print("cannot read a test picture"); return false }
-                thumbs[id] = FrameImages.comparable(still)
-            }
+            var thumbs = try addStills(db, config, start: start, count: n, w: w, h: h, display: "test")
             let compactor = VideoCompactor(db: db, codec: codec, dataDir: config.dataDir)
             var clock = Date()
             let r = compactor.runOnce(compress: true, now: now)
@@ -56,15 +46,72 @@ enum VideoSelfTest {
             guard r2.rewritten == 1, r2.failed == 0, thumbs.count == n - deleted else { return false }
             guard checkAll(db, thumbs, w, h) else { return false }
 
-            // Delete the rest: the video goes too.
+            // A row deleted behind the app's back (another process, a delete cut short): the video still
+            // holds its picture until the backstop marks it and it is written again.
+            let other = try Database(path: config.dbPath)
+            guard let gone = thumbs.keys.sorted().first else { return false }
+            other.run("DELETE FROM frames WHERE id = ?", [.int(gone)])
+            thumbs.removeValue(forKey: gone)
+            let r3 = compactor.runOnce(compress: false, now: now)
+            print("deleted a row from another connection, rewrote \(r3.rewritten) video(s), \(r3.failed) failed")
+            guard r3.rewritten == 1, r3.failed == 0, db.segments().first?.frameCount == thumbs.count else { return false }
+            guard checkAll(db, thumbs, w, h) else { return false }
+
+            let doctor = AVCodec.checkVideos(db)
+            print("doctor's check: \(doctor.checked) video(s), \(doctor.bad) do not open")
+            guard doctor.checked == 1, doctor.bad == 0 else { return false }
+
+            // A capture wider than every encoder takes is scaled down to fit.
+            let ww = 5000, wh = 1000
+            let wide = try addStills(db, config, start: Compaction.windowStart(now.addingTimeInterval(-3 * 3600)), count: 3, w: ww, h: wh, display: "wide")
+            let r4 = compactor.runOnce(compress: true, now: now)
+            let fit = Compaction.fit(ww, wh)
+            print("wide capture: \(r4.frames) frames of \(ww)x\(wh) into \(r4.videos) video(s) of \(fit.width)x\(fit.height), \(r4.failed) failed")
+            guard r4.frames == 3, r4.failed == 0, checkAll(db, wide, fit.width, fit.height) else { return false }
+
+            // A video that can't be written again (say, the encoder is gone) becomes pictures again, so the
+            // deleted frame is in no file.
+            let before = db.segments().count
+            guard let drop = thumbs.keys.sorted().last, let f = db.frame(id: drop), let t = Time.iso.date(from: f.timestamp) else { return false }
+            guard db.deleteFrames(from: t, to: t.addingTimeInterval(1)) == 1 else {
+                print("could not delete one frame"); return false
+            }
+            thumbs.removeValue(forKey: drop)
+            let broken = VideoCompactor(db: db, codec: BrokenEncoder(codec), dataDir: config.dataDir)
+            let r5 = broken.runOnce(compress: false, now: now)
+            print("without an encoder: \(r5.unpacked) video(s) turned back into pictures, \(r5.rewritten) rewritten, \(r5.failed) failed")
+            guard r5.unpacked == 1, r5.failed == 0, db.segments().count == before - 1, db.stuckRewrites() == 0 else { return false }
+            guard thumbs.keys.allSatisfy({ db.frame(id: $0)?.videoPath.isEmpty == true }) else { print("frames still point at the video"); return false }
+            guard checkAll(db, thumbs, w, h) else { return false }
+
+            // Delete the rest: the videos and stills go too.
             db.deleteFrames(from: nil, to: now)
-            let left = (FileManager.default.enumerator(atPath: compactor.videoDir)?.allObjects as? [String] ?? []).filter { $0.hasSuffix(".mp4") }
-            print("after deleting everything: \(left.count) video files")
+            let left = (FileManager.default.enumerator(atPath: config.dataDir.path)?.allObjects as? [String] ?? [])
+                .filter { $0.hasSuffix(".mp4") || $0.hasSuffix(".jpg") }
+            print("after deleting everything: \(left.count) files")
             return left.isEmpty
         } catch {
             print("failed: \(error.localizedDescription)")
             return false
         }
+    }
+
+    /// Stills 2 s apart from `start`, saved like the recorder does; returns their comparable thumbnails by id.
+    private static func addStills(_ db: Database, _ config: Config, start: Date, count: Int, w: Int, h: Int, display: String) throws -> [Int64: [UInt8]] {
+        var thumbs: [Int64: [UInt8]] = [:]
+        for i in 0..<count {
+            guard let pic = screen(i, w, h) else { throw AVCodec.error("cannot draw test pictures") }
+            let ts = Time.iso.string(from: start.addingTimeInterval(Double(i * 2)))
+            let dir = config.dataDir.appendingPathComponent(String(ts.prefix(10)))
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let file = dir.appendingPathComponent(ts.replacingOccurrences(of: ":", with: "-") + ".jpg")
+            try ImageTools.write(pic, to: file, type: .jpeg, quality: 0.8)
+            let id = try db.insert(Frame(id: 0, timestamp: ts, appName: "Test", windowName: "Window \(i)", focused: true,
+                                         snapshotPath: file.path, text: "frame \(i)", textSource: "ocr", hash: 0, display: display))
+            guard let still = FrameImages.shared.image(FrameSource(stillPath: file.path)) else { throw AVCodec.error("cannot read a test picture") }
+            thumbs[id] = FrameImages.comparable(still)
+        }
+        return thumbs
     }
 
     /// Every frame reads back like its screenshot, in a jumbled order (scrubbing back and forth).
@@ -105,4 +152,15 @@ enum VideoSelfTest {
         ctx.fill(CGRect(x: 600 + i * 7 % 300, y: 100 + i * 13 % 300, width: 120, height: 90))
         return ctx.makeImage()
     }
+}
+
+/// The real codec, except that it can't write videos any more (stills and reading still work).
+private final class BrokenEncoder: VideoCodec {
+    let real: AVCodec
+    init(_ real: AVCodec) { self.real = real }
+    func measure(_ frame: FrameSource) -> (width: Int, height: Int)? { real.measure(frame) }
+    func write(_ frames: [FrameSource], width: Int, height: Int, to path: String) throws -> String { throw AVCodec.error("no encoder (test)") }
+    func verify(_ path: String, _ frames: [FrameSource], width: Int, height: Int) -> Bool { false }
+    func writeStill(_ frame: FrameSource, to path: String) throws { try real.writeStill(frame, to: path) }
+    func release(_ path: String) { real.release(path) }
 }

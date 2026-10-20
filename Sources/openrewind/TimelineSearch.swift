@@ -116,9 +116,12 @@ extension TimelineModel {
         let key = "\(f.id) \(terms.joined(separator: " "))"
         if let cached = highlightCache[key] { highlights = cached; return }
         highlights = []
+        let db = self.db
         let work = DispatchWorkItem { [weak self] in
             DispatchQueue.global(qos: .userInitiated).async {
-                let found = FrameImages.shared.image(f.source).map { OCR.find(terms, in: $0) } ?? []
+                // Looked up again when the picture moved since the timeline was read (see currentSource).
+                let picture = FrameImages.shared.image(f.source) ?? db.frame(id: f.id).flatMap { FrameImages.shared.image($0.source) }
+                let found = picture.map { OCR.find(terms, in: $0) } ?? []
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.highlightCache[key] = found

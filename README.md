@@ -98,23 +98,41 @@ many Macs and PCs yet. The storage line in the menu shows what the videos save
 
 - Each video holds up to five minutes of one screen (frames of different sizes go in separate
   videos). The last hour stays as pictures, so the recent timeline is exactly as before.
-- HEVC (H.265) on a Mac with a hardware HEVC encoder, or a PC whose Media Foundation can
-  encode and decode HEVC; H.264 everywhere else. The Mac uses AVFoundation, Windows uses Media
-  Foundation, both built into the system; nothing is downloaded and nothing leaves the computer.
+- The Mac uses HEVC (H.265) when it has a hardware HEVC encoder, else H.264; every Mac this app
+  runs on can play both. Windows always uses H.264: playing HEVC on Windows needs the optional
+  HEVC Video Extensions, and a data folder restored on a PC without them would show nothing for
+  its older recordings. The Mac uses AVFoundation, Windows uses Media Foundation, both built into
+  the system; nothing is downloaded and nothing leaves the computer.
+- Captures wider or taller than 4096 x 2304 (ultrawide and 5K screens) are scaled down to fit,
+  since that is the most every H.264 encoder takes. A screenshot that still fails to go into a
+  video three times stays a picture.
 - Crash-safe: a video is written to a temporary file, read back and compared with the pictures,
   moved into place, and the frames are pointed at it in one database transaction. Only then are
   the pictures deleted. Quitting or crashing at any point loses nothing; the next run cleans up.
 - The timeline, search highlights, the local API (`GET /frames/{id}` still returns a JPEG), and
   Ask AI's screenshots all read frames through one loader. It seeks exactly to each frame, keeps
-  the last few videos open and the last 48 frames decoded, so scrubbing stays quick. A keyframe
-  every 20 frames means one frame never needs more than 20 decoded to show it.
+  the last few videos open (closed after 30 s unused on Windows) and the last 48 frames decoded
+  (at most 256 MB), so scrubbing stays quick. A keyframe every 20 frames means one frame never
+  needs more than 20 decoded to show it.
 - Deleting recordings and **Keep Recordings For** work the same: a video whose frames are all
   deleted is deleted; one that loses only some of them is written again without them, soon after.
+  The delete and the note that the video must be redone are one database transaction, and every
+  pass also checks for videos holding more pictures than frames point at (a delete by an older
+  copy of the app, say), so deleted pictures can't be left in a video. If a video can't be
+  written again (no encoder any more, a damaged file), the frames it keeps are saved as pictures
+  and the video is deleted. Until that is done the menu and `doctor` say how many videos still
+  hold deleted frames.
+- Video is lossy. Each frame is checked against its screenshot when the video is made, but it is
+  not pixel for pixel the same. Writing a video again after a delete decodes it and encodes it
+  again, which loses a little more; that happens about once per video (**Keep Recordings For**
+  trims whole five-minute videos most of the time).
 - Turning it off stops making new videos. Videos already made keep playing.
 - `openrewind video-check` (Mac) or `OpenRewind.exe video-check` (Windows) checks that this
   computer can make the videos: it compresses made-up screenshots in a temporary folder, reads
-  every frame back, deletes some and checks the rewrite. `doctor` shows which codec would be used
-  and how much space the videos save.
+  every frame back, deletes some and checks the rewrite, compresses a capture wider than 4096
+  pixels, and (on the Mac) turns a video back into pictures. `doctor` shows which codec would be
+  used, how much space the videos save, and whether the videos already made still open (after
+  moving the data folder to another computer, say).
 
 ## Ask AI
 

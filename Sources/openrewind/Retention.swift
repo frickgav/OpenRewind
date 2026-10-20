@@ -31,28 +31,43 @@ extension Database {
     /// Delete frames with `from <= timestamp < to`. nil = open end. Returns frames deleted.
     /// A video left with no frames is deleted; one that still has frames outside the range is marked
     /// for the compactor to write again without the deleted ones (see VideoCompactor.runOnce).
+    /// The rows and the marks change in one transaction, so a crash can't leave deleted pictures in a
+    /// video nobody will rewrite; files are deleted only after it commits.
     @discardableResult
     func deleteFrames(from: Date?, to: Date?) -> Int {
         let (whereSQL, args) = Self.range("timestamp", from, to)
         let and = whereSQL.isEmpty ? "WHERE" : whereSQL + " AND"
-        // All in one go, so a compaction cannot commit a new video for these frames halfway through.
+        var n = 0, stills: [String] = [], emptied: [String] = [], partial = false
+        // Held throughout, so a compaction cannot commit a new video for these frames halfway through.
         videoGate.lock()
-        let n = scalarInt("SELECT COUNT(*) FROM frames \(whereSQL)", args)
-        guard n > 0 else { videoGate.unlock(); return 0 }
-        let stills = strings("SELECT snapshot_path FROM frames \(whereSQL)", args)
-        let videos = strings("SELECT DISTINCT video_path FROM frames \(and) video_path != ''", args)
-        run("DELETE FROM frames \(whereSQL)", args)  // FTS rows go with it (trigger frames_ad)
-        var emptied: [String] = [], partial = false
-        for v in videos {
-            if scalarInt("SELECT COUNT(*) FROM frames WHERE video_path = ? AND video_path != ''", [.text(v)]) == 0 {
-                run("DELETE FROM video_segments WHERE path = ?", [.text(v)])
-                emptied.append(v)
-            } else {
-                run("UPDATE video_segments SET needs_rewrite = 1 WHERE path = ?", [.text(v)])
-                partial = true
+        lock.lock()
+        let ok = inTransaction {
+            guard let count = scalarLocked("SELECT COUNT(*) FROM frames \(whereSQL)", args) else { return false }
+            n = count
+            guard n > 0,
+                  let s = stringsLocked("SELECT snapshot_path FROM frames \(whereSQL)", args),
+                  let videos = stringsLocked("SELECT DISTINCT video_path FROM frames \(and) video_path != ''", args),
+                  runLocked("DELETE FROM frames \(whereSQL)", args) != nil  // FTS rows go with it (trigger frames_ad)
+            else { return false }
+            stills = s
+            for v in videos {
+                guard let left = scalarLocked("SELECT COUNT(*) FROM frames WHERE video_path = ? AND video_path != ''", [.text(v)]) else { return false }
+                if left == 0 {
+                    guard runLocked("DELETE FROM video_segments WHERE path = ?", [.text(v)]) != nil else { return false }
+                    emptied.append(v)
+                } else {
+                    guard runLocked("UPDATE video_segments SET needs_rewrite = 1 WHERE path = ?", [.text(v)]) != nil else { return false }
+                    partial = true
+                }
             }
+            return true
         }
+        lock.unlock()
         videoGate.unlock()
+        guard ok else {
+            if n > 0 { log("delete failed: nothing was deleted") }
+            return 0
+        }
         if !emptied.isEmpty { releasingVideos?(emptied) }
         Self.removeFiles(stills + emptied)
         if partial { videosNeedRewrite?() }

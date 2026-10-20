@@ -670,6 +670,9 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             lines.append("No recordings yet")
         }
+        // Deleted frames that are still inside a video until it is written again (or turned back into pictures).
+        let stuck = engine.db.stuckRewrites()
+        if stuck > 0 { lines.append("\(stuck) video\(stuck == 1 ? "" : "s") still hold\(stuck == 1 ? "s" : "") deleted frames · being redone") }
         return lines
     }
 
