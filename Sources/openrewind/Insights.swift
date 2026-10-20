@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import SQLite3
+import SQLCipher
 import SwiftUI
 
 enum InsightsRange: String { case day, week }
