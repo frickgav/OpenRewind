@@ -46,7 +46,7 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   when the local search server is on.
 - **Ask AI…** answers questions about your history with your own key, and **Meetings…** lists your
   calls with their transcripts (see [Ask AI](../README.md#ask-ai) and [Meetings](../README.md#meetings)).
-  When a call starts, a popup above the tray asks whether to take notes (**Settings → Ask Before Taking
+  Within seconds of joining a call, a popup above the tray asks whether to take notes (**Settings → Ask Before Taking
   Meeting Notes**, on by default). **Settings → Summarize Meetings with AI** (off by default) sends the
   transcript of each call you take notes for to your AI provider when it ends, for a summary and
   action items.

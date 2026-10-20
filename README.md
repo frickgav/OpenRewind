@@ -84,8 +84,8 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
   with your own key: Anthropic, OpenAI, Gemini, OpenRouter (any model it offers), or any
   OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
 - **Meetings** (menu bar or tray → Meetings…) lists your Zoom, Teams, Meet, Webex, FaceTime and
-  Slack huddle calls with their transcript, and can summarize them with your AI key. When a call
-  starts, a small popup asks whether to take notes for it. See [Meetings](#meetings).
+  Slack huddle calls with their transcript, and can summarize them with your AI key. Within seconds
+  of joining a call, a small popup asks whether to take notes for it. See [Meetings](#meetings).
 - **Insights** (menu bar or tray → Insights…) shows where your time went today or this week,
   worked out on your computer without AI. See [Insights](#insights).
 - **Claude, Cursor and other AI apps** can search your history too, through MCP, once you turn
@@ -176,16 +176,21 @@ Cancel.
 ## Meetings
 
 OpenRewind finds your calls in what it already records; nothing extra runs during a call.
-A meeting starts when Zoom, Microsoft Teams, Webex, FaceTime or a Slack huddle is the app in front
-(not its chat, calendar or home window), or the browser in front shows Google Meet, Teams, Zoom or
-Webex, and other people can be heard (system audio). It goes on while that app is in front; after you
-switch away, your microphone keeps it going for up to 30 minutes (say, while you share slides) and
-other sound for up to 15. It ends after 3 minutes with none of these, and calls in the same app less
-than 10 minutes apart (a dropped call, a rejoin) become one. Blocked apps and sites never become
-meetings. Without Whisper, audio waiting to be transcribed does not count as sound.
+A meeting starts as soon as a call is on your screen: a Google Meet meeting (not Meet's start page),
+Zoom's meeting window or a Zoom meeting in the browser (not Zoom's home), a Teams call or meeting
+window, a Webex meeting, a FaceTime call or a Slack huddle. Another window of these apps (say, Zoom or
+Teams with no meeting name in its title) counts only once other people can be heard (system audio) for
+a minute. A meeting goes on while its window or page is in front; after you switch away, your
+microphone keeps it going for up to 30 minutes (say, while you share slides) and other sound for up
+to 15. It ends after 3 minutes with none of these, and calls in the same app less than 10 minutes apart
+(a dropped call, a rejoin) become one. Blocked apps, sites and private windows never become meetings.
+Without Whisper, audio waiting to be transcribed does not count as sound.
 
-**Take notes?** A minute or two into a call, a small popup asks "Meeting detected in Zoom. Take
-notes?" in the corner of the screen. It does not take focus from the call.
+**Take notes?** Within about 10 seconds of a call coming to the front, even before anyone speaks, a
+small popup asks "Meeting detected in Google Meet. Take notes?" in the corner of the screen. It does
+not take focus from the call, and it stays while you switch to other windows (until a while after
+the call ends). It asks only once per call. If you say Take Notes, the call is kept with its transcript from the moment
+you joined, even if you spend the call in other windows.
 
 - **Take Notes** keeps the call in Meetings with its transcript and, if summaries are on (below),
   sends it for a summary when it ends.
