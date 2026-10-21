@@ -187,6 +187,8 @@ final class BlockedAppsModel: ObservableObject {
 struct BlockedAppsView: View {
     /// For the recent sites list.
     var db: Database?
+    /// Inside the Settings window's Privacy tab, which sets the size.
+    var embedded = false
     @StateObject private var model = BlockedAppsModel()
     @State private var addingSites = false
     @State private var newWord = ""
@@ -226,7 +228,7 @@ struct BlockedAppsView: View {
                 }
             }
             Text(Accessibility.isTrusted ? "A browser tab showing one of these is hidden, checked each time it is in front."
-                 : "Needs Accessibility permission (Settings → Permissions) to see which site a browser tab shows.")
+                 : "Needs Accessibility permission (Settings → General → Permissions) to see which site a browser tab shows.")
                 .font(.system(size: 12)).foregroundColor(Accessibility.isTrusted ? SetupTheme.faint : SetupTheme.warn)
             ScrollView {
                 LazyVStack(spacing: 4) {
@@ -269,7 +271,7 @@ struct BlockedAppsView: View {
             .frame(minHeight: 100)
         }
         .padding(24)
-        .frame(minWidth: 560, minHeight: 760)
+        .frame(minWidth: embedded ? 0 : 560, minHeight: embedded ? 0 : 760)
         .background(SetupTheme.bg)
         .foregroundColor(.white)
         .preferredColorScheme(.dark)

@@ -1340,7 +1340,7 @@ struct MeetingsView: View {
         VStack(spacing: 14) {
             Image(systemName: "person.2.wave.2").font(.system(size: 30)).foregroundColor(SetupTheme.accent)
             Text("No meetings yet").font(.system(size: 18, weight: .semibold))
-            Text("When a Zoom, Teams, Google Meet, Webex, FaceTime or Slack huddle call starts, OpenRewind asks whether to take notes. Calls you take notes for show up here with their transcript.\n\nTurn on Settings → Summarize Meetings with AI to also get a summary and action items after each one, using your own AI key.")
+            Text("When a Zoom, Teams, Google Meet, Webex, FaceTime or Slack huddle call starts, OpenRewind asks whether to take notes. Calls you take notes for show up here with their transcript.\n\nIn Settings → Meetings, choose Summarize it with AI to also get a summary and action items after each one, using your own AI key.")
                 .font(.system(size: 13)).foregroundColor(SetupTheme.dim).multilineTextAlignment(.center)
                 .frame(maxWidth: 440).fixedSize(horizontal: false, vertical: true)
         }

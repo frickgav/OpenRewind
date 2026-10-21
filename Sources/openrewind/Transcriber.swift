@@ -49,7 +49,7 @@ final class Transcriber: @unchecked Sendable {
         if m.engine == .parakeet {
             guard SpeechModels.isDownloaded(m, home: config.home) else {
                 Transcriber.lastProblem = "\(m.name) is not downloaded"
-                log("\(m.name) is not downloaded → audio is saved but not transcribed. Pick it again in Settings → Transcription Model to download it")
+                log("\(m.name) is not downloaded → audio is saved but not transcribed. Pick it again in Settings → Audio → Transcription to download it")
                 return nil
             }
             binary = ""
@@ -61,7 +61,7 @@ final class Transcriber: @unchecked Sendable {
         }
         guard let bin = Transcriber.findBinary(config.whisperBinary) else {
             Transcriber.lastProblem = "whisper-cli not found"
-            log("whisper-cli not found → audio is saved but not transcribed. Install: brew install whisper-cpp, or pick NVIDIA Parakeet v3 in Settings → Transcription Model")
+            log("whisper-cli not found → audio is saved but not transcribed. Install: brew install whisper-cpp, or pick NVIDIA Parakeet v3 in Settings → Audio → Transcription")
             return nil
         }
         // --whisper-model wins; then the picked size if it is downloaded; then whatever is on this Mac.
@@ -74,7 +74,7 @@ final class Transcriber: @unchecked Sendable {
         }
         guard let found = path ?? Transcriber.findModel(config.whisperModel, home: config.home) else {
             Transcriber.lastProblem = "no Whisper model found"
-            log("no Whisper model found → audio is saved but not transcribed. Put a ggml-*.bin in \(config.home.path)/models, pass --whisper-model, or pick a model in Settings → Transcription Model")
+            log("no Whisper model found → audio is saved but not transcribed. Put a ggml-*.bin in \(config.home.path)/models, pass --whisper-model, or pick a model in Settings → Audio → Transcription")
             return nil
         }
         binary = bin
@@ -199,7 +199,7 @@ final class Transcriber: @unchecked Sendable {
         if parakeet == nil {
             // Check the files against their pinned hashes before loading them (once per run of the app).
             if let bad = SpeechModels.problem(model, home: config.home) {
-                throw ModelLoadError(errorDescription: "\(bad); pick \(model.name) again in Settings → Transcription Model to download it again")
+                throw ModelLoadError(errorDescription: "\(bad); pick \(model.name) again in Settings → Audio → Transcription to download it again")
             }
             let started = Date()
             do { parakeet = try ParakeetEngine(dir: URL(fileURLWithPath: modelPath), threads: Transcriber.threads) }
@@ -225,7 +225,7 @@ final class Transcriber: @unchecked Sendable {
         // A Whisper file OpenRewind downloaded is checked against its hash before its first use in each run.
         if !whisperChecked, let f = model.files.first, modelPath == model.path(config.home, f).path,
            let bad = SpeechModels.problem(model, home: config.home) {
-            throw ModelLoadError(errorDescription: "\(bad); pick \(model.name) again in Settings → Transcription Model to download it again")
+            throw ModelLoadError(errorDescription: "\(bad); pick \(model.name) again in Settings → Audio → Transcription to download it again")
         }
         whisperChecked = true
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("openrewind-\(UUID().uuidString)")

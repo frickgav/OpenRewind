@@ -112,7 +112,7 @@ final class Encryption {
         log("encrypt recordings: on")
         migrate(true)
         if !exportKey() {
-            alert("Encrypt Recordings", "Encryption is on. Save the recovery key soon: Settings → Encryption & Lock → Export Recovery Key…")
+            alert("Encrypt Recordings", "Encryption is on. Save the recovery key soon: Settings → Security → Export Recovery Key…")
         }
     }
 

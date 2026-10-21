@@ -369,6 +369,8 @@ struct AIChatView: View {
 
 /// Provider, key and model. Saved per provider, so switching back keeps what was typed.
 struct AISettingsView: View {
+    /// Inside the Settings window's AI tab: no title of its own, and as tall as its content.
+    var embedded = false
     var onSave: () -> Void
     @State private var kind: AIProviderKind
     @State private var key: String
@@ -384,7 +386,8 @@ struct AISettingsView: View {
     @State private var picking = false
     @State private var search = ""
 
-    init(onSave: @escaping () -> Void) {
+    init(embedded: Bool = false, onSave: @escaping () -> Void) {
+        self.embedded = embedded
         self.onSave = onSave
         let s = AISettings.load()
         _kind = State(initialValue: s.kind)
@@ -402,7 +405,7 @@ struct AISettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("AI Settings").font(.system(size: 20, weight: .semibold))
+            if !embedded { Text("AI Settings").font(.system(size: 20, weight: .semibold)) }
             Text("Use your own key. Questions and the history the AI looks up go straight from this Mac to the provider you pick.")
                 .font(.system(size: 12)).foregroundColor(SetupTheme.dim).fixedSize(horizontal: false, vertical: true)
 
@@ -471,7 +474,7 @@ struct AISettingsView: View {
             }
             }
 
-            Spacer()
+            if !embedded { Spacer() }
             if !status.isEmpty {
                 Text(status).font(.system(size: 12)).foregroundColor(SetupTheme.dim).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -483,8 +486,8 @@ struct AISettingsView: View {
                 Button("Save") { save() }.buttonStyle(PillButtonStyle(primary: true))
             }
         }
-        .padding(24).padding(.top, 14)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(embedded ? 0 : 24).padding(.top, embedded ? 0 : 14)
+        .frame(maxWidth: .infinity, maxHeight: embedded ? nil : .infinity, alignment: .topLeading)
         .background(SetupTheme.bg)
         .foregroundColor(.white)
         .preferredColorScheme(.dark)
