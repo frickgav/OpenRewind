@@ -106,9 +106,11 @@ struct TimelineView: View {
             HStack(spacing: 10) {
                 searchBar.frame(maxWidth: 460)
                 if model.meaningAvailable { SearchModeSwitch(model: model) }
+                StarredFilterButton(model: model)
                 AppFilterMenu(model: model)
                 Spacer(minLength: 220)
                 if chat != nil { askAIButton }
+                StarButton(model: model)
                 FrameMenu(model: model)
                 IconButton(symbol: "questionmark", help: "Keyboard shortcuts (?)") { model.showHelp.toggle() }
                 IconButton(symbol: "xmark", help: "Close (esc)", action: close)
@@ -201,10 +203,12 @@ struct TimelineView: View {
     private var results: some View {
         VStack(alignment: .leading, spacing: 0) {
             if model.hits.isEmpty {
-                Text(model.searching ? "Searching by meaning…" : "No matches for “\(model.query)”").foregroundColor(theme.dim).padding(16)
+                Text(model.searching ? "Searching by meaning…"
+                     : model.starredOnly ? (model.query.isEmpty ? "No starred moments yet. Press S here, or \(StarShortcut.label) anywhere, to star one." : "No starred moments match “\(model.query)”")
+                     : "No matches for “\(model.query)”").foregroundColor(theme.dim).padding(16)
             } else {
                 HStack(spacing: 6) {
-                    Text("\(model.hits.count) moment\(model.hits.count == 1 ? "" : "s")" + (model.searchingByMeaning ? " · closest in meaning first" : ""))
+                    Text("\(model.hits.count) \(model.starredOnly ? "starred " : "")moment\(model.hits.count == 1 ? "" : "s")" + (model.searchingByMeaning && !model.starredOnly ? " · closest in meaning first" : ""))
                     Spacer()
                     Keycap("↑"); Keycap("↓"); Text("choose")
                     Keycap("return").padding(.leading, 6); Text("go")
@@ -236,7 +240,9 @@ struct TimelineView: View {
     private func hitRow(_ h: SearchHit, selected: Bool) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Group {
-                if h.kind == .screen, let icon = AppIcons.icon(for: h.title) {
+                if h.kind == .star {
+                    Image(systemName: "star.fill").foregroundColor(.yellow)
+                } else if h.kind == .screen, let icon = AppIcons.icon(for: h.title) {
                     Image(nsImage: icon).resizable().frame(width: 18, height: 18)
                 } else {
                     Image(systemName: h.kind == .audio ? "waveform" : "display")
@@ -517,6 +523,7 @@ struct TimelineView: View {
             hint(["/"], "search")
             hint(["+", "−"], "zoom")
             hint(["O"], "open")
+            hint(["S"], "star")
             hint(["[", "]"], "mark clip")
             hint(["?"], "all keys")
             hint(["esc"], "close")
@@ -538,6 +545,7 @@ struct TimelineView: View {
         ("", [["scroll"]], "Scroll the trackpad or wheel"),
         ("", [["N"]], "Go to now"),
         ("Open", [["O"]], "Open the tab, document or window from this moment"),
+        ("Star", [["S"]], "Star this moment / remove its star"),
         ("Filter", [["A"]], "Only this app / all apps again"),
         ("Copy", [["⌘", "C"]], "Copy the selected text, or the screenshot"),
         ("", [["drag"]], "Select text on the screenshot"),
@@ -825,6 +833,7 @@ struct TimelineBar: View {
                         ctx.fill(Path(CGRect(x: x(h.time) - 1.5, y: 24, width: 3, height: 10)), with: .color(theme.match))
                     }
                     drawMarks(ctx, size: size, x: x)
+                    TimelineBar.drawStars(ctx, stars: model.stars, from: startDate, to: endDate, x: x)
                     // "Now" edge.
                     let nx = x(now)
                     if nx < size.width - 1 {

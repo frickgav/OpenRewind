@@ -96,6 +96,7 @@ struct AITools {
                    parameters: schema(["start": timeArg("Start time."), "end": timeArg("End time."),
                                        "app": ["type": "string", "description": "Only this app (optional)."]],
                                       required: ["start", "end"])),
+        starredSpec,
         AIToolSpec(name: "list_meetings",
                    description: "Meetings and calls found on this computer (Zoom, Teams, Google Meet, Webex, FaceTime, Slack huddles) between two times, with their summary, decisions and action items when they have notes. Use first for questions about meetings or calls, like 'what did we decide in my 2pm call'. For exactly what was said, use search_audio over the meeting's time range.",
                    parameters: schema(["start": timeArg("Start time. Default: 7 days ago."),
@@ -128,6 +129,7 @@ struct AITools {
         case "search_by_meaning": return "Searched by meaning for “\((a["query"] as? String) ?? "")”" + when
         case "get_screen_text": return "Read screen text" + when
         case "list_meetings": return "Listed meetings" + (range.isEmpty ? " from the last 7 days" : when)
+        case "list_starred": return "Listed starred moments" + when
         case "view_screenshot": return "Looked at the screenshot from \((a["time"] as? String) ?? "")"
         default: return call.name
         }
@@ -160,6 +162,8 @@ struct AITools {
             out = searchByMeaning(a)
         case "list_meetings":
             out = listMeetings(a)
+        case "list_starred":
+            out = listStarred(a)
         case "get_screen_text":
             guard let start = AITime.parse(a["start"]), let end = AITime.parse(a["end"]) else {
                 return "Error: start and end are required, e.g. '2026-10-18 14:00'."

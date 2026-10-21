@@ -40,6 +40,9 @@ final class TimelineModel: ObservableObject {
     @Published var byMeaning = false
     /// A meaning search is running in the background.
     @Published var searching = false
+    /// Starred moments (see Stars.swift), and whether the result list shows only them.
+    @Published var stars: [Star] = []
+    @Published var starredOnly = false
     /// Bumped by each search, so an older meaning search that finishes late is dropped.
     var searchSeq = 0
     /// Set by the overlay: gives the keyboard back to the timeline (so space plays audio again).
@@ -223,6 +226,7 @@ final class TimelineModel: ObservableObject {
     func reload(hours: Double = 24, keepApp: Bool = false) {
         let at = Date(), since = at.addingTimeInterval(-hours * 3600)
         let keep = keepApp ? appFilter : nil
+        reloadStars()
         apply(now: at, since: since, frames: db.timelineFrames(since: since), audio: db.timelineAudio(since: since))
         if let keep, allFrames.contains(where: { $0.appName == keep }) {
             appFilter = keep
