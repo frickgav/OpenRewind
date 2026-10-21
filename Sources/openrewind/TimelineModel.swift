@@ -35,6 +35,8 @@ final class TimelineModel: ObservableObject {
     @Published var selectedHit = 0
     /// True while the result list is open under the search box.
     @Published var showResults = false
+    /// Recent meetings, for the Meetings chip under search (newest first).
+    @Published private(set) var meetings: [Meeting] = []
     /// Bumped to ask the view to focus the search box.
     @Published var focusSearchToken = 0
     var searchWork: DispatchWorkItem?
@@ -348,6 +350,22 @@ final class TimelineModel: ObservableObject {
     }
 
     func jumpToNow() { stopAudio(); show(frames.count - 1) }
+
+    /// Reads recent meetings for the Meetings chip, off the main thread.
+    func loadMeetings() {
+        let store = db, blocked = BlocklistStore.shared.current
+        DispatchQueue.global(qos: .utility).async {
+            // Calls in blocked apps or sites stay out of the list, as in the Meetings window.
+            let list = Array(store.shownMeetings(limit: 40).filter { !MeetingDetector.hides(blocked, $0) }.prefix(15))
+            DispatchQueue.main.async { [weak self] in self?.meetings = list }
+        }
+    }
+
+    /// Jump to the start of a meeting, with every app shown.
+    func open(meeting m: Meeting) {
+        showResults = false
+        open(at: m.start, app: nil)
+    }
 
     /// Go to a moment, loading enough history, showing only `app` when given (Insights).
     /// History back to that moment is read in the background; the timeline shows what it has until then.
