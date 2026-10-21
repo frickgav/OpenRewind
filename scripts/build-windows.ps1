@@ -14,7 +14,7 @@ $Out = "dist\win-$Arch"
 $Zip = "dist\OpenRewind-$Version-win-$Arch.zip"
 
 Write-Host "→ testing the shared core"
-dotnet test windows\OpenRewind.Tests --nologo -v q
+dotnet test windows\OpenRewind.Tests --nologo -v q --logger "console;verbosity=normal"
 if ($LASTEXITCODE -ne 0) { throw "tests failed" }
 
 Write-Host "→ publishing ($Arch, self-contained, single file)"

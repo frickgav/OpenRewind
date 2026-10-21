@@ -12,11 +12,16 @@ public static class SettingsFile
         File.WriteAllText(tmp, text);
         try
         {
+            // Windows refuses to rename over a file another process has open. Readers hold it for well under a
+            // millisecond, so keep trying for up to 3 seconds rather than losing the save.
+            var giveUp = DateTime.UtcNow.AddSeconds(3);
             for (int i = 0; ; i++)
             {
                 try { File.Move(tmp, path, overwrite: true); return; }
-                // Another process is reading it this very moment: try again.
-                catch (Exception e) when ((e is IOException or UnauthorizedAccessException) && i < 20) { Thread.Sleep(25); }
+                catch (Exception e) when ((e is IOException or UnauthorizedAccessException) && DateTime.UtcNow < giveUp)
+                {
+                    Thread.Sleep(i < 10 ? 1 : 10);
+                }
             }
         }
         finally { try { File.Delete(tmp); } catch { } }
