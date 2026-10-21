@@ -200,7 +200,7 @@ struct TutorialCoach: View {
             if s.at == .center { Spacer() }
         }
         .padding(.top, s.at == .search ? 70 : 0)
-        .padding(.bottom, s.at == .bar ? 150 : 0)
+        .padding(.bottom, s.at == .bar ? 210 : 0)
         .padding(.horizontal, 28)
         .onAppear { startIndex = model.index; pulse = true }
         .onChange(of: model.tutorialStep) { _ in startIndex = model.index }

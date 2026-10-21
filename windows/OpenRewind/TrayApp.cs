@@ -14,6 +14,7 @@ sealed class TrayApp : ApplicationContext
     readonly OverlayForm overlay;
     readonly TimelineModel timeline;
     HotKey hotKey;
+    readonly ScrollOpener scrollOpener;
     /// Turns recording back on when a timed pause ends.
     readonly System.Windows.Forms.Timer resumeTimer = new();
     /// Checks App Lock's "Lock Again After" every 15 s and closes history windows once it has passed.
@@ -89,6 +90,15 @@ sealed class TrayApp : ApplicationContext
 
         // Ctrl+Alt+T (or the shortcut picked in Settings) opens the timeline from anywhere.
         hotKey = new HotKey(Shortcut, ToggleTimeline);
+        // Ctrl+Shift + wheel anywhere opens it too, and that first turn of the wheel already moves back in time.
+        scrollOpener = new ScrollOpener(overlay, () => overlay.Visible, delta =>
+            appLock.Run("Unlock OpenRewind to see your timeline", () =>
+            {
+                if (overlay.Visible) return;
+                overlay.ShowOverlay();
+                overlay.ScrollTime(delta);
+            }));
+        scrollOpener.Enable(settings.ScrollOpensTimeline);
 
         menu.Opening += (_, _) => BuildMenu();
         icon = new NotifyIcon { Icon = Program.AppIcon, ContextMenuStrip = menu, Visible = true };
@@ -347,6 +357,14 @@ sealed class TrayApp : ApplicationContext
         }
         s.DropDownItems.Add(new ToolStripSeparator());
         s.DropDownItems.Add(ShortcutMenu());
+        var scroll = Toggle("Open Timeline with Ctrl+Shift + Scroll", settings.ScrollOpensTimeline, () =>
+        {
+            settings.ScrollOpensTimeline = !settings.ScrollOpensTimeline;
+            settings.Save();
+            scrollOpener.Enable(settings.ScrollOpensTimeline);
+        });
+        scroll.ToolTipText = "Hold Ctrl and Shift and turn the mouse wheel anywhere to open the timeline and go back in time.";
+        s.DropDownItems.Add(scroll);
         s.DropDownItems.Add(ScreenshotSizeMenu());
         s.DropDownItems.Add(LookMenu());
         s.DropDownItems.Add(new ToolStripSeparator());
@@ -1008,6 +1026,7 @@ sealed class TrayApp : ApplicationContext
         icon.Visible = false;
         overlay.HideOverlay();
         hotKey.Dispose();
+        scrollOpener.Dispose();
         resumeTimer.Dispose();
         lockTimer.Dispose();
         recapTimer.Dispose();
