@@ -539,6 +539,7 @@ struct TimelineView: View {
         ("", [["N"]], "Go to now"),
         ("Open", [["O"]], "Open the tab, document or window from this moment"),
         ("Filter", [["A"]], "Only this app / all apps again"),
+        ("", [["H"]], "Hide this app from the timeline"),
         ("Copy", [["⌘", "C"]], "Copy the selected text, or the screenshot"),
         ("", [["drag"]], "Select text on the screenshot"),
         ("", [["⌘", "S"]], "Save the screenshot as a PNG"),
@@ -697,6 +698,21 @@ struct AppFilterMenu: View {
                         }
                     }
                 }
+                if let app = model.current?.appName, !app.isEmpty {
+                    Divider()
+                    Button { model.hide(app: app) } label: { Label("Hide \(app) from Timeline", systemImage: "eye.slash") }
+                    Button { model.hide(app: app, stopRecording: true) } label: {
+                        Label("Hide \(app) and Stop Recording It", systemImage: "nosign")
+                    }
+                }
+                if !model.hiddenApps.isEmpty {
+                    Divider()
+                    Menu("Hidden Apps") {
+                        ForEach(model.hiddenApps, id: \.self) { app in
+                            Button("Show \(app) Again") { model.unhide(app: app) }
+                        }
+                    }
+                }
             } label: {
                 HStack(spacing: 6) {
                     if let app = model.appFilter, let icon = AppIcons.icon(for: app) {
@@ -709,7 +725,7 @@ struct AppFilterMenu: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("Only show moments when one app was in front (A)")
+            .help("Only show moments when one app was in front (A), or hide an app (H)")
             if model.appFilter != nil {
                 Button { model.setAppFilter(nil) } label: { Image(systemName: "xmark.circle.fill") }
                     .buttonStyle(.plain).foregroundColor(theme.faint).help("Show all apps")
