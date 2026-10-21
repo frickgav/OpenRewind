@@ -24,6 +24,14 @@ sealed class BlockedAppsForm : Form
         open.Activate();
     }
 
+    /// The same lists inside the Settings window's Privacy tab.
+    public static BlockedAppsForm Embedded(Settings settings, Database db)
+    {
+        var f = new BlockedAppsForm(settings, db) { TopLevel = false, FormBorderStyle = FormBorderStyle.None, Dock = DockStyle.Fill };
+        f.MinimumSize = Size.Empty;
+        return f;
+    }
+
     /// The app locked (see AppLock): the recent pages list shows history, so close.
     public static void Release() { if (open is { IsDisposed: false }) open.Close(); }
 

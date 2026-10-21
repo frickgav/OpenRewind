@@ -45,7 +45,7 @@ public sealed class Transcriber
             if (!SpeechModels.IsDownloaded(m, config.Home))
             {
                 problem = $"{m.Name} is not downloaded";
-                Log.Write($"{problem} → audio is saved but not transcribed. Pick it again in Settings → Transcription Model to download it");
+                Log.Write($"{problem} → audio is saved but not transcribed. Pick it again in Settings → Audio → Transcription to download it");
                 return null;
             }
             Log.Write($"transcription model: {m.Name}");
@@ -54,7 +54,7 @@ public sealed class Transcriber
         if (FindBinary(config.WhisperBinary, config.Home) is not string bin)
         {
             problem = "whisper-cli not found";
-            Log.Write($"whisper-cli not found → audio is saved but not transcribed. Put whisper-cli in {Path.Combine(config.Home, "whisper")} (see README), or pick NVIDIA Parakeet v3 in Settings → Transcription Model");
+            Log.Write($"whisper-cli not found → audio is saved but not transcribed. Put whisper-cli in {Path.Combine(config.Home, "whisper")} (see README), or pick NVIDIA Parakeet v3 in Settings → Audio → Transcription");
             return null;
         }
         // --whisper-model wins; then the picked size if it is downloaded; then whatever is on this computer.
@@ -70,7 +70,7 @@ public sealed class Transcriber
         if (path == null)
         {
             problem = "no Whisper model found";
-            Log.Write($"no Whisper model found → audio is saved but not transcribed. Put a ggml-*.bin in {Path.Combine(config.Home, "models")}, pass --whisper-model, or pick a model in Settings → Transcription Model");
+            Log.Write($"no Whisper model found → audio is saved but not transcribed. Put a ggml-*.bin in {Path.Combine(config.Home, "models")}, pass --whisper-model, or pick a model in Settings → Audio → Transcription");
             return null;
         }
         Log.Write($"whisper: {Path.GetFileName(path)}");
@@ -204,7 +204,7 @@ public sealed class Transcriber
         {
             // Check the files against their pinned hashes before loading them (once per run of the app).
             if (SpeechModels.Problem(Model, config.Home) is string bad)
-                throw new ModelLoadException($"{bad}; pick {Model.Name} again in Settings → Transcription Model to download it again");
+                throw new ModelLoadException($"{bad}; pick {Model.Name} again in Settings → Audio → Transcription to download it again");
             var sw = Stopwatch.StartNew();
             // Anything that goes wrong while loading (missing or wrong-architecture runtime, a model that does
             // not fit, no memory) would go wrong for every clip: stop instead of failing each one.
@@ -234,7 +234,7 @@ public sealed class Transcriber
         if (!whisperChecked && Model.Files.Count > 0 && ModelPath == Model.PathOf(config.Home, Model.Files[0]))
         {
             if (SpeechModels.Problem(Model, config.Home) is string bad)
-                throw new ModelLoadException($"{bad}; pick {Model.Name} again in Settings → Transcription Model to download it again");
+                throw new ModelLoadException($"{bad}; pick {Model.Name} again in Settings → Audio → Transcription to download it again");
         }
         whisperChecked = true;
         var tmp = Path.Combine(Path.GetTempPath(), $"openrewind-{Guid.NewGuid()}");

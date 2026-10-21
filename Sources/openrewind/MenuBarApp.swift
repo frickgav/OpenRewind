@@ -1129,7 +1129,7 @@ extension MenuBarApp {
 
     // Privacy & security
     var serverOn: Bool { engine.serverOn }
-    var serverPort: Int { engine.config.port }
+    var serverPort: Int { Int(engine.config.port) }
     func toggleLocalServer() { toggleServer() }
     var encryptionOn: Bool { encryption.on }
     var encryptionStatus: String { encryption.status() }

@@ -5,7 +5,7 @@ namespace OpenRewind;
 
 /// Tray app: icon with separate screen / audio switches and the timeline overlay.
 /// Same menu as the Mac menu bar app.
-sealed class TrayApp : ApplicationContext
+sealed partial class TrayApp : ApplicationContext
 {
     readonly Engine engine;
     readonly Settings settings;
@@ -31,8 +31,6 @@ sealed class TrayApp : ApplicationContext
     readonly AppLock appLock;
     readonly Encryption encryption;
     readonly MeaningController meaning;
-    /// The Search by Meaning line in the open menu, updated while the model downloads.
-    ToolStripMenuItem? meaningStatus;
     /// The journal's own lookups, so it never offers screenshots the chat allowed.
     readonly AiTools journalTools;
     /// Checks every few minutes whether yesterday's recap is due (Write Each Day's Recap Automatically).
@@ -62,7 +60,7 @@ sealed class TrayApp : ApplicationContext
         meaning = new MeaningController(engine);
         meaning.Changed += () => overlay.BeginInvoke(() =>
         {
-            if (meaningStatus != null && settings.SearchByMeaning) meaningStatus.Text = "   " + meaning.StatusLine();
+            SettingsForm.Live();
             if (overlay.Visible) overlay.Invalidate();
         });
         if (settings.SearchByMeaning) meaning.Start();
@@ -118,7 +116,8 @@ sealed class TrayApp : ApplicationContext
     {
         if (overlay.Visible) overlay.HideOverlay(restoreFocus: false);
         AiChatForm.Release();
-        BlockedAppsForm.Release();
+        // Settings shows recent sites (Blocked Apps & Sites) and changes what is recorded, so it closes too.
+        SettingsForm.Release();
         JournalForm.Release();
         MeetingsForm.Release();
         InsightsForm.Release();
@@ -127,7 +126,7 @@ sealed class TrayApp : ApplicationContext
     }
 
     /// A window that shows history is open (App Lock's "Lock Again After" waits while one is in use).
-    bool HistoryShown => overlay.Visible || AiChatForm.IsShown || JournalForm.IsShown || MeetingsForm.IsShown || InsightsForm.IsShown;
+    bool HistoryShown => overlay.Visible || AiChatForm.IsShown || JournalForm.IsShown || MeetingsForm.IsShown || InsightsForm.IsShown || SettingsForm.IsShown;
 
     /// The first-run setup; ends in the guided tour if the user asks for it.
     void ShowSetup() => appLock.Run("Unlock OpenRewind to change its setup", OpenSetup);
@@ -248,12 +247,17 @@ sealed class TrayApp : ApplicationContext
         timeline.Jump(at);
     });
 
-    /// AI Settings is a normal window, which would sit under the overlay.
+    /// Ask AI, the journal and meetings link here when no AI provider is set up. Settings is a
+    /// normal window, which would sit under the overlay.
     void OpenAiSettings()
     {
         if (overlay.Visible) overlay.HideOverlay();
-        AiSettingsForm.ShowFor(settings);
+        ShowSettings(SettingsTab.Ai);
     }
+
+    /// The Settings window, on `tab` (or the tab it was on). Behind App Lock: it shows recent sites,
+    /// and can stop encryption, block lists or recording.
+    void ShowSettings(SettingsTab? tab) => appLock.Run("Unlock OpenRewind to change its settings", () => SettingsForm.ShowFor(this, tab));
 
     void ShowTutorial() => appLock.Run("Unlock OpenRewind to see your timeline", () =>
     {
@@ -314,85 +318,9 @@ sealed class TrayApp : ApplicationContext
         MeasureStorage();
         menu.Items.Add(new ToolStripSeparator());
 
-        var s = new ToolStripMenuItem(Permissions.MicrophoneOn ? "Settings" : "Settings  ⚠");
-        s.DropDownItems.Add(Item("Blocked Apps & Sites…", () => appLock.Run("Unlock OpenRewind to change blocked apps and sites",
-                                                                            () => BlockedAppsForm.ShowFor(settings, engine.Db))));
-        s.DropDownItems.Add(Item("AI Settings…", () => AiSettingsForm.ShowFor(settings)));
-        s.DropDownItems.Add(EncryptionMenu());
-        var ai = settings.Ai();
-        var autoRecap = Toggle("Write Each Day's Recap Automatically", settings.JournalAutoRecapOn(ai), () =>
-        {
-            settings.SetJournalAutoRecap(!settings.JournalAutoRecapOn(settings.Ai()));
-            JournalForm.Reload();
-        });
-        autoRecap.ToolTipText = Journal.AutoRecapInfo(ai.Kind.Title());
-        s.DropDownItems.Add(autoRecap);
-        var ask = Toggle("Ask Before Taking Meeting Notes", settings.AskBeforeMeetingNotes, () =>
-        {
-            settings.AskBeforeMeetingNotes = !settings.AskBeforeMeetingNotes;
-            settings.Save();
-        });
-        ask.ToolTipText = "When a call starts, ask whether to take notes for it. Off: notes are taken for every call (except apps you said Never for).";
-        s.DropDownItems.Add(ask);
-        var summaries = Toggle("Summarize Meetings with AI", settings.SummarizeMeetings, ToggleMeetingSummaries);
-        summaries.ToolTipText = "Off by default. When on, the transcript of each call you take notes for is sent to your AI provider after it ends, for a summary and action items. This uses your key and costs tokens.";
-        s.DropDownItems.Add(summaries);
-        if (settings.MeetingChoices.Count > 0)
-        {
-            var remembered = string.Join(", ", settings.MeetingChoices.OrderBy(c => c.Key)
-                .Select(c => $"{c.Key}: {(c.Value == MeetingPrompt.Always ? "always" : "never")}"));
-            var forget = Item("Forget Remembered Meeting Choices", () => { settings.MeetingChoices.Clear(); settings.Save(); });
-            forget.ToolTipText = $"Ask again for every app. Remembered now: {remembered}.";
-            s.DropDownItems.Add(forget);
-        }
-        s.DropDownItems.Add(new ToolStripSeparator());
-        s.DropDownItems.Add(ShortcutMenu());
-        s.DropDownItems.Add(ScreenshotSizeMenu());
-        s.DropDownItems.Add(LookMenu());
-        s.DropDownItems.Add(new ToolStripSeparator());
-        s.DropDownItems.Add(KeepMenu("Keep Screen Recordings For", screen: true));
-        s.DropDownItems.Add(KeepMenu("Keep Audio Recordings For", screen: false));
-        s.DropDownItems.Add(TypingGapMenu());
-        s.DropDownItems.Add(CompressItem());
-        s.DropDownItems.Add(TranscriptionMenu());
-        s.DropDownItems.Add(new ToolStripSeparator());
-        var del = new ToolStripMenuItem("Delete Recordings");
-        // Deleting is behind App Lock too: someone at the PC should not be able to wipe the history.
-        const string unlockDelete = "Unlock OpenRewind to delete recordings";
-        del.DropDownItems.Add(Item("Last 15 Minutes", () => appLock.Run(unlockDelete, () => DeleteRecent("last 15 minutes", DateTime.UtcNow.AddMinutes(-15)))));
-        del.DropDownItems.Add(Item("Last Hour", () => appLock.Run(unlockDelete, () => DeleteRecent("last hour", DateTime.UtcNow.AddHours(-1)))));
-        del.DropDownItems.Add(Item("Today", () => appLock.Run(unlockDelete, () => DeleteRecent("today", DateTime.Today.ToUniversalTime()))));
-        del.DropDownItems.Add(new ToolStripSeparator());
-        del.DropDownItems.Add(Item("All Screen Recordings…", () => appLock.Run(unlockDelete, () => DeleteAll(screen: true, audio: false))));
-        del.DropDownItems.Add(Item("All Audio Recordings…", () => appLock.Run(unlockDelete, () => DeleteAll(screen: false, audio: true))));
-        del.DropDownItems.Add(Item("Everything…", () => appLock.Run(unlockDelete, () => DeleteAll(screen: true, audio: true))));
-        s.DropDownItems.Add(del);
-        s.DropDownItems.Add(new ToolStripSeparator());
-        foreach (var item in MeaningItems()) s.DropDownItems.Add(item);
-        s.DropDownItems.Add(new ToolStripSeparator());
-        var server = Toggle($"Local Search Server (127.0.0.1:{engine.Config.Port})", engine.ServerOn, ToggleServer);
-        server.ToolTipText = "Search in the browser and let local scripts read your history through the API. Only this PC can connect.";
-        s.DropDownItems.Add(server);
-        var mcp = Toggle("Allow AI Apps to Read My History (MCP)", settings.McpEnabled, ToggleMcp);
-        mcp.ToolTipText = "Let Claude, ChatGPT, Cursor and other AI apps search your history on this PC. Blocked apps and sites are left out of screen text; audio transcripts are not filtered by app. See Connect AI Apps for details.";
-        s.DropDownItems.Add(mcp);
-        s.DropDownItems.Add(Item("Connect AI Apps…", ShowConnectAiApps));
-        s.DropDownItems.Add(new ToolStripSeparator());
-        var auto = Toggle("Download Updates Automatically", updater.AutoDownload, () => updater.AutoDownload = !updater.AutoDownload);
-        auto.ToolTipText = "Download new versions in the background. They are installed only when you click Update.";
-        s.DropDownItems.Add(auto);
-        s.DropDownItems.Add(Item($"Check for Updates… (version {Updater.Current})", CheckForUpdates));
-        s.DropDownItems.Add(new ToolStripSeparator());
-        s.DropDownItems.Add(PermissionsMenu());
-        s.DropDownItems.Add(new ToolStripSeparator());
-        s.DropDownItems.Add(Toggle("Launch at Login", Settings.LaunchAtLogin, () =>
-        {
-            try { Settings.LaunchAtLogin = !Settings.LaunchAtLogin; } catch (Exception e) { Log.Write($"launch at login failed: {e.Message}"); }
-        }));
-        s.DropDownItems.Add(new ToolStripSeparator());
-        s.DropDownItems.Add(Item("Show Tutorial", ShowTutorial));
-        s.DropDownItems.Add(Item("Run Setup Again…", ShowSetup));
-        menu.Items.Add(s);
+        var settingsItem = Item(Permissions.MicrophoneOn ? "Settings…" : "Settings…  ⚠", () => ShowSettings(null));
+        if (!Permissions.MicrophoneOn) settingsItem.ToolTipText = "The microphone is off in Windows: see Settings → General.";
+        menu.Items.Add(settingsItem);
         menu.Items.Add(Item("Quit OpenRewind", Quit));
     }
 
@@ -400,103 +328,10 @@ sealed class TrayApp : ApplicationContext
 
     static ToolStripMenuItem Toggle(string title, bool on, Action act) => new(title, null, (_, _) => act()) { Checked = on };
 
-    /// Fewer saved frames while typing means less disk space; the screen you stop on is always saved.
-    ToolStripMenuItem TypingGapMenu()
-    {
-        var item = new ToolStripMenuItem("Save Frames While Typing")
-        {
-            ToolTipText = "While only a few words on screen change, save a frame this often. Longer uses less disk space; the screen you stop on is still saved."
-        };
-        foreach (var secs in FrameDedup.GapChoices)
-            item.DropDownItems.Add(Toggle($"Every {secs} Seconds" + (secs == 2 ? " (Default)" : ""), secs == settings.TypingFrameGap, () =>
-            {
-                settings.TypingFrameGap = secs;
-                engine.Recorder.MinorChangeGap = secs;
-                settings.Save();
-            }));
-        return item;
-    }
-
-    /// Keep screenshots older than an hour as video. Turning it off stops making videos; old ones still play.
-    ToolStripMenuItem CompressItem()
-    {
-        var item = Toggle("Compress Older Recordings", settings.CompressOlderRecordings, () =>
-        {
-            settings.CompressOlderRecordings = !settings.CompressOlderRecordings;
-            video.Enabled = settings.CompressOlderRecordings;
-            settings.Save();
-            Log.Write($"compress older recordings {(video.Enabled ? "on" : "off")}");
-            if (video.Enabled) video.Kick();
-        });
-        item.ToolTipText = "Keep screenshots older than an hour as video instead of one picture each: about 5 to 10 times less disk space. "
-                           + "New, and not yet tested on many PCs, so it is off unless you turn it on. Videos already made keep playing when it is off.";
-        if (video.Unavailable is string why)
-        {
-            item.Text += " (not available on this PC)";
-            item.ToolTipText = $"This PC has no working video encoder: {why}";
-            item.Enabled = settings.CompressOlderRecordings;  // can still be turned off
-        }
-        return item;
-    }
-
-    /// Bigger screenshots are sharper to read back in the timeline and use more disk space.
-    ToolStripMenuItem ScreenshotSizeMenu()
-    {
-        var item = new ToolStripMenuItem("Screenshot Resolution")
-        {
-            ToolTipText = "How big each saved screenshot is compared with your screen. Applies to new screenshots."
-        };
-        // Size of the main display in real pixels, to show what each choice gives.
-        var screen = Screen.PrimaryScreen?.Bounds ?? Rectangle.Empty;
-        var current = ScreenshotSizes.Nearest(settings.ScreenshotPercent);
-        foreach (var pct in ScreenshotSizes.Choices)
-            item.DropDownItems.Add(Toggle(ScreenshotSizes.Title(pct, screen.Width, screen.Height), pct == current, () =>
-            {
-                settings.ScreenshotPercent = pct;
-                engine.Config.SnapshotScale = ScreenshotSizes.Scale(pct);
-                settings.Save();
-                Log.Write($"screenshot resolution set to {pct}%");
-            }));
-        item.DropDownItems.Add(new ToolStripSeparator());
-        item.DropDownItems.Add(new ToolStripMenuItem("Higher looks sharper but uses more disk space") { Enabled = false });
-        return item;
-    }
-
     // MARK: transcription model
 
     const string WhisperHelp = "https://github.com/frickgav/openscreen/blob/main/windows/README.md#whisper";
     const string ModelsHelp = "https://github.com/frickgav/openscreen/blob/main/README.md#choosing-a-transcription-model";
-
-    /// Which model turns speech into text, what it did last, and Re-transcribe.
-    ToolStripMenuItem TranscriptionMenu()
-    {
-        var home = engine.Config.Home;
-        var tx = engine.Transcriber;
-        var item = new ToolStripMenuItem("Transcription Model")
-        {
-            ToolTipText = "Which model turns recorded speech into text. Every model runs on this PC."
-        };
-        foreach (var m in SpeechModels.All)
-        {
-            var size = m.Files.Count == 0 ? "" : SpeechModels.IsDownloaded(m, home) ? "  —  downloaded" : $"  —  {SpeechModels.FormatSize(m.Size)} download";
-            var row = Toggle(m.Name + (m.Id == SpeechModels.DefaultId ? " (Default)" : "") + size, m.Id == settings.TranscriptionModel, () => PickModel(m));
-            row.ToolTipText = m.Detail;
-            item.DropDownItems.Add(row);
-        }
-        item.DropDownItems.Add(new ToolStripSeparator());
-        foreach (var line in TranscriptionStatus()) item.DropDownItems.Add(new ToolStripMenuItem(line) { Enabled = false });
-        if (tx == null && SpeechModels.ById(settings.TranscriptionModel).Engine == SpeechEngine.Whisper)
-            item.DropDownItems.Add(Item("Set Up Whisper…", () => Open(WhisperHelp)));
-        item.DropDownItems.Add(new ToolStripSeparator());
-        var again = new ToolStripMenuItem("Re-transcribe Recent Audio") { Enabled = tx != null };
-        again.ToolTipText = "Run audio you already recorded through the model picked now.";
-        again.DropDownItems.Add(Item("Last Hour…", () => Retranscribe("the last hour", TimeSpan.FromHours(1))));
-        again.DropDownItems.Add(Item("Last Day…", () => Retranscribe("the last day", TimeSpan.FromDays(1))));
-        again.DropDownItems.Add(Item("Last Week…", () => Retranscribe("the last week", TimeSpan.FromDays(7))));
-        item.DropDownItems.Add(again);
-        item.DropDownItems.Add(Item("About These Models…", () => Open(ModelsHelp)));
-        return item;
-    }
 
     /// "Using NVIDIA Parakeet v3", "Last clip 14:02: 30 s of audio in 3.1 s", "4 clips waiting".
     List<string> TranscriptionStatus()
@@ -575,18 +410,6 @@ sealed class TrayApp : ApplicationContext
 
     // MARK: search by meaning
 
-    IEnumerable<ToolStripItem> MeaningItems()
-    {
-        var toggle = Toggle("Search by Meaning", settings.SearchByMeaning, ToggleMeaning);
-        toggle.ToolTipText = "Find moments by what they were about, not only the exact words. Works on this PC; nothing is sent anywhere.";
-        yield return toggle;
-        meaningStatus = null;
-        if (!settings.SearchByMeaning) yield break;
-        meaningStatus = new ToolStripMenuItem("   " + meaning.StatusLine()) { Enabled = false };
-        yield return meaningStatus;
-        if (meaning.State == MeaningController.Phase.Failed) yield return Item("   Try Again", meaning.Retry);
-    }
-
     void ToggleMeaning()
     {
         if (!settings.SearchByMeaning)
@@ -619,34 +442,9 @@ sealed class TrayApp : ApplicationContext
 
     // MARK: timeline look
 
-    ToolStripMenuItem LookMenu()
-    {
-        var item = new ToolStripMenuItem("Timeline Look");
-        foreach (var (raw, title) in new[] { ("system", "Match System"), ("light", "Light"), ("dark", "Dark") })
-            item.DropDownItems.Add(Toggle(title, settings.TimelineLook == raw, () =>
-            {
-                settings.TimelineLook = raw;
-                overlay.Look = raw;
-                settings.Save();
-                Log.Write($"timeline look set to {raw}");
-            }));
-        return item;
-    }
-
     // MARK: shortcut
 
     HotkeyShortcut Shortcut => settings.TimelineShortcut ?? HotkeyShortcut.Standard;
-
-    ToolStripMenuItem ShortcutMenu()
-    {
-        var item = new ToolStripMenuItem($"Timeline Shortcut: {Shortcut.Label}");
-        item.DropDownItems.Add(Item("Change Shortcut…", ChangeShortcut));
-        item.DropDownItems.Add(new ToolStripMenuItem($"Reset to {HotkeyShortcut.Standard.Label}", null, (_, _) => SetShortcut(HotkeyShortcut.Standard))
-        {
-            Enabled = Shortcut != HotkeyShortcut.Standard
-        });
-        return item;
-    }
 
     void ChangeShortcut()
     {
@@ -680,37 +478,6 @@ sealed class TrayApp : ApplicationContext
 
     // MARK: encryption & lock
 
-    ToolStripMenuItem EncryptionMenu()
-    {
-        var item = new ToolStripMenuItem("Encryption && Lock");
-        var enc = Toggle("Encrypt Recordings", encryption.On, () =>
-        {
-            if (!encryption.On) encryption.TurnOn();
-            else appLock.Run("Unlock OpenRewind to stop encrypting recordings", encryption.TurnOff);
-        });
-        enc.ToolTipText = "Encrypt screenshots, audio and the database on disk. The key stays with your Windows account.";
-        item.DropDownItems.Add(enc);
-        item.DropDownItems.Add(new ToolStripMenuItem("   " + encryption.Status()) { Enabled = false });
-        if (encryption.Failed > 0 && !VaultMigration.Running)
-            item.DropDownItems.Add(Item($"Stop Retrying {encryption.Failed:N0} Files…", encryption.SkipFailed));
-        item.DropDownItems.Add(new ToolStripMenuItem("Export Recovery Key…", null, (_, _) =>
-            appLock.Run("Unlock OpenRewind to save the recovery key", () => encryption.ExportKey())) { Enabled = encryption.HasKey });
-        item.DropDownItems.Add(new ToolStripSeparator());
-
-        var lockItem = Toggle("Require Windows Hello to Open Timeline", settings.RequireUnlock, ToggleAppLock);
-        lockItem.ToolTipText = "Ask for your face, fingerprint or PIN before showing the timeline, search, Ask AI and other history. Recording keeps going.";
-        item.DropDownItems.Add(lockItem);
-        var after = new ToolStripMenuItem("Lock Again After") { Enabled = settings.RequireUnlock };
-        foreach (var (mins, title) in AppLock.TimeoutChoices)
-            after.DropDownItems.Add(Toggle(title + (mins == 15 ? " (Default)" : ""), settings.LockAfterMinutes == mins, () =>
-            {
-                settings.LockAfterMinutes = mins;
-                settings.Save();
-            }));
-        item.DropDownItems.Add(after);
-        return item;
-    }
-
     async void ToggleAppLock()
     {
         if (settings.RequireUnlock)
@@ -738,19 +505,6 @@ sealed class TrayApp : ApplicationContext
     }
 
     // MARK: permissions
-
-    /// One line per Windows permission with its state. Only the microphone has a switch on Windows.
-    ToolStripMenuItem PermissionsMenu()
-    {
-        bool mic = Permissions.MicrophoneOn;
-        var item = new ToolStripMenuItem(mic ? "Permissions  ✓ All on" : "Permissions  ⚠ 1 needed");
-        item.DropDownItems.Add(Item(mic ? "✓  Microphone — On" : "⚠  Microphone — Off, click to turn on", () => Open(Permissions.MicrophoneSettings)));
-        item.DropDownItems.Add(new ToolStripMenuItem("      Records your voice") { Enabled = false });
-        item.DropDownItems.Add(new ToolStripSeparator());
-        item.DropDownItems.Add(new ToolStripMenuItem("Screenshots and window text need no permission on Windows") { Enabled = false });
-        item.DropDownItems.Add(Item("Open Privacy & Security Settings…", () => Open("ms-settings:privacy")));
-        return item;
-    }
 
     // MARK: pause
 
@@ -797,15 +551,6 @@ sealed class TrayApp : ApplicationContext
         engine.SetScreen(settings.RecordScreen);
         engine.SetAudio(settings.RecordAudio);
         UpdateIcon();
-    }
-
-    ToolStripMenuItem KeepMenu(string title, bool screen)
-    {
-        var item = new ToolStripMenuItem(title);
-        var current = screen ? settings.Screen : settings.Audio;
-        foreach (var k in Enum.GetValues<KeepFor>())
-            item.DropDownItems.Add(Toggle(k.Title(), k == current, () => appLock.Run("Unlock OpenRewind to change how long recordings are kept", () => SetKeep(screen, k))));
-        return item;
     }
 
     void SetKeep(bool screen, KeepFor k)
@@ -920,7 +665,7 @@ sealed class TrayApp : ApplicationContext
     static string FormatBytes(long b) =>
         b >= 1L << 30 ? $"{b / (double)(1L << 30):0.0} GB" : b >= 1L << 20 ? $"{b / (double)(1L << 20):0} MB" : $"{b / 1024} KB";
 
-    /// Measure the folder off the UI thread, then refresh the open menu with the result.
+    /// Measure the folder off the UI thread, then refresh the open menu (and Settings → Storage) with the result.
     void MeasureStorage()
     {
         if (measuring) return;
@@ -929,13 +674,16 @@ sealed class TrayApp : ApplicationContext
         Task.Run(() =>
         {
             var size = Database.FolderSize(home);
-            menu.BeginInvoke(() =>
+            // The overlay's handle exists from the start; the menu's only once it has been shown.
+            overlay.BeginInvoke(() =>
             {
                 measuring = false;
                 var changed = dataSize != size;
                 dataSize = size;
-                if (changed && menu.Items.OfType<ToolStripItem>().FirstOrDefault(i => i.Text?.StartsWith("   Using ") == true) is ToolStripItem item)
+                if (!changed) return;
+                if (menu.Items.OfType<ToolStripItem>().FirstOrDefault(i => i.Text?.StartsWith("   Using ") == true) is ToolStripItem item)
                     item.Text = "   " + StorageLines()[0];
+                SettingsForm.Live();
             });
         });
     }

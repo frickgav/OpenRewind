@@ -192,7 +192,7 @@ sealed class OnboardingForm : Form
         if (blockPage != null) return blockPage;
         var p = new Panel { BackColor = Ui.Bg };
         var title = Heading("What should OpenRewind never see?", 28);
-        var sub = Paragraph("Anything you pick is blurred in every screenshot and its text is never saved. You can change this anytime in Settings → Blocked Apps.");
+        var sub = Paragraph("Anything you pick is blurred in every screenshot and its text is never saved. You can change this anytime in Settings → Privacy.");
         p.Controls.Add(title);
         p.Controls.Add(sub);
 
