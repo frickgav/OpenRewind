@@ -22,7 +22,7 @@ static class Program
       OpenRewind doctor           Check what works on this PC
       OpenRewind video-check      Check that this PC can write and read the videos of Compress Older Recordings
       OpenRewind mcp              MCP server for AI apps, over stdin/stdout (also --mcp).
-                                  Turn on Settings → Allow AI Apps to Read My History first
+                                  Turn on Settings → AI → Allow AI apps to read my history first
 
     Options:
       --port N        API port (default 3031)
@@ -259,7 +259,7 @@ static class Program
                 if (stuck > 0) Console.WriteLine($"videos to redo:  {stuck} still hold deleted frames (rewritten in the background; turned back into pictures if that keeps failing)");
                 var picked = SpeechModels.ById(config.TranscriptionModel);
                 var ready = picked.Files.Count == 0 || SpeechModels.IsDownloaded(picked, config.Home);
-                Console.WriteLine($"transcription:   {picked.Name}{(ready ? "" : " (not downloaded: pick it in Settings → Transcription Model)")}");
+                Console.WriteLine($"transcription:   {picked.Name}{(ready ? "" : " (not downloaded: pick it in Settings → Audio → Transcription)")}");
                 return 0;
             }
 

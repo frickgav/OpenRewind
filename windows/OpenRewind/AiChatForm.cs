@@ -395,6 +395,10 @@ sealed class AiSettingsForm : Form
         open.Activate();
     }
 
+    /// The same fields inside the Settings window's AI tab, at their own size.
+    public static AiSettingsForm Embedded(Settings settings) =>
+        new(settings) { TopLevel = false, FormBorderStyle = FormBorderStyle.None, ShowInTaskbar = false };
+
     AiSettingsForm(Settings settings)
     {
         this.settings = settings;

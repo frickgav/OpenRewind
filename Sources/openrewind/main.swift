@@ -19,7 +19,7 @@ Usage:
   openrewind doctor          Check and request permissions
   openrewind video-check     Check that this Mac can write and read the videos of Compress Older Recordings
   openrewind mcp             MCP server for AI apps, over stdin/stdout (also --mcp).
-                             Turn on Settings → Allow AI Apps to Read My History first
+                             Turn on Settings → AI → Allow AI apps to read my history first
   openrewind selftest-encryption
                              Check the encryption against the shared test vectors
 
@@ -241,7 +241,7 @@ case "doctor":
     }
     let picked = SpeechModels.byId(config.transcriptionModel)
     let ready = picked.files.isEmpty || SpeechModels.isDownloaded(picked, home: config.home)
-    print("transcription:   \(picked.name)\(ready ? "" : " (not downloaded: pick it in Settings → Transcription Model)")")
+    print("transcription:   \(picked.name)\(ready ? "" : " (not downloaded: pick it in Settings → Audio → Transcription)")")
     if !Capture.hasScreenPermission { Capture.requestScreenPermission() }
     if !Accessibility.isTrusted { Accessibility.promptForTrust() }
 

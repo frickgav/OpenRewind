@@ -278,7 +278,7 @@ struct OnboardingView: View {
     private var block: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("What should OpenRewind never see?").font(.system(size: 28, weight: .bold))
-            Text("Anything you pick is blurred in every screenshot and its text is never saved. Change it anytime in Settings → Blocked Apps.")
+            Text("Anything you pick is blurred in every screenshot and its text is never saved. Change it anytime in Settings → Privacy.")
                 .font(.system(size: 15)).foregroundColor(SetupTheme.dim).fixedSize(horizontal: false, vertical: true)
             HStack(alignment: .top, spacing: 20) {
                 VStack(spacing: 8) {

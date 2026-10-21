@@ -333,7 +333,7 @@ sealed class MeetingsForm : Form
         {
             Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Ui.Dim, Font = Ui.F(14 * k),
             Text = "No meetings yet.\n\nWhen a Zoom, Teams, Google Meet, Webex or Slack huddle call starts, OpenRewind asks whether to take "
-                 + "notes. Calls you take notes for show up here with their transcript.\n\nTurn on Settings → Summarize Meetings with AI to "
+                 + "notes. Calls you take notes for show up here with their transcript.\n\nIn Settings → Meetings, choose Summarize it with AI to "
                  + "also get a summary and action items after each one, using your own AI key.",
         });
 

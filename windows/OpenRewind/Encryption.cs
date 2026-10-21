@@ -100,7 +100,7 @@ sealed class Encryption
         Log.Write("encrypt recordings: on");
         Migrate(true);
         if (!ExportKey())
-            MessageBox.Show("Encryption is on. Save the recovery key soon: Settings → Encryption & Lock → Export Recovery Key…", "Encrypt Recordings",
+            MessageBox.Show("Encryption is on. Save the recovery key soon: Settings → Security → Export Recovery Key…", "Encrypt Recordings",
                             MessageBoxButtons.OK, MessageBoxIcon.Warning);
     }
 
