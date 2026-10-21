@@ -86,6 +86,7 @@ public class SavedBlocklistTests : IDisposable
             // (SavedBlocklist then keeps its last list). What must never happen is half a file.
             try { text = SettingsFile.Read(path); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { continue; }
+            finally { Thread.Sleep(1); }   // real readers pause between reads; a reader that never lets go starves the rename
             Assert.NotNull(text);
             Assert.True(text == Big('a') || text == Big('b'), $"read {text!.Length} characters");
         }
