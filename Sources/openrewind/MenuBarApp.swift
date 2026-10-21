@@ -538,11 +538,11 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// The "Transcription off: download …" line in the menu.
     @objc private func pickModel(_ sender: NSMenuItem) {
-        if let id = sender.representedObject as? String { pickModel(id) }
+        if let id = sender.representedObject as? String { pickModel(id: id) }
     }
 
     /// Switch models; one that is not on this Mac yet is downloaded first.
-    private func pickModel(_ id: String) {
+    private func pickModel(id: String) {
         let m = SpeechModels.byId(id)
         if let warn = SpeechModels.languageWarning(m, language: engine.config.whisperLanguage),
            !confirm(m.name, warn + "\n\nUse it anyway?", button: "Use It", destructive: false) { return }
@@ -1111,7 +1111,7 @@ extension MenuBarApp {
     func toggleRecordAudio() { toggleAudio() }
     var transcriberRunning: Bool { engine.transcriber != nil }
     var transcriptionLines: [String] { transcriptionStatus() }
-    func useTranscriptionModel(_ id: String) { pickModel(id) }
+    func useTranscriptionModel(_ id: String) { pickModel(id: id) }
     func retranscribeRecent(hours: Int) { retranscribe(hours: hours) }
     func openTranscriptionHelp() { openModelsHelp() }
     func openWhisperSetup() { openWhisperHelp() }
