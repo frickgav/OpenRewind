@@ -187,6 +187,7 @@ public sealed partial class Database : IDisposable
         MigrateVideo();
         MigrateMeaning();
         MigrateMeetings();
+        MigrateStars();
     }
 
     /// Indexes that take a while on a big database (the whole frames table is read, screen text and

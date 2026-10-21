@@ -8,7 +8,7 @@ namespace OpenRewind;
 /// send, so the model asks for summaries and searches instead, and every answer is capped in size.
 /// Frames of apps, sites and windows on the block list are left out of every answer, including
 /// ones saved before the user blocked them. The Mac app has the same tools in AITools.swift.
-public sealed class AiTools
+public sealed partial class AiTools
 {
     readonly Database db;
 
@@ -64,6 +64,12 @@ public sealed class AiTools
     /// Most characters one tool answer may send to the provider.
     public const int ResultLimit = 14_000;
 
+    // Declared before Specs, which lists it (static fields start in the order they are written).
+    public static readonly AiToolSpec StarredSpec = new("list_starred",
+        "Moments the user starred (marked as important with a shortcut) between two times, newest first, with what was on screen then. Use for questions like 'what did I star today' or 'find the thing I starred about pricing'.",
+        Schema(new() { ["start"] = TimeArg("Only after this time (optional)."), ["end"] = TimeArg("Only before this time (optional)."),
+                       ["limit"] = Int("Moments to return, up to 50. Default 20.") }));
+
     public static readonly AiToolSpec[] Specs =
     {
         new("activity_summary",
@@ -94,6 +100,7 @@ public sealed class AiTools
         new("list_meetings",
             "Meetings and calls found on this computer (Zoom, Teams, Google Meet, Webex, FaceTime, Slack huddles) between two times, with their summary, decisions and action items when they have notes. Use first for questions about meetings or calls, like 'what did we decide in my 2pm call'. For exactly what was said, use search_audio over the meeting's time range.",
             Schema(new() { ["start"] = TimeArg("Start time. Default: 7 days ago."), ["end"] = TimeArg("End time. Default: now.") })),
+        StarredSpec,
     };
 
     static JsonObject Schema(Dictionary<string, JsonNode> props, params string[] required)
@@ -126,6 +133,7 @@ public sealed class AiTools
             "search_by_meaning" => $"Searched by meaning for “{q}”{when}",
             "get_screen_text" => "Read screen text" + when,
             "list_meetings" => "Listed meetings" + (range.Length == 0 ? " from the last 7 days" : when),
+            "list_starred" => "Listed starred moments" + when,
             "view_screenshot" => $"Looked at the screenshot from {S(a, "time")}",
             _ => call.Name,
         };
@@ -178,6 +186,7 @@ public sealed class AiTools
             case "search_audio": out_ = SearchAudio(a); break;
             case "search_by_meaning": out_ = SearchByMeaning(a); break;
             case "list_meetings": out_ = ListMeetings(a); break;
+            case "list_starred": out_ = ListStarred(a); break;
             case "get_screen_text":
                 if (AiTime.Parse(a["start"]) is not DateTime s || AiTime.Parse(a["end"]) is not DateTime e)
                     return "Error: start and end are required, e.g. '2026-10-18 14:00'.";

@@ -200,6 +200,7 @@ final class OverlayController {
         case kVK_ANSI_N, kVK_End: model.jumpToNow()
         case kVK_ANSI_O where !cmd: model.openCurrent()
         case kVK_ANSI_A where !cmd: model.toggleAppFilter()
+        case kVK_ANSI_S where !cmd: model.toggleStar()
         case kVK_ANSI_H where !cmd: model.hideCurrentApp()
         case kVK_ANSI_LeftBracket where !cmd: model.markStart()
         case kVK_ANSI_RightBracket where !cmd: model.markEnd()

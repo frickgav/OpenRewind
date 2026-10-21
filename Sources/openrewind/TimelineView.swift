@@ -114,7 +114,7 @@ struct TimelineView: View {
                 if model.meaningAvailable { SearchModeSwitch(model: model) }
                 AppFilterMenu(model: model)
                 MeetingsMenu(model: model)
-                // Starred chip goes here (StarredFilterButton, from the Star moments work).
+                StarredFilterButton(model: model)
             }
             .padding(6)
             .glass(Capsule(), theme)
@@ -129,6 +129,7 @@ struct TimelineView: View {
             .allowsHitTesting(false)
             HStack(spacing: 6) {
                 if chat != nil { askAIButton }
+                StarButton(model: model)
                 FrameMenu(model: model)
                 IconButton(symbol: "questionmark", help: "Keyboard shortcuts (?)") { model.showHelp.toggle() }
                 IconButton(symbol: "xmark", help: "Close (esc)", action: close)
@@ -219,10 +220,12 @@ struct TimelineView: View {
     private var results: some View {
         VStack(alignment: .leading, spacing: 0) {
             if model.hits.isEmpty {
-                Text(model.searching ? "Searching by meaning…" : "No matches for “\(model.query)”").foregroundColor(theme.dim).padding(16)
+                Text(model.searching ? "Searching by meaning…"
+                     : model.starredOnly ? (model.query.isEmpty ? "No starred moments yet. Press S here, or \(StarShortcut.label) anywhere, to star one." : "No starred moments match “\(model.query)”")
+                     : "No matches for “\(model.query)”").foregroundColor(theme.dim).padding(16)
             } else {
                 HStack(spacing: 6) {
-                    Text("\(model.hits.count) moment\(model.hits.count == 1 ? "" : "s")" + (model.searchingByMeaning ? " · closest in meaning first" : ""))
+                    Text("\(model.hits.count) \(model.starredOnly ? "starred " : "")moment\(model.hits.count == 1 ? "" : "s")" + (model.searchingByMeaning && !model.starredOnly ? " · closest in meaning first" : ""))
                     Spacer()
                     Keycap("↑"); Keycap("↓"); Text("choose")
                     Keycap("return").padding(.leading, 6); Text("go")
@@ -254,7 +257,9 @@ struct TimelineView: View {
     private func hitRow(_ h: SearchHit, selected: Bool) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Group {
-                if h.kind == .screen, let icon = AppIcons.icon(for: h.title) {
+                if h.kind == .star {
+                    Image(systemName: "star.fill").foregroundColor(.yellow)
+                } else if h.kind == .screen, let icon = AppIcons.icon(for: h.title) {
                     Image(nsImage: icon).resizable().frame(width: 18, height: 18)
                 } else {
                     Image(systemName: h.kind == .audio ? "waveform" : "display")
@@ -563,6 +568,7 @@ struct TimelineView: View {
         ("", [["⌘", "⇧", "scroll"]], "From any app: open the timeline and go back"),
         ("", [["N"]], "Go to now"),
         ("Open", [["O"]], "Open the tab, document or window from this moment"),
+        ("Star", [["S"]], "Star this moment / remove its star"),
         ("Filter", [["A"]], "Only this app / all apps again"),
         ("", [["H"]], "Hide this app from the timeline"),
         ("Copy", [["⌘", "C"]], "Copy the selected text, or the screenshot"),
@@ -920,6 +926,7 @@ struct TimelineBar: View {
                         ctx.fill(Path(CGRect(x: x(h.time) - 1.5, y: 24, width: 3, height: 10)), with: .color(theme.match))
                     }
                     drawMarks(ctx, size: size, x: x)
+                    TimelineBar.drawStars(ctx, stars: model.stars, from: startDate, to: endDate, x: x)
                     // "Now" edge.
                     let nx = x(now)
                     if nx < size.width - 1 {
@@ -1002,6 +1009,7 @@ struct TimelineBar: View {
         for m in [model.clipStart, model.clipEnd].compactMap({ $0 }) {
             ctx.fill(Path(CGRect(x: x(m) - 1, y: stripY - 10, width: 2, height: 13)), with: .color(.accentColor))
         }
+        TimelineBar.drawStars(ctx, stars: model.stars, from: from, to: to, x: x)
         var head = ctx
         head.addFilter(.shadow(color: .black.opacity(0.35), radius: 4))
         head.fill(Path(roundedRect: CGRect(x: px - 2, y: 2, width: 4, height: size.height - 2), cornerRadius: 2),

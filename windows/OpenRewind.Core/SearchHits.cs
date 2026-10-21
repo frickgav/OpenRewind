@@ -1,9 +1,10 @@
 namespace OpenRewind;
 
 /// One match from screen text or a transcript, placed on the timeline.
-public record SearchHit(string Id, bool IsAudio, DateTime Time, string Title, string Snippet, long? ChunkId);
+/// IsStar: a starred moment (the Starred filter), not a match.
+public record SearchHit(string Id, bool IsAudio, DateTime Time, string Title, string Snippet, long? ChunkId, bool IsStar = false);
 
-public static class SearchHits
+public static partial class SearchHits
 {
     /// Screen and speech matches for the timeline's search box, newest first.
     /// With `app`, screen matches are only from that app (the timeline's app filter).

@@ -38,6 +38,8 @@ extension Database {
         let (whereSQL, args) = Self.range("timestamp", from, to)
         let and = whereSQL.isEmpty ? "WHERE" : whereSQL + " AND"
         var n = 0, stills: [String] = [], emptied: [String] = [], partial = false
+        // Stars of this time go with its recordings, even when no frame is left in it.
+        deleteStarsWith(from: from, to: to)
         // Meeting titles taken from these frames go first (their own statement: it takes the lock).
         if scalarInt("SELECT COUNT(*) FROM frames \(whereSQL)", args) > 0 {
             forgetMeetingWindows(from: from, to: to)

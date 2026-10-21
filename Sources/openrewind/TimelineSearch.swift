@@ -2,7 +2,7 @@ import Foundation
 
 /// One match from screen text or a transcript, placed on the timeline.
 struct SearchHit: Identifiable {
-    enum Kind { case screen, audio }
+    enum Kind { case screen, audio, star }
     var id: String
     var kind: Kind
     var time: Date
@@ -17,6 +17,7 @@ extension TimelineModel {
         searchWork?.cancel()
         let q = query.trimmingCharacters(in: .whitespaces)
         refreshHighlights()
+        if starredOnly { showStarred(); return }
         guard !q.isEmpty else { searchSeq += 1; searching = false; hits = []; showResults = false; return }
         let work = DispatchWorkItem { [weak self] in self?.runSearch(q) }
         searchWork = work
@@ -38,6 +39,7 @@ extension TimelineModel {
     }
 
     func runSearch(_ q: String) {
+        if starredOnly { showStarred(); return }
         searchSeq += 1
         searching = false
         if searchingByMeaning, let m = meaning {
@@ -155,6 +157,7 @@ extension TimelineModel {
     func clearSearch() {
         query = ""; hits = []; showResults = false
         searchSeq += 1; searching = false
+        starredOnly = false
         refreshHighlights()
     }
 

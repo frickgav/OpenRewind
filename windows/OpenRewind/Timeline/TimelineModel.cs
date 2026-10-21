@@ -203,6 +203,7 @@ sealed partial class TimelineModel
         var at = DateTime.UtcNow;
         var since = at.AddHours(-hours);
         var keep = keepApp ? AppFilterName : null;
+        ReloadStars();
         Apply(at, since, Db.TimelineFrames(since), Db.TimelineAudio(since));
         if (keep != null && allFrames.Any(f => f.AppName == keep) && !HiddenApps.Keys(HiddenAppNames).Contains(keep)) { AppFilterName = keep; ApplyFilter(); Show(Frames.Count - 1); }
     }
@@ -389,6 +390,7 @@ sealed partial class TimelineModel
     public void RunSearch()
     {
         var q = Query.Trim();
+        if (StarredOnly) { ShowStarred(); return; }
         var seq = ++searchSeq;
         Searching = false;
         RefreshHighlights();
@@ -462,7 +464,7 @@ sealed partial class TimelineModel
         Open(Hits[SelectedHit]);
     }
 
-    public void ClearSearch() { Query = ""; Hits = new(); searchSeq++; Searching = false; ShowResults = false; RefreshHighlights(); Notify(); }
+    public void ClearSearch() { Query = ""; Hits = new(); searchSeq++; Searching = false; ShowResults = false; StarredOnly = false; RefreshHighlights(); Notify(); }
 
     /// Words to mark on the screenshot. None for a meaning search: its matches need not share a word with the question.
     List<string> HighlightTerms => SearchingByMeaning ? new() : SearchHits.Terms(Query);

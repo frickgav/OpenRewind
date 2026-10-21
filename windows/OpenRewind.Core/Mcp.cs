@@ -37,6 +37,7 @@ public sealed class McpServer
         + "- For \"what did I do / work on\" questions, call activity_summary first, then search_screen or get_screen_text for details.\n"
         + "- When it is offered, search_by_meaning finds moments by topic when you don't know the exact words.\n"
         + "- For meetings and calls, call list_meetings first. Meeting notes were written by an AI from the call's transcript.\n"
+        + "- list_starred gives the moments the user starred as important; check it when they ask about something they starred or saved.\n"
         + "- Times in answers are the user's local time. Each moment carries an exact time like (at 2026-10-18T14:30:05-07:00); "
         + "pass it back as start, end or time to look closer.\n"
         + "- Screen text comes from OCR and can have errors. Apps and sites the user blocked are left out.\n"
