@@ -42,6 +42,7 @@ final class OverlayController {
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main!
         model.reload()
+        model.loadMeetings()
         Updater.shared.checkIfStale()
 
         let p = panel ?? makePanel()
@@ -135,21 +136,25 @@ final class OverlayController {
         }
     }
 
+    /// Scroll up / left = back in time. Trackpads send many small deltas, wheels send whole lines.
+    func scroll(_ e: NSEvent) {
+        let d = e.scrollingDeltaY + e.scrollingDeltaX
+        if e.hasPreciseScrollingDeltas {
+            scrollAccum += d
+            let stepSize: CGFloat = 14
+            let steps = Int(scrollAccum / stepSize)
+            if steps != 0 { scrollAccum -= CGFloat(steps) * stepSize; model.step(-steps) }
+        } else if d != 0 {
+            model.step(d > 0 ? -1 : 1)
+        }
+    }
+
     /// Returns true when the event was used.
     private func handle(_ e: NSEvent) -> Bool {
         if e.type == .scrollWheel {
             // Over the Ask AI chat, scrolling moves the chat, not the timeline.
             if model.showAI, let w = e.window, e.locationInWindow.x > w.frame.width - 452 { return false }
-            // Scroll up / left = back in time. Trackpads send many small deltas, wheels send whole lines.
-            let d = e.scrollingDeltaY + e.scrollingDeltaX
-            if e.hasPreciseScrollingDeltas {
-                scrollAccum += d
-                let stepSize: CGFloat = 14
-                let steps = Int(scrollAccum / stepSize)
-                if steps != 0 { scrollAccum -= CGFloat(steps) * stepSize; model.step(-steps) }
-            } else if d != 0 {
-                model.step(d > 0 ? -1 : 1)
-            }
+            scroll(e)
             return true
         }
         let shift = e.modifierFlags.contains(.shift)
@@ -196,6 +201,7 @@ final class OverlayController {
         case kVK_ANSI_O where !cmd: model.openCurrent()
         case kVK_ANSI_A where !cmd: model.toggleAppFilter()
         case kVK_ANSI_S where !cmd: model.toggleStar()
+        case kVK_ANSI_H where !cmd: model.hideCurrentApp()
         case kVK_ANSI_LeftBracket where !cmd: model.markStart()
         case kVK_ANSI_RightBracket where !cmd: model.markEnd()
         case kVK_ANSI_Equal, kVK_ANSI_KeypadPlus: model.span = max(60, model.span / 2)
@@ -203,6 +209,35 @@ final class OverlayController {
         default: return false
         }
         return true
+    }
+}
+
+/// ⌘⇧ + scroll anywhere opens the timeline and moves through time, like Rewind.
+/// Watching scroll events in other apps needs no extra permission (only key events do).
+final class ScrollOpener {
+    static let key = "scrollOpensTimeline"
+    /// On unless turned off in Settings.
+    static var isOn: Bool { UserDefaults.standard.object(forKey: key) as? Bool ?? true }
+
+    private var monitor: Any?
+    private let open: (NSEvent) -> Void
+
+    init(open: @escaping (NSEvent) -> Void) { self.open = open }
+
+    /// Starts or stops watching to match the setting.
+    func update() {
+        if Self.isOn, monitor == nil {
+            monitor = NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel) { [weak self] e in
+                let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                guard mods.contains(.command), mods.contains(.shift),
+                      !mods.contains(.option), !mods.contains(.control),
+                      e.scrollingDeltaY != 0 || e.scrollingDeltaX != 0 else { return }
+                self?.open(e)
+            }
+        } else if !Self.isOn, let m = monitor {
+            NSEvent.removeMonitor(m)
+            monitor = nil
+        }
     }
 }
 

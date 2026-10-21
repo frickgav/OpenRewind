@@ -18,7 +18,7 @@ static class Reopen
     }
 
     /// Exe of an app by its name: learned while recording, else from a window that is open now.
-    static string? ExeFor(string appName)
+    public static string? ExeFor(string appName)
     {
         if (Capture.AppPaths.TryGetValue(appName, out var known) && File.Exists(known)) return known;
         foreach (var (_, exe, _) in Windows())

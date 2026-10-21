@@ -158,12 +158,13 @@ struct StarredFilterButton: View {
     var body: some View {
         let theme = Theme(scheme)
         Button { model.setStarredOnly(!model.starredOnly) } label: {
-            Label("Starred", systemImage: model.starredOnly ? "star.fill" : "star")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(model.starredOnly ? .yellow : theme.text)
-                .padding(.horizontal, 12).frame(height: 30)
-                .background(Capsule().fill(model.starredOnly ? theme.selected : theme.surfaceHi))
-                .contentShape(Capsule())
+            HStack(spacing: 6) {
+                Image(systemName: model.starredOnly ? "star.fill" : "star")
+                    .foregroundColor(model.starredOnly ? .yellow : theme.dim)
+                Text("Starred").font(.system(size: 13, weight: .medium))
+            }
+            .chip(theme, on: model.starredOnly)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("Only starred moments. Star one with S here, or \(StarShortcut.label) from anywhere.")

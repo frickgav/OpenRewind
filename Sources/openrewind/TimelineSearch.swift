@@ -58,19 +58,21 @@ extension TimelineModel {
                     guard let self, seq == self.searchSeq else { return }
                     self.searching = false
                     // While filtering, speech only counts when it was heard with that app in front.
-                    self.hits = found.filter { $0.kind == .screen || self.appFilter == nil || AppFilter.covers(self.frames, $0.time) }
+                    self.hits = found.filter { self.shows($0) && ($0.kind == .screen || self.appFilter == nil || AppFilter.covers(self.frames, $0.time)) }
                     self.selectedHit = 0
                     self.showResults = true
                 }
             }
             return
         }
+        let hidden = hiddenKeys
         var s = SearchQuery()
         s.q = q
         s.limit = 200
         s.appName = appFilter
         let screen = db.search(s).rows.compactMap { f -> SearchHit? in
-            guard let t = Time.iso.date(from: f.timestamp), appFilter == nil || f.appName == appFilter else { return nil }
+            guard let t = Time.iso.date(from: f.timestamp), appFilter == nil || f.appName == appFilter,
+                  !hidden.contains(f.appName.lowercased()) else { return nil }
             return SearchHit(id: "f\(f.id)", kind: .screen, time: t,
                              title: f.appName.isEmpty ? "Screen" : f.appName,
                              snippet: Self.snippet(f.text, around: q), chunkId: nil)
@@ -79,6 +81,7 @@ extension TimelineModel {
             guard let t = Time.iso.date(from: a.timestamp) else { return nil }
             // While filtering, speech only counts when it was heard with that app in front.
             if appFilter != nil && !AppFilter.covers(frames, t) { return nil }
+            if AppFilter.hiddenAt(allTimelineFrames, t, hidden: hidden) { return nil }
             return SearchHit(id: "a\(a.id)", kind: .audio, time: t,
                              title: a.isInput ? "Microphone" : "System audio",
                              snippet: a.text, chunkId: a.chunkId)
@@ -86,6 +89,14 @@ extension TimelineModel {
         hits = Self.collapse((screen + spoken).sorted { $0.time > $1.time })
         selectedHit = 0
         showResults = true
+    }
+
+    /// False for a result from an app hidden from the timeline, or speech heard while one was in front.
+    private func shows(_ h: SearchHit) -> Bool {
+        let hidden = hiddenKeys
+        if hidden.isEmpty { return true }
+        if h.kind == .screen { return !hidden.contains(h.title.lowercased()) }
+        return !AppFilter.hiddenAt(allTimelineFrames, h.time, hidden: hidden)
     }
 
     /// A Search by Meaning result as a row in the list.

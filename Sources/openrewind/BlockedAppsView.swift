@@ -193,6 +193,8 @@ struct BlockedAppsView: View {
     @State private var adding = false
     @State private var pick: Set<String> = []
     @State private var found: [FoundApp] = []
+    /// Apps hidden from the timeline (see HiddenApps): still recorded, only left out when scrolling.
+    @State private var hidden = HiddenApps.names
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -213,6 +215,15 @@ struct BlockedAppsView: View {
                 }
             }
             .frame(minHeight: 120)
+
+            if !hidden.isEmpty {
+                Text("Hidden from the timeline").font(.system(size: 17, weight: .bold))
+                Text("Still recorded and searchable by AI apps, but left out when you scroll the timeline. Press H in the timeline to hide the app on screen.")
+                    .font(.system(size: 12)).foregroundColor(SetupTheme.faint).fixedSize(horizontal: false, vertical: true)
+                ForEach(hidden, id: \.self) { app in
+                    removableRow(app, detail: nil, help: "Show in the timeline again") { HiddenApps.show(app) }
+                }
+            }
 
             HStack {
                 Text("Websites and links").font(.system(size: 17, weight: .bold))
@@ -273,6 +284,12 @@ struct BlockedAppsView: View {
         .background(SetupTheme.bg)
         .foregroundColor(.white)
         .preferredColorScheme(.dark)
+        .onReceive(NotificationCenter.default.publisher(for: HiddenApps.changed)) { _ in hidden = HiddenApps.names }
+        // An app blocked from the timeline (Hide and Stop Recording It) while this window is open.
+        .onReceive(NotificationCenter.default.publisher(for: BlocklistStore.changed)) { _ in
+            let now = BlocklistStore.shared.current.apps
+            if now != model.apps { model.apps = now }
+        }
         .sheet(isPresented: $adding) {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Add Apps to Block").font(.system(size: 17, weight: .bold))
@@ -298,7 +315,7 @@ struct BlockedAppsView: View {
         newWord = ""
     }
 
-    private func removableRow(_ title: String, detail: String?, remove: @escaping () -> Void) -> some View {
+    private func removableRow(_ title: String, detail: String?, help: String = "Stop blocking", remove: @escaping () -> Void) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.system(size: 14, weight: .semibold))
@@ -310,7 +327,7 @@ struct BlockedAppsView: View {
                     .frame(width: 26, height: 26).background(Circle().fill(SetupTheme.card))
             }
             .buttonStyle(.plain)
-            .help("Stop blocking")
+            .help(help)
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
         .background(RoundedRectangle(cornerRadius: 10).fill(SetupTheme.card))

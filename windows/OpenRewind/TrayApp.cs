@@ -16,6 +16,7 @@ sealed class TrayApp : ApplicationContext
     HotKey hotKey;
     /// Ctrl+Alt+S stars the moment from anywhere.
     readonly HotKey starKey;
+    readonly ScrollOpener scrollOpener;
     /// Turns recording back on when a timed pause ends.
     readonly System.Windows.Forms.Timer resumeTimer = new();
     /// Checks App Lock's "Lock Again After" every 15 s and closes history windows once it has passed.
@@ -48,7 +49,7 @@ sealed class TrayApp : ApplicationContext
         settings = Settings.Load(engine.Config.Home);
         Program.RefreshIconIfNew(settings);
         Blocklist.Current = settings.ToBlocklist();
-        timeline = new TimelineModel(engine.Db);
+        timeline = new TimelineModel(engine.Db) { Settings = settings };
         aiTools = new AiTools(engine.Db) { Meaning = engine.Meaning };
         timeline.Meaning = engine.Meaning;
         journalTools = new AiTools(engine.Db);
@@ -92,6 +93,15 @@ sealed class TrayApp : ApplicationContext
         // Ctrl+Alt+T (or the shortcut picked in Settings) opens the timeline from anywhere.
         hotKey = new HotKey(Shortcut, ToggleTimeline);
         starKey = new HotKey(HotkeyShortcut.Star, StarMoment);
+        // Ctrl+Shift + wheel anywhere opens it too, and that first turn of the wheel already moves back in time.
+        scrollOpener = new ScrollOpener(overlay, () => overlay.Visible, delta =>
+            appLock.Run("Unlock OpenRewind to see your timeline", () =>
+            {
+                if (overlay.Visible) return;
+                overlay.ShowOverlay();
+                overlay.ScrollTime(delta);
+            }));
+        scrollOpener.Enable(settings.ScrollOpensTimeline);
 
         menu.Opening += (_, _) => BuildMenu();
         icon = new NotifyIcon { Icon = Program.AppIcon, ContextMenuStrip = menu, Visible = true };
@@ -330,7 +340,7 @@ sealed class TrayApp : ApplicationContext
 
         var s = new ToolStripMenuItem(Permissions.MicrophoneOn ? "Settings" : "Settings  ⚠");
         s.DropDownItems.Add(Item("Blocked Apps & Sites…", () => appLock.Run("Unlock OpenRewind to change blocked apps and sites",
-                                                                            () => BlockedAppsForm.ShowFor(settings, engine.Db))));
+                                                                            () => BlockedAppsForm.ShowFor(settings, engine.Db, timeline.HiddenChanged))));
         s.DropDownItems.Add(Item("AI Settings…", () => AiSettingsForm.ShowFor(settings)));
         s.DropDownItems.Add(EncryptionMenu());
         var ai = settings.Ai();
@@ -361,6 +371,14 @@ sealed class TrayApp : ApplicationContext
         }
         s.DropDownItems.Add(new ToolStripSeparator());
         s.DropDownItems.Add(ShortcutMenu());
+        var scroll = Toggle("Open Timeline with Ctrl+Shift + Scroll", settings.ScrollOpensTimeline, () =>
+        {
+            settings.ScrollOpensTimeline = !settings.ScrollOpensTimeline;
+            settings.Save();
+            scrollOpener.Enable(settings.ScrollOpensTimeline);
+        });
+        scroll.ToolTipText = "Hold Ctrl and Shift and turn the mouse wheel anywhere to open the timeline and go back in time.";
+        s.DropDownItems.Add(scroll);
         s.DropDownItems.Add(ScreenshotSizeMenu());
         s.DropDownItems.Add(LookMenu());
         s.DropDownItems.Add(new ToolStripSeparator());
@@ -1023,6 +1041,7 @@ sealed class TrayApp : ApplicationContext
         overlay.HideOverlay();
         hotKey.Dispose();
         starKey.Dispose();
+        scrollOpener.Dispose();
         resumeTimer.Dispose();
         lockTimer.Dispose();
         recapTimer.Dispose();

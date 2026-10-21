@@ -11,6 +11,15 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hotKey: HotKey?
     /// ⌥⌘S stars the moment from anywhere (Stars.swift).
     private var starHotKey: HotKey?
+    /// ⌘⇧ + scroll in any app opens the timeline (the first scroll already moves back in time).
+    private lazy var scrollOpener = ScrollOpener { [weak self] e in
+        guard let self, !self.overlay.isVisible else { return }
+        self.appLock.run("see your timeline") { [weak self] in
+            guard let self, !self.overlay.isVisible else { return }
+            self.overlay.show()
+            self.overlay.scroll(e)
+        }
+    }
     private let defaults = UserDefaults.standard
     private let screenKey = "recordScreen", audioKey = "recordAudio"
     private let keepScreenKey = "keepScreen", keepAudioKey = "keepAudio"
@@ -149,6 +158,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let star = StarShortcut.load(defaults)
         starHotKey = HotKey(keyCode: star.keyCode, modifiers: star.modifiers) { [weak self] in self?.starMoment() }
         if starHotKey?.registered != true { log("cannot register the Star Moment shortcut \(star.label); another app may use it") }
+        scrollOpener.update()
         Updater.shared.start()
         updateIcon()
         if !BlocklistStore.shared.onboardingDone { showSetup() }
@@ -550,6 +560,10 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sm.addItem(reset)
         shortcut.submenu = sm
         m.addItem(shortcut)
+        let scrollOpen = action("Open Timeline with ⌘⇧ + Scroll", #selector(toggleScrollOpen))
+        scrollOpen.state = ScrollOpener.isOn ? .on : .off
+        scrollOpen.toolTip = "Hold ⌘ and ⇧ and scroll anywhere to open the timeline and move back in time."
+        m.addItem(scrollOpen)
         m.addItem(resolutionMenu())
         m.addItem(lookMenu())
         m.addItem(.separator())
@@ -1127,6 +1141,11 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func updateNow() { Updater.shared.update() }
+
+    @objc private func toggleScrollOpen() {
+        defaults.set(!ScrollOpener.isOn, forKey: ScrollOpener.key)
+        scrollOpener.update()
+    }
 
     @objc private func toggleAutoDownload() { Updater.shared.autoDownload.toggle() }
 

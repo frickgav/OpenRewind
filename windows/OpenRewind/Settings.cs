@@ -31,8 +31,12 @@ sealed class Settings
     public bool BlockPrivateWindows { get; set; } = true;
     /// Websites and links whose tabs are hidden (see SiteRules): "chase.com", "docs.google.com/document/d/…".
     public List<string> BlockedSites { get; set; } = new();
+    /// Apps left out of the timeline (see HiddenApps), by the name the timeline shows. Still recorded.
+    public List<string> TimelineHiddenApps { get; set; } = new();
     /// The first-run setup has been finished (or skipped).
     public bool OnboardingDone { get; set; } = false;
+    /// Ctrl+Shift + mouse wheel in any app opens the timeline (see ScrollOpener).
+    public bool ScrollOpensTimeline { get; set; } = true;
     /// Download new versions in the background; they are installed only on a click.
     public bool AutoDownloadUpdates { get; set; } = true;
     /// The version whose timeline banner was closed; a newer version shows it again.
