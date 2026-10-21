@@ -508,7 +508,7 @@ extension TimelineModel {
         exportClip = ClipRange(start: r.start, end: r.end)
     }
 
-    /// The screenshots in a range as the timeline shows them (with its app filter), what the clip will be and its
+    /// The screenshots in a range as the timeline shows them (with its app filter, without hidden apps), what the clip will be and its
     /// size, or why there is none. Reads only that range of the database; safe off the main thread.
     static func clipPlan(db: Database, appFilter: String?, _ start: Date, _ end: Date, speed: Double,
                          format: ClipFormat) -> ClipInfo {
@@ -517,7 +517,7 @@ extension TimelineModel {
         guard end.timeIntervalSince(start) <= ClipPlan.maxLength else {
             return problem("A clip can cover at most \(Int(ClipPlan.maxLength / 3600)) hours.")
         }
-        let shown = AppFilter.apply(db.timelineFrames(from: start, to: end), app: appFilter)
+        let shown = AppFilter.apply(db.timelineFrames(from: start, to: end), app: appFilter, hidden: HiddenApps.keys)
         let list = BlocklistStore.shared.current
         let plan = ClipPlan.make(shown, from: start, to: end, speed: speed, format: format) { list.hides($0) }
         guard !plan.frames.isEmpty else {

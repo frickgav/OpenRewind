@@ -444,6 +444,29 @@ sealed class OverlayForm : Form
             item.Click += (_, _) => { model.SetAppFilter(app); Invalidate(); };
             appMenu.Items.Add(item);
         }
+        if (model.Current is TimelineFrame f && f.AppName.Length > 0)
+        {
+            var name = f.AppName;
+            appMenu.Items.Add(new ToolStripSeparator());
+            var hide = new ToolStripMenuItem($"Hide {name} from timeline (H)");
+            hide.Click += (_, _) => { model.Hide(name); Invalidate(); };
+            appMenu.Items.Add(hide);
+            var block = new ToolStripMenuItem($"Hide {name} and stop recording it");
+            block.Click += (_, _) => { model.Hide(name, stopRecording: true); Invalidate(); };
+            appMenu.Items.Add(block);
+        }
+        if (model.HiddenAppNames.Count > 0)
+        {
+            var hidden = new ToolStripMenuItem("Hidden apps");
+            foreach (var name in model.HiddenAppNames.ToList())
+            {
+                var show = new ToolStripMenuItem($"Show {name} again");
+                show.Click += (_, _) => { model.Unhide(name); Invalidate(); };
+                hidden.DropDownItems.Add(show);
+            }
+            appMenu.Items.Add(new ToolStripSeparator());
+            appMenu.Items.Add(hidden);
+        }
         appMenu.Show(this, new Point((int)at.X, (int)(at.Bottom + 4 * k)));
     }
 
@@ -1086,6 +1109,7 @@ sealed class OverlayForm : Form
         ("", new[] { new[] { "N" } }, "Go to now"),
         ("OPEN", new[] { new[] { "O" } }, "Open the tab or window from this moment"),
         ("FILTER", new[] { new[] { "A" } }, "Only this app / all apps again"),
+        ("", new[] { new[] { "H" } }, "Hide this app from the timeline"),
         ("AUDIO", new[] { new[] { "space" } }, "Play or pause audio from here"),
         ("COPY", new[] { new[] { "Ctrl", "C" } }, "Copy the selected text, or the screenshot"),
         ("", new[] { new[] { "drag" } }, "Select text on the screenshot"),
@@ -1220,6 +1244,7 @@ sealed class OverlayForm : Form
             case Keys.N: case Keys.End: model.JumpToNow(); break;
             case Keys.O when !ctrl: OpenCurrent(); break;
             case Keys.A when !ctrl: ToggleAppFilter(); break;
+            case Keys.H when !ctrl: model.HideCurrentApp(); Invalidate(); break;
             case Keys.OemOpenBrackets when !ctrl: model.MarkStart(); break;
             case Keys.OemCloseBrackets when !ctrl: model.MarkEnd(); break;
             case Keys.Oemplus: case Keys.Add: model.Span = Math.Max(60, model.Span / 2); Invalidate(); break;

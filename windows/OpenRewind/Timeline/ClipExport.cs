@@ -213,7 +213,8 @@ sealed class ExportClipForm : Form
     const string TimeFormat = "MMM d, yyyy   h:mm:ss tt";
 
     /// What the clip is made from: the range, format, speed and the timeline's app filter.
-    sealed record Inputs(DateTime Start, DateTime End, double Speed, ClipFormat Format, string? App);
+    /// `Hidden`: the apps hidden from the timeline, one per line (a string, so two snapshots compare equal).
+    sealed record Inputs(DateTime Start, DateTime End, double Speed, ClipFormat Format, string? App, string Hidden);
 
     /// The clip for some inputs and its output size, or why there is none.
     sealed record Info(Inputs Inputs, ClipPlan.Result? Plan, int W, int H, string? Problem);
@@ -299,15 +300,16 @@ sealed class ExportClipForm : Form
     }
 
     Inputs Snapshot() => new(from.Value.ToUniversalTime(), to.Value.ToUniversalTime(),
-        ClipPlan.Speeds[Math.Max(0, speed.SelectedIndex)], format.SelectedIndex == 1 ? ClipFormat.Gif : ClipFormat.Mp4, model.AppFilterName);
+        ClipPlan.Speeds[Math.Max(0, speed.SelectedIndex)], format.SelectedIndex == 1 ? ClipFormat.Gif : ClipFormat.Mp4, model.AppFilterName,
+        string.Join('\n', model.HiddenAppNames));
 
-    /// The screenshots in the range, as the timeline shows them (with its app filter), and what the clip will be.
+    /// The screenshots in the range, as the timeline shows them (with its app filter, without hidden apps), and what the clip will be.
     /// Reads only that range of the database; runs off the window's thread.
     static Info Compute(Database db, Inputs i, Blocklist list)
     {
         if (i.End <= i.Start) return new(i, null, 0, 0, "The end is before the start.");
         if (i.End - i.Start > ClipPlan.MaxLength) return new(i, null, 0, 0, $"A clip can cover at most {ClipPlan.MaxLength.TotalHours:0} hours.");
-        var frames = AppFilter.Apply(db.TimelineFrames(i.Start, i.End), i.App);
+        var frames = AppFilter.Apply(db.TimelineFrames(i.Start, i.End), i.App, i.Hidden.Split('\n', StringSplitOptions.RemoveEmptyEntries));
         var plan = ClipPlan.Make(frames, i.Start, i.End, i.Speed, i.Format, f => ClipPlan.Hides(list, f));
         if (plan.Frames.Count == 0)
             return new(i, null, 0, 0, plan.Blocked > 0 ? "Every screenshot in that range is from a blocked app or site." : "No screenshots in that range.");
@@ -348,6 +350,7 @@ sealed class ExportClipForm : Form
         if (x.Plan == null) return x.Problem ?? "";
         var text = ClipPlan.Summary(x.Plan, x.Inputs.Format, x.W, x.H);
         if (x.Inputs.App is string app) text += $"\nOnly {app}, as the timeline shows it.";
+        else if (x.Inputs.Hidden.Length > 0) text += "\nApps hidden from the timeline are left out.";
         if (x.Plan.Blocked > 0) text += $"\n{x.Plan.Blocked} screenshot{(x.Plan.Blocked == 1 ? " is" : "s are")} from blocked apps or sites and left out.";
         return text;
     }

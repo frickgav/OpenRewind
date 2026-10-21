@@ -46,7 +46,7 @@ sealed class TrayApp : ApplicationContext
         settings = Settings.Load(engine.Config.Home);
         Program.RefreshIconIfNew(settings);
         Blocklist.Current = settings.ToBlocklist();
-        timeline = new TimelineModel(engine.Db);
+        timeline = new TimelineModel(engine.Db) { Settings = settings };
         aiTools = new AiTools(engine.Db) { Meaning = engine.Meaning };
         timeline.Meaning = engine.Meaning;
         journalTools = new AiTools(engine.Db);
@@ -316,7 +316,7 @@ sealed class TrayApp : ApplicationContext
 
         var s = new ToolStripMenuItem(Permissions.MicrophoneOn ? "Settings" : "Settings  ⚠");
         s.DropDownItems.Add(Item("Blocked Apps & Sites…", () => appLock.Run("Unlock OpenRewind to change blocked apps and sites",
-                                                                            () => BlockedAppsForm.ShowFor(settings, engine.Db))));
+                                                                            () => BlockedAppsForm.ShowFor(settings, engine.Db, timeline.HiddenChanged))));
         s.DropDownItems.Add(Item("AI Settings…", () => AiSettingsForm.ShowFor(settings)));
         s.DropDownItems.Add(EncryptionMenu());
         var ai = settings.Ai();

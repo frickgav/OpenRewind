@@ -14,6 +14,10 @@ sealed partial class TimelineModel
     List<TimelineFrame> allFrames = new();
     /// Only show moments when this app was in front (null = all apps).
     public string? AppFilterName { get; private set; }
+    /// Where the hidden apps are saved (TimelineHiddenApps) and the block list, for H and the apps menu. Set by the tray app.
+    public Settings? Settings { get; set; }
+    /// Apps never shown in the timeline (see HiddenApps), sorted.
+    public IReadOnlyList<string> HiddenAppNames => Settings?.TimelineHiddenApps ?? (IReadOnlyList<string>)Array.Empty<string>();
     public List<TimelineAudio> Audio { get; private set; } = new();
     /// Recorded stretches, with long breaks between them (see TimelineAxis).
     List<TimelineAxis.Session> sessions = new();
@@ -110,8 +114,15 @@ sealed partial class TimelineModel
     /// Axis for the current zoom: each break gets 6% of the visible width.
     public TimelineAxis Axis => new(sessions, Span * 0.06);
 
-    /// Apps in the loaded history, the one in front longest first (for the app filter menu).
-    public List<string> Apps => AppFilter.Apps(allFrames);
+    /// Apps in the loaded history that are not hidden, the one in front longest first (for the app filter menu).
+    public List<string> Apps
+    {
+        get
+        {
+            var hidden = HiddenApps.Keys(HiddenAppNames);
+            return AppFilter.Apps(allFrames).Where(a => !hidden.Contains(a)).ToList();
+        }
+    }
 
     /// The newest screenshot of any app.
     public TimelineFrame? Newest => allFrames.Count > 0 ? allFrames[^1] : null;
@@ -128,12 +139,57 @@ sealed partial class TimelineModel
         if (Query.Trim().Length > 0) RunSearch();
     }
 
-    /// Frames and the bar's stretches for the current app filter. While filtering, time in
-    /// other apps becomes breaks, and audio does not keep those stretches open.
+    /// H: hide the app in this screenshot from the timeline, now and on every later open.
+    public void HideCurrentApp()
+    {
+        if (Current is TimelineFrame f && f.AppName.Length > 0) Hide(f.AppName);
+        else ShowNotice("No app to hide in this screenshot");
+    }
+
+    /// Leave `app` out of the timeline from now on (it is still recorded). `stopRecording` also adds it
+    /// to the block list, so it is blurred and its text is not saved from now on.
+    public void Hide(string app, bool stopRecording = false)
+    {
+        if (Settings is not Settings s || app.Length == 0) return;
+        HiddenApps.Hide(s.TimelineHiddenApps, app);
+        if (stopRecording && !s.ToBlocklist().BlocksApp(null, app))
+        {
+            s.BlockedApps.Add(new BlockedApp(Blocklist.IdFor(Reopen.ExeFor(app)), app));
+            Blocklist.Current = s.ToBlocklist();
+        }
+        s.Save();
+        HiddenChanged();
+        ShowNotice(stopRecording ? $"Hid {app} and stopped recording it. Undo in Settings → Blocked Apps & Sites."
+                                 : $"Hid {app} from the timeline. Show it again from the apps menu.");
+    }
+
+    /// Show `app` in the timeline again.
+    public void Unhide(string app)
+    {
+        if (Settings is not Settings s || !HiddenApps.Show(s.TimelineHiddenApps, app)) return;
+        s.Save();
+        HiddenChanged();
+        ShowNotice($"Showing {app} again");
+    }
+
+    /// The hidden apps changed (here or in Settings): show the timeline without them, near the same time.
+    public void HiddenChanged()
+    {
+        var at = Playhead;
+        StopAudio();
+        if (AppFilterName != null && HiddenApps.Keys(HiddenAppNames).Contains(AppFilterName)) AppFilterName = null;
+        ApplyFilter();
+        Show(FrameIndex(at));
+        if (Query.Trim().Length > 0) RunSearch();
+        Notify();
+    }
+
+    /// Frames and the bar's stretches for the current app filter and hidden apps. While filtering or hiding,
+    /// time in other (or hidden) apps becomes breaks, and audio does not keep those stretches open.
     void ApplyFilter()
     {
-        Frames = AppFilter.Apply(allFrames, AppFilterName);
-        sessions = AppFilterName == null
+        Frames = AppFilter.Apply(allFrames, AppFilterName, HiddenAppNames.ToList());
+        sessions = AppFilterName == null && HiddenAppNames.Count == 0
             ? TimelineAxis.BuildSessions(Frames, Audio)
             : TimelineAxis.BuildSessions(Frames, Array.Empty<TimelineAudio>(), gap: AppFilter.GapThreshold);
     }
@@ -148,7 +204,7 @@ sealed partial class TimelineModel
         var since = at.AddHours(-hours);
         var keep = keepApp ? AppFilterName : null;
         Apply(at, since, Db.TimelineFrames(since), Db.TimelineAudio(since));
-        if (keep != null && allFrames.Any(f => f.AppName == keep)) { AppFilterName = keep; ApplyFilter(); Show(Frames.Count - 1); }
+        if (keep != null && allFrames.Any(f => f.AppName == keep) && !HiddenApps.Keys(HiddenAppNames).Contains(keep)) { AppFilterName = keep; ApplyFilter(); Show(Frames.Count - 1); }
     }
 
     /// Bumped by every load, so a slower background load that finishes later is dropped.
@@ -230,7 +286,12 @@ sealed partial class TimelineModel
         void Finish()
         {
             // An app that is not in the loaded history (or "Unknown app") shows every app.
-            if (app == null || !allFrames.Any(f => f.AppName == app)) SetAppFilter(null);
+            if (app != null && HiddenApps.Keys(HiddenAppNames).Contains(app))
+            {
+                SetAppFilter(null);
+                ShowNotice($"{app} is hidden from the timeline. Show it again from the apps menu.");
+            }
+            else if (app == null || !allFrames.Any(f => f.AppName == app)) SetAppFilter(null);
             else if (app != AppFilterName)
             {
                 SetAppFilter(app);
@@ -360,6 +421,10 @@ sealed partial class TimelineModel
 
     void ShowHits(List<SearchHit> hits)
     {
+        // Nothing from a hidden app, nor speech heard while one was in front.
+        var hidden = HiddenApps.Keys(HiddenAppNames);
+        if (hidden.Count > 0)
+            hits = hits.Where(h => h.IsAudio ? !AppFilter.HiddenAt(allFrames, h.Time, hidden) : !hidden.Contains(h.Title)).ToList();
         // While filtering, speech only counts when it was heard with that app in front.
         Hits = AppFilterName == null ? hits : hits.Where(h => !h.IsAudio || AppFilter.Covers(Frames, h.Time)).ToList();
         SelectedHit = 0;
