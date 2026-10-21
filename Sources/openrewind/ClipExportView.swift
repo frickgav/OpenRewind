@@ -168,6 +168,7 @@ struct ExportClipCard: View {
         guard let plan = info.plan, let size = info.size else { return info.problem ?? "" }
         var s = ClipPlan.summary(plan, format: format, width: size.width, height: size.height)
         if let app = model.appFilter { s += "\nOnly \(app), as the timeline shows it." }
+        else if !model.hiddenApps.isEmpty { s += "\nApps hidden from the timeline are left out." }
         if plan.blocked > 0 {
             s += "\n\(plan.blocked) screenshot\(plan.blocked == 1 ? " is" : "s are") from blocked apps or sites and left out."
         }

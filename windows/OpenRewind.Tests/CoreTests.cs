@@ -168,6 +168,45 @@ public class CoreTests : IDisposable
     }
 
     [Fact]
+    public void HiddenAppsAreLeftOutOfTheTimeline()
+    {
+        var t0 = new DateTime(2026, 10, 18, 9, 0, 0, DateTimeKind.Utc);
+        // Safari 0-20 s, a game 20-3000 s, Safari again from 3000 s, Xcode at 3010 s.
+        var all = new[] { (0, "Safari"), (10, "Safari"), (20, "Game"), (1500, "Game"), (3000, "Safari"), (3010, "Xcode") }
+            .Select((x, i) => new TimelineFrame(i, t0.AddSeconds(x.Item1), x.Item2, "", "")).ToList();
+        Assert.Same(all, AppFilter.Apply(all, null, new List<string>()));
+
+        // Names match whatever the case.
+        var shown = AppFilter.Apply(all, null, new[] { "game" });
+        Assert.Equal(new long[] { 0, 1, 4, 5 }, shown.Select(f => f.Id));
+        Assert.Equal(t0.AddSeconds(20), shown[1].End);  // stops where the game came to the front
+        Assert.Empty(AppFilter.Apply(all, "Game", new[] { "Game" }));
+        Assert.Equal(new long[] { 5 }, AppFilter.Apply(all, "Xcode", new[] { "Game" }).Select(f => f.Id));
+
+        // The game's 50 minutes become a break.
+        var sessions = TimelineAxis.BuildSessions(shown, Array.Empty<TimelineAudio>(), t0.AddSeconds(3010), AppFilter.GapThreshold);
+        Assert.Equal(2, sessions.Count);
+        Assert.Equal(t0.AddSeconds(20), sessions[0].End);
+        Assert.Equal(t0.AddSeconds(3000), sessions[1].Start);
+
+        // Speech heard while the game was in front (up to a minute after each of its screenshots) is hidden too.
+        Assert.True(AppFilter.HiddenAt(all, t0.AddSeconds(30), new[] { "Game" }));
+        Assert.False(AppFilter.HiddenAt(all, t0.AddSeconds(200), new[] { "Game" }));
+        Assert.False(AppFilter.HiddenAt(all, t0.AddSeconds(15), new[] { "Game" }));
+        Assert.False(AppFilter.HiddenAt(all, t0.AddSeconds(30), Array.Empty<string>()));
+
+        var list = new List<string>();
+        Assert.True(HiddenApps.Hide(list, "Steam"));
+        Assert.True(HiddenApps.Hide(list, " Minecraft "));
+        Assert.False(HiddenApps.Hide(list, "steam"));
+        Assert.False(HiddenApps.Hide(list, ""));
+        Assert.Equal(new[] { "Minecraft", "Steam" }, list);
+        Assert.True(HiddenApps.Show(list, "STEAM"));
+        Assert.False(HiddenApps.Show(list, "Steam"));
+        Assert.Equal(new[] { "Minecraft" }, list);
+    }
+
+    [Fact]
     public void ApiSearchMergesScreenAndAudio()
     {
         AddFrame(DateTime.UtcNow.AddMinutes(-1), "Notepad", "budget plan");

@@ -143,4 +143,13 @@ sealed partial class TrayApp
     internal HotkeyShortcut TimelineShortcut => Shortcut;
     internal void RecordTimelineShortcut() => ChangeShortcut();
     internal void RestoreTimelineShortcut() => SetShortcut(HotkeyShortcut.Standard);
+    /// Hidden apps were shown again in Settings → Privacy: the open timeline picks them up.
+    internal void TimelineHiddenChanged() => timeline.HiddenChanged();
+    internal bool ScrollOpensTimeline => settings.ScrollOpensTimeline;
+    internal void ToggleScrollOpensTimeline()
+    {
+        settings.ScrollOpensTimeline = !settings.ScrollOpensTimeline;
+        settings.Save();
+        scrollOpener.Enable(settings.ScrollOpensTimeline);
+    }
 }

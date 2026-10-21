@@ -126,7 +126,7 @@ sealed class SettingsForm : Form
         if (tab == SettingsTab.Privacy)
         {
             // Has its own scrolling lists, so it fills the tab instead of scrolling as a whole.
-            var blocked = BlockedAppsForm.Embedded(app.AppSettings, app.Db);
+            var blocked = BlockedAppsForm.Embedded(app.AppSettings, app.Db, app.TimelineHiddenChanged);
             body.Controls.Add(blocked);
             blocked.Show();
         }
@@ -350,7 +350,11 @@ sealed class SettingsForm : Form
             Set(row[0], app.TimelineShortcut.Label);
             row[1].Enabled = app.TimelineShortcut != HotkeyShortcut.Standard;
         });
-        // More shortcuts (for example starring a moment) go here as rows like this one.
+        p.Row("Star Moment");
+        p.Note($"{HotkeyShortcut.Star.Label} stars the moment from any app. On the open timeline, S stars the moment shown.");
+        p.Row("Scroll to rewind");
+        p.Check("Open the timeline with Ctrl+Shift + scroll", () => app.ScrollOpensTimeline, app.ToggleScrollOpensTimeline);
+        p.Note("Hold Ctrl and Shift and turn the mouse wheel in any app to open the timeline and go back in time.");
     }
 
     static void Set(Control c, string text) { if (c.Text != text) c.Text = text; }

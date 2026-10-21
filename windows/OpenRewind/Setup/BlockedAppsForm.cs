@@ -11,23 +11,25 @@ sealed class BlockedAppsForm : Form
     readonly Settings settings;
     readonly Database db;
     readonly float k;
-    readonly RowList apps, sites, words;
+    readonly RowList apps, hidden, sites, words;
+    /// Tells the timeline that the hidden apps changed.
+    readonly Action? hiddenChanged;
     readonly CheckRow privateRow;
     readonly TextBox wordBox;
 
     /// One window at a time; a second click brings it to the front.
-    public static void ShowFor(Settings settings, Database db)
+    public static void ShowFor(Settings settings, Database db, Action? hiddenChanged = null)
     {
-        if (open is { IsDisposed: false }) { open.Activate(); return; }
-        open = new BlockedAppsForm(settings, db);
+        if (open is { IsDisposed: false }) { open.RefreshLists(); open.Activate(); return; }
+        open = new BlockedAppsForm(settings, db, hiddenChanged);
         open.Show();
         open.Activate();
     }
 
     /// The same lists inside the Settings window's Privacy tab.
-    public static BlockedAppsForm Embedded(Settings settings, Database db)
+    public static BlockedAppsForm Embedded(Settings settings, Database db, Action? hiddenChanged = null)
     {
-        var f = new BlockedAppsForm(settings, db) { TopLevel = false, FormBorderStyle = FormBorderStyle.None, Dock = DockStyle.Fill };
+        var f = new BlockedAppsForm(settings, db, hiddenChanged) { TopLevel = false, FormBorderStyle = FormBorderStyle.None, Dock = DockStyle.Fill };
         f.MinimumSize = Size.Empty;
         return f;
     }
@@ -35,10 +37,11 @@ sealed class BlockedAppsForm : Form
     /// The app locked (see AppLock): the recent pages list shows history, so close.
     public static void Release() { if (open is { IsDisposed: false }) open.Close(); }
 
-    BlockedAppsForm(Settings settings, Database db)
+    BlockedAppsForm(Settings settings, Database db, Action? hiddenChanged)
     {
         this.settings = settings;
         this.db = db;
+        this.hiddenChanged = hiddenChanged;
         k = DeviceDpi / 96f;
         Text = "Blocked Apps & Sites";
         Icon = Program.AppIcon;
@@ -60,6 +63,10 @@ sealed class BlockedAppsForm : Form
         var appsHead = Header("Apps", out var addApps, "Add apps…");
         addApps.Click += (_, _) => AddApps();
         apps = new RowList(k) { Dock = DockStyle.Fill };
+
+        var hiddenHead = new Label { Text = "Hidden from the timeline", Font = Ui.F(17 * k, true), ForeColor = Ui.Text, BackColor = Ui.Bg, Dock = DockStyle.Top, Height = (int)(36 * k), TextAlign = ContentAlignment.MiddleLeft };
+        var hiddenHint = Label("Still recorded and searchable by AI apps, but left out when you scroll the timeline.", 12.5f, Ui.Faint, (int)(24 * k));
+        hidden = new RowList(k) { Dock = DockStyle.Fill };
 
         var sitesHead = Header("Websites and links", out var addSites, "Add sites…");
         addSites.Click += (_, _) => { if (SitePicker.Pick(this, settings, db)) RefreshLists(); };
@@ -84,14 +91,20 @@ sealed class BlockedAppsForm : Form
         entry.Controls.Add(addWord);
         words = new RowList(k) { Dock = DockStyle.Fill };
 
-        // Three parts: apps, websites, then private windows and title words.
-        var split = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = Ui.Bg };
-        split.RowStyles.Add(new RowStyle(SizeType.Percent, 32));
-        split.RowStyles.Add(new RowStyle(SizeType.Percent, 28));
-        split.RowStyles.Add(new RowStyle(SizeType.Percent, 40));
+        // Four parts: apps, apps hidden from the timeline, websites, then private windows and title words.
+        var split = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, BackColor = Ui.Bg };
+        split.RowStyles.Add(new RowStyle(SizeType.Percent, 27));
+        split.RowStyles.Add(new RowStyle(SizeType.Percent, 15));
+        split.RowStyles.Add(new RowStyle(SizeType.Percent, 24));
+        split.RowStyles.Add(new RowStyle(SizeType.Percent, 34));
         var top = new Panel { Dock = DockStyle.Fill, BackColor = Ui.Bg, Margin = Padding.Empty };
         top.Controls.Add(apps);
         top.Controls.Add(appsHead);
+        var hiddenPart = new Panel { Dock = DockStyle.Fill, BackColor = Ui.Bg, Margin = Padding.Empty };
+        hiddenPart.Controls.Add(hidden);
+        hiddenPart.Controls.Add(hiddenHint);
+        hiddenPart.Controls.Add(hiddenHead);
+        hiddenPart.Controls.Add(Spacer(6));
         var middle = new Panel { Dock = DockStyle.Fill, BackColor = Ui.Bg, Margin = Padding.Empty };
         middle.Controls.Add(sites);
         middle.Controls.Add(sitesHint);
@@ -106,8 +119,9 @@ sealed class BlockedAppsForm : Form
         bottom.Controls.Add(privateRow);
         bottom.Controls.Add(Spacer(12));
         split.Controls.Add(top, 0, 0);
-        split.Controls.Add(middle, 0, 1);
-        split.Controls.Add(bottom, 0, 2);
+        split.Controls.Add(hiddenPart, 0, 1);
+        split.Controls.Add(middle, 0, 2);
+        split.Controls.Add(bottom, 0, 3);
         Controls.Add(split);
         Controls.Add(Spacer(8));
         Controls.Add(intro);
@@ -116,7 +130,7 @@ sealed class BlockedAppsForm : Form
 
     protected override void OnFormClosed(FormClosedEventArgs e) { open = null; base.OnFormClosed(e); }
 
-    void RefreshLists()
+    public void RefreshLists()
     {
         apps.SetRows(settings.BlockedApps.OrderBy(a => a.Name, StringComparer.CurrentCultureIgnoreCase).Select(a =>
         {
@@ -124,6 +138,20 @@ sealed class BlockedAppsForm : Form
             row.Removed += r => { settings.BlockedApps.Remove((BlockedApp)r.Tag2!); Save(); RefreshLists(); };
             return (Control)row;
         }));
+        hidden.SetRows(settings.TimelineHiddenApps.ToList().Select(a =>
+        {
+            var row = new CheckRow(a, null, true, k) { Removable = true, Tag2 = a, Height = (int)(40 * k) };
+            row.Removed += r =>
+            {
+                HiddenApps.Show(settings.TimelineHiddenApps, (string)r.Tag2!);
+                settings.Save();
+                hiddenChanged?.Invoke();
+                RefreshLists();
+            };
+            return (Control)row;
+        }));
+        if (settings.TimelineHiddenApps.Count == 0)
+            hidden.SetRows(new[] { new Label { Text = "No hidden apps. Press H in the timeline to hide the app on screen.", ForeColor = Ui.Faint, BackColor = Ui.Bg, Height = (int)(40 * k), TextAlign = ContentAlignment.MiddleLeft } });
         sites.SetRows(settings.BlockedSites.OrderBy(SiteRules.SiteOf, StringComparer.OrdinalIgnoreCase).ThenBy(r => r, StringComparer.OrdinalIgnoreCase).Select(r =>
         {
             var row = new CheckRow(r, r.Contains('/') || r.Contains('?') ? "This link and the pages under it" : "The whole site", true, k) { Removable = true, Tag2 = r, Height = (int)(52 * k) };

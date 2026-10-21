@@ -14,6 +14,9 @@ sealed partial class TrayApp : ApplicationContext
     readonly OverlayForm overlay;
     readonly TimelineModel timeline;
     HotKey hotKey;
+    /// Ctrl+Alt+S stars the moment from anywhere.
+    readonly HotKey starKey;
+    readonly ScrollOpener scrollOpener;
     /// Turns recording back on when a timed pause ends.
     readonly System.Windows.Forms.Timer resumeTimer = new();
     /// Checks App Lock's "Lock Again After" every 15 s and closes history windows once it has passed.
@@ -44,7 +47,7 @@ sealed partial class TrayApp : ApplicationContext
         settings = Settings.Load(engine.Config.Home);
         Program.RefreshIconIfNew(settings);
         Blocklist.Current = settings.ToBlocklist();
-        timeline = new TimelineModel(engine.Db);
+        timeline = new TimelineModel(engine.Db) { Settings = settings };
         aiTools = new AiTools(engine.Db) { Meaning = engine.Meaning };
         timeline.Meaning = engine.Meaning;
         journalTools = new AiTools(engine.Db);
@@ -87,6 +90,16 @@ sealed partial class TrayApp : ApplicationContext
 
         // Ctrl+Alt+T (or the shortcut picked in Settings) opens the timeline from anywhere.
         hotKey = new HotKey(Shortcut, ToggleTimeline);
+        starKey = new HotKey(HotkeyShortcut.Star, StarMoment);
+        // Ctrl+Shift + wheel anywhere opens it too, and that first turn of the wheel already moves back in time.
+        scrollOpener = new ScrollOpener(overlay, () => overlay.Visible, delta =>
+            appLock.Run("Unlock OpenRewind to see your timeline", () =>
+            {
+                if (overlay.Visible) return;
+                overlay.ShowOverlay();
+                overlay.ScrollTime(delta);
+            }));
+        scrollOpener.Enable(settings.ScrollOpensTimeline);
 
         menu.Opening += (_, _) => BuildMenu();
         icon = new NotifyIcon { Icon = Program.AppIcon, ContextMenuStrip = menu, Visible = true };
@@ -105,6 +118,16 @@ sealed partial class TrayApp : ApplicationContext
     }
 
     /// Open the timeline, after Windows Hello when App Lock is on; close it if it is open.
+    /// Ctrl+Alt+S: star now. On the open timeline it stars (or unstars) the moment shown instead.
+    /// Needs no App Lock: it only saves the time, and shows nothing from history.
+    void StarMoment()
+    {
+        if (overlay.Visible) { timeline.ToggleStar(); return; }
+        try { engine.Db.AddStar(DateTime.UtcNow); }
+        catch (Exception e) { Log.Write($"star: {e.Message}"); icon.ShowBalloonTip(2000, "OpenRewind", "Could not star this moment", ToolTipIcon.Warning); return; }
+        icon.ShowBalloonTip(1500, "OpenRewind", PausedUntil != null ? "★ Moment starred (recording is paused)" : "★ Moment starred", ToolTipIcon.None);
+    }
+
     void ToggleTimeline()
     {
         if (overlay.Visible) overlay.HideOverlay();
@@ -309,6 +332,7 @@ sealed partial class TrayApp : ApplicationContext
         {
             if (engine.ServerOn) Open($"http://127.0.0.1:{engine.Config.Port}/"); else overlay.ShowSearch();
         })));
+        menu.Items.Add(new ToolStripMenuItem("Star This Moment", null, (_, _) => StarMoment()) { ShortcutKeyDisplayString = HotkeyShortcut.Star.Label });
         menu.Items.Add(Item("Ask AI…", ShowAiChat));
         menu.Items.Add(Item("Journal…", ShowJournal));
         menu.Items.Add(Item("Meetings…", ShowMeetings));
@@ -756,6 +780,8 @@ sealed partial class TrayApp : ApplicationContext
         icon.Visible = false;
         overlay.HideOverlay();
         hotKey.Dispose();
+        starKey.Dispose();
+        scrollOpener.Dispose();
         resumeTimer.Dispose();
         lockTimer.Dispose();
         recapTimer.Dispose();

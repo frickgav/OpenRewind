@@ -89,6 +89,9 @@ sealed class TutorialCoach : Form
         startPlayhead = model.Playhead;
         next.Text = i == Steps.Length - 1 ? "Done" : "Next";
         skip.Visible = i < Steps.Length - 1;
+        // Keep the full bar out while the tour points at it (it is a thin scrubber otherwise).
+        overlay.HoldFullBar = Steps[i].At == Anchor.Bar;
+        overlay.Invalidate();
         var b = overlay.Bounds;
         Location = Steps[i].At switch
         {
@@ -121,6 +124,8 @@ sealed class TutorialCoach : Form
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         model.Changed -= OnModelChanged;
+        overlay.HoldFullBar = false;
+        overlay.Invalidate();
         overlay.VisibleChanged -= OnOverlayVisible;
         base.OnFormClosed(e);
     }

@@ -93,6 +93,7 @@ final class Database {
         try migrateMeaning()
         try migrateJournal()
         try migrateMeetings()
+        try migrateStars()
         finishHomeMove(home: path.deletingLastPathComponent())
     }
 

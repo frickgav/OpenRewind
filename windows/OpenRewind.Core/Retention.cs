@@ -47,6 +47,8 @@ public sealed partial class Database
         int n;
         lock (gate)
         {
+            // Stars of this time go with its recordings, even when no frame is left in it.
+            DeleteStarsWith(from, to);
             // Meeting titles taken from these frames go first (outside the transaction: their own statement).
             if (ScalarLong($"SELECT COUNT(*) FROM frames {where}", args) > 0) ForgetMeetingWindows(from, to);
             using var tx = conn.BeginTransaction();

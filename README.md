@@ -205,6 +205,7 @@ send back capped, trimmed text:
 | `get_screen_text` | Screen text from a short time range, sampled and trimmed |
 | `view_screenshot` | One screenshot near a moment, as a JPEG. Only offered when you turn on **Let AI look at screenshots** (off by default) |
 | `list_meetings` | Meetings in a time range, with their summary, decisions and action items when they have notes (see [Meetings](#meetings)) |
+| `list_starred` | Moments the user starred (⌥⌘S / Ctrl+Alt+S), with what was on screen; blocked apps and sites are left out |
 
 Each lookup shows in the chat with the arguments the AI asked for and exactly what was sent
 back. Times in answers link back to that moment in the timeline. Each answer shows the
@@ -581,6 +582,11 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
 - **O** (or the button at the bottom right of the screenshot) goes back to that moment:
   it reopens the browser tab (Safari, Chrome, Arc, Dia, Edge, Brave, Firefox), the document
   the app had open (Pages, Preview, Xcode…), or brings the app's window with that title to the front.
+- **Star moments**: **⌥⌘S** from anywhere (or **Star This Moment** in the menu) stars what is on
+  screen now; on the timeline **S** or the ☆ button stars the shown moment (again to unstar). Stars
+  show as small yellow stars on the bar, and the **Starred** button next to search lists them
+  (search words then only match starred moments). Only the time is saved; deleting recordings
+  deletes their stars too. Ask AI and AI apps can read them with `list_starred`.
 - **App filter**: the **All apps** button next to the search box (or **A** for the app in the
   shown screenshot) limits the timeline to the moments when one app was in front. Time spent in
   other apps shrinks to breaks on the bar, ← → skip straight between that app's screenshots, and

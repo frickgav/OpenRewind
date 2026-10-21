@@ -9,6 +9,17 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var item: NSStatusItem!
     private var overlay: OverlayController!
     private var hotKey: HotKey?
+    /// ⌥⌘S stars the moment from anywhere (Stars.swift).
+    private var starHotKey: HotKey?
+    /// ⌘⇧ + scroll in any app opens the timeline (the first scroll already moves back in time).
+    private lazy var scrollOpener = ScrollOpener { [weak self] e in
+        guard let self, !self.overlay.isVisible else { return }
+        self.appLock.run("see your timeline") { [weak self] in
+            guard let self, !self.overlay.isVisible else { return }
+            self.overlay.show()
+            self.overlay.scroll(e)
+        }
+    }
     private let defaults = UserDefaults.standard
     private let screenKey = "recordScreen", audioKey = "recordAudio"
     private let keepScreenKey = "keepScreen", keepAudioKey = "keepAudio"
@@ -146,6 +157,10 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // ⌥⌘T (or the shortcut picked in Settings) opens the timeline from anywhere.
         registerHotKey(Shortcut.load(defaults))
+        let star = StarShortcut.load(defaults)
+        starHotKey = HotKey(keyCode: star.keyCode, modifiers: star.modifiers) { [weak self] in self?.starMoment() }
+        if starHotKey?.registered != true { log("cannot register the Star Moment shortcut \(star.label); another app may use it") }
+        scrollOpener.update()
         Updater.shared.start()
         updateIcon()
         if !BlocklistStore.shared.onboardingDone { showSetup() }
@@ -310,6 +325,14 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Open the timeline, after Touch ID or the password when App Lock is on; close it if it is open.
+    /// ⌥⌘S: star now. On the open timeline it stars (or unstars) the moment shown instead.
+    /// Needs no App Lock: it only saves the time, and shows nothing from history.
+    @objc private func starMoment() {
+        if overlay.isVisible { overlay.model.toggleStar(); return }
+        guard engine.db.addStar(at: Date()) != nil else { StarToast.shared.show("Could not star this moment"); return }
+        StarToast.shared.show(isPaused ? "Moment starred (recording is paused)" : "Moment starred")
+    }
+
     private func toggleTimeline() {
         if overlay.isVisible { overlay.hide() } else { appLock.run("see your timeline") { [weak self] in self?.overlay.show() } }
     }
@@ -417,6 +440,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         tl.target = self
         menu.addItem(tl)
         menu.addItem(action("Search…", #selector(openSearch)))
+        menu.addItem(action("Star This Moment  (\(StarShortcut.label))", #selector(starMoment)))
         menu.addItem(action("Ask AI…", #selector(showAIChat)))
         menu.addItem(action("Journal…", #selector(showJournal)))
         menu.addItem(action("Meetings…", #selector(showMeetings)))
@@ -806,6 +830,11 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func updateNow() { Updater.shared.update() }
+
+    func toggleScrollOpen() {
+        defaults.set(!ScrollOpener.isOn, forKey: ScrollOpener.key)
+        scrollOpener.update()
+    }
 
     @objc private func toggleAutoDownload() { Updater.shared.autoDownload.toggle() }
 

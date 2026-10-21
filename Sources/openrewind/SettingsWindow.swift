@@ -437,7 +437,14 @@ struct SettingsView: View {
                           record: { app.recordTimelineShortcut(); model.refresh() },
                           restore: { app.restoreTimelineShortcut(); model.refresh() })
         }
-        // More shortcuts (for example starring a moment) go here as ShortcutField rows.
+        SettingsRow("Star Moment") {
+            Text(StarShortcut.label).font(.system(size: 13, weight: .medium)).foregroundColor(SetupTheme.dim)
+            SettingsNote("Stars the moment from any app. On the open timeline, S stars the moment shown.")
+        }
+        SettingsRow("Scroll to Rewind") {
+            Toggle("Open the timeline with ⌘⇧ + scroll", isOn: model.toggle({ ScrollOpener.isOn }, app.toggleScrollOpen))
+            SettingsNote("Hold ⌘ and ⇧ and scroll in any app to open the timeline and go back in time.")
+        }
     }
 }
 
