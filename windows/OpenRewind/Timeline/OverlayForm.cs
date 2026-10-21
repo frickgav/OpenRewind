@@ -326,6 +326,7 @@ sealed class OverlayForm : Form
         if (search.Bounds != box) search.Bounds = box;
 
         float filterX = DrawSearchMode(g, new RectangleF(searchPill.Right + 10 * k, searchPill.Y, 0, searchPill.Height));
+        filterX = DrawStarredFilter(g, new RectangleF(filterX, searchPill.Y, 0, searchPill.Height));
         DrawAppFilter(g, new RectangleF(filterX, searchPill.Y, 0, searchPill.Height));
 
         // Center: time and how long ago.
@@ -345,7 +346,11 @@ sealed class OverlayForm : Form
         var share = new RectangleF(bx - 80 * k, r.Y + 7 * k, 30 * k, 30 * k);
         RoundButton(g, share, "", () => ShowFrameMenu(new Point((int)share.X, (int)(share.Bottom + 4 * k))));
         DrawShareIcon(g, share.X + share.Width / 2, share.Y + share.Height / 2);
-        if (Chat != null) AskAiButton(g, bx - 90 * k, r.Y + 7 * k);
+        var star = new RectangleF(bx - 120 * k, r.Y + 7 * k, 30 * k, 30 * k);
+        RoundButton(g, star, "", () => model.ToggleStar());
+        var starred = model.CurrentStar != null;
+        Draw.TextCentered(g, starred ? "★" : "☆", Semibold(13), starred ? Yellow : TextColor, star.X + star.Width / 2, star.Y + star.Height / 2);
+        if (Chat != null) AskAiButton(g, bx - 130 * k, r.Y + 7 * k);
     }
 
     /// "✦ Ask AI" pill left of help; `right` is its right edge.
@@ -395,6 +400,24 @@ sealed class OverlayForm : Form
             hot.Add((seg, () => { model.SetByMeaning(meaning); FocusSearch(); }));
             x += widths[i];
         }
+        return r.Right + 10 * k;
+    }
+
+    /// "★ Starred" pill next to search: only starred moments in the list. Returns where the next pill goes.
+    float DrawStarredFilter(Graphics g, RectangleF r)
+    {
+        bool on = model.StarredOnly;
+        var f = Semibold(12);
+        var sz = Draw.Measure(g, "Starred", f);
+        var ss = Draw.Measure(g, "★", f);
+        r.Width = 14 * k + ss.Width + 4 * k + sz.Width + 14 * k;
+        bool hover = r.Contains(PointToClient(Cursor.Position));
+        Draw.Fill(g, r, r.Height / 2, on ? Draw.WithAlpha(Accent, dark ? 0.35 : 0.2) : PillColor(hover));
+        Draw.Stroke(g, r, r.Height / 2, Ink(on ? 0.25 : 0.12));
+        float mid = r.Y + r.Height / 2;
+        Draw.Text(g, on ? "★" : "☆", f, on ? Yellow : Ink(0.6), r.X + 14 * k, mid - ss.Height / 2);
+        Draw.Text(g, "Starred", f, TextColor, r.X + 14 * k + ss.Width + 4 * k, mid - sz.Height / 2);
+        hot.Add((r, () => model.SetStarredOnly(!model.StarredOnly)));
         return r.Right + 10 * k;
     }
 
@@ -909,6 +932,21 @@ sealed class OverlayForm : Form
             foreach (var h in model.Hits.Where(h => h.Time >= start && h.Time <= end))
                 g.FillRectangle(yb, X(h.Time) - 1.5f * k, r.Y + 24 * k, 3 * k, 10 * k);
 
+        // Starred moments: a small yellow star each.
+        using (var sb = new SolidBrush(Yellow))
+        using (var edge = new Pen(Color.FromArgb(90, 0, 0, 0), 0.6f * k))
+            foreach (var st in model.Stars.Where(s => s.Time >= start && s.Time <= end))
+            {
+                float cx = X(st.Time), cy = r.Y + 29 * k, rad = 5.5f * k;
+                var pts = Enumerable.Range(0, 10).Select(i =>
+                {
+                    double ang = i * Math.PI / 5 - Math.PI / 2, rr = i % 2 == 0 ? rad : rad * 0.45;
+                    return new PointF(cx + (float)(Math.Cos(ang) * rr), cy + (float)(Math.Sin(ang) * rr));
+                }).ToArray();
+                g.FillPolygon(sb, pts);
+                g.DrawPolygon(edge, pts);
+            }
+
         // The clip marked with [ and ]: a tinted band between two flags.
         float? ma = model.ClipStart is DateTime s1 ? X(s1) : null, mb = model.ClipEnd is DateTime e1 ? X(e1) : null;
         if (ma is float a0 && mb is float b0)
@@ -990,7 +1028,7 @@ sealed class OverlayForm : Form
     {
         var f = F(11);
         foreach (var (keys, what) in new[] { (new[] { "←", "→" }, "move"), (new[] { "space" }, "play audio"), (new[] { "/" }, "search"),
-                                              (new[] { "+", "−" }, "zoom"), (new[] { "O" }, "open"), (new[] { "[", "]" }, "mark clip"),
+                                              (new[] { "+", "−" }, "zoom"), (new[] { "O" }, "open"), (new[] { "S" }, "star"), (new[] { "[", "]" }, "mark clip"),
                                               (new[] { "?" }, "all keys"), (new[] { "esc" }, "close") })
         {
             foreach (var key in keys) x += Draw.Keycap(g, Ink(1), key, F(10), x, mid, k) + 4 * k;
@@ -1011,11 +1049,13 @@ sealed class OverlayForm : Form
         hot.Add((box, () => { }));  // clicks on the list do not fall through
         if (hits.Count == 0)
         {
-            var empty = model.Searching ? "Searching by meaning…" : $"No matches for “{model.Query}”";
+            var empty = model.Searching ? "Searching by meaning…"
+                : model.StarredOnly ? (model.Query.Trim().Length == 0 ? $"No starred moments yet. Press S here, or {HotkeyShortcut.Star.Label} anywhere, to star one." : $"No starred moments match “{model.Query}”")
+                : $"No matches for “{model.Query}”";
             Draw.Text(g, empty, F(14), Ink(0.6), box.X + 16 * k, box.Y + 16 * k);
             return;
         }
-        var head = $"{hits.Count} moment{(hits.Count == 1 ? "" : "s")}" + (model.SearchingByMeaning ? " · closest in meaning first" : "");
+        var head = $"{hits.Count} {(model.StarredOnly ? "starred " : "")}moment{(hits.Count == 1 ? "" : "s")}" + (model.SearchingByMeaning && !model.StarredOnly ? " · closest in meaning first" : "");
         Draw.Text(g, head, F(11), Ink(0.42), box.X + 14 * k, box.Y + 9 * k);
         float hx = box.Right - 14 * k;
         foreach (var part in new[] { "go", "⏎", "choose", "↓", "↑" })
@@ -1036,9 +1076,9 @@ sealed class OverlayForm : Form
             var h = hits[i];
             var rr = new RectangleF(box.X + 6 * k, box.Y + headH + (i - resultsScroll) * rowH, box.Width - 12 * k, rowH - 2 * k);
             if (i == model.SelectedHit) Draw.Fill(g, rr, 8 * k, Draw.WithAlpha(Accent, 0.35));
-            var icon = h.IsAudio ? null : AppIcons.Get(h.Title);
+            var icon = h.IsAudio || h.IsStar ? null : AppIcons.Get(h.Title);
             if (icon != null) g.DrawImage(icon, rr.X + 10 * k, rr.Y + 8 * k, 18 * k, 18 * k);
-            else Draw.Text(g, h.IsAudio ? "∿" : "▭", Semibold(14), h.IsAudio ? Sys : Ink(0.6), rr.X + 11 * k, rr.Y + 5 * k);
+            else Draw.Text(g, h.IsStar ? "★" : h.IsAudio ? "∿" : "▭", Semibold(14), h.IsStar ? Yellow : h.IsAudio ? Sys : Ink(0.6), rr.X + 11 * k, rr.Y + 5 * k);
             var when = h.Time.ToLocalTime().ToString("MMM d, T", CultureInfo.CurrentCulture);
             var ws = Draw.Measure(g, when, F(11));
             Draw.Text(g, when, F(11), Ink(0.42), rr.Right - 10 * k - ws.Width, rr.Y + 7 * k);
@@ -1085,6 +1125,7 @@ sealed class OverlayForm : Form
         ("", new[] { new[] { "scroll" } }, "Scroll the wheel or touchpad"),
         ("", new[] { new[] { "N" } }, "Go to now"),
         ("OPEN", new[] { new[] { "O" } }, "Open the tab or window from this moment"),
+        ("STAR", new[] { new[] { "S" } }, "Star this moment / remove its star"),
         ("FILTER", new[] { new[] { "A" } }, "Only this app / all apps again"),
         ("AUDIO", new[] { new[] { "space" } }, "Play or pause audio from here"),
         ("COPY", new[] { new[] { "Ctrl", "C" } }, "Copy the selected text, or the screenshot"),
@@ -1220,6 +1261,7 @@ sealed class OverlayForm : Form
             case Keys.N: case Keys.End: model.JumpToNow(); break;
             case Keys.O when !ctrl: OpenCurrent(); break;
             case Keys.A when !ctrl: ToggleAppFilter(); break;
+            case Keys.S when !ctrl: model.ToggleStar(); break;
             case Keys.OemOpenBrackets when !ctrl: model.MarkStart(); break;
             case Keys.OemCloseBrackets when !ctrl: model.MarkEnd(); break;
             case Keys.Oemplus: case Keys.Add: model.Span = Math.Max(60, model.Span / 2); Invalidate(); break;

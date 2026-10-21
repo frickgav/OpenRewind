@@ -9,6 +9,9 @@ public record HotkeyShortcut(uint Modifiers, int Key, string Name)
     /// Ctrl+Alt+T (Option+Command+T on the Mac).
     public static readonly HotkeyShortcut Standard = new(Ctrl | Alt, 0x54, "T");
 
+    /// Star Moment from anywhere: Ctrl+Alt+S (Option+Command+S on the Mac; Rewind's Shift+Command+S is Save As in most apps).
+    public static readonly HotkeyShortcut Star = new(Ctrl | Alt, 0x53, "S");
+
     /// Text like "Ctrl+Alt+T", in the order Windows writes it.
     public string Label
     {

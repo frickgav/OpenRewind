@@ -25,6 +25,9 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   10 minutes, drag or click the bar, **space** plays the audio at that moment (the picture
   follows along), **+ / −** zoom, **N** jumps to now, **/** or **Ctrl+F** searches,
   **?** lists every key, **Esc** closes.
+- **Star moments**: **Ctrl+Alt+S** from anywhere (or **Star This Moment** in the tray menu) stars
+  what is on screen now; on the timeline **S** or the ☆ button stars the shown moment (again to
+  unstar). The **Starred** button next to search lists them. Deleting recordings deletes their stars.
 - **O** (or the button at the bottom right of the screenshot) goes back to that moment: it
   reopens the browser tab in the same browser (Chrome, Edge, Arc, Brave, Firefox, Vivaldi, Opera),
   or brings the app's window with that title to the front, starting the app if it is closed.
