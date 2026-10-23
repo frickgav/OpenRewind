@@ -28,6 +28,7 @@
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
     <PackageReference Include="NAudio.WinMM" Version="2.2.1" />
     <PackageReference Include="Interop.UIAutomationClient" Version="10.19041.0" />
+    <PackageReference Include="Net.Codecrete.QrCodeGenerator" Version="2.0.6" />
   </ItemGroup>
 
   <ItemGroup>

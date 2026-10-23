@@ -84,6 +84,20 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return c
     }()
 
+    /// Phone Access: paired phones search and ask over the local network (off by default).
+    private lazy var phone = PhoneAccess(makeServer: { [unowned self] in
+        let lock = self.appLock, db = self.engine.db
+        var api = API(db: db, config: self.engine.config, meaning: self.engine.meaning)
+        api.locked = { !lock.isUnlocked }
+        var ops = PhoneOps(db: db, api: api.handle, computer: Host.current().localizedName ?? "Mac")
+        ops.ai = {
+            let s = AISettings.load(interactive: false)
+            return s.isReady && AISettings.privacyAccepted ? s : nil
+        }
+        let answer = ops
+        return PhoneServer(db: db, locked: { !lock.isUnlocked }, ops: { await answer.run($0) })
+    })
+
     /// Saves what is open about once a minute, for Restore Workspace.
     private lazy var workspaces = WorkspaceWatcher(db: engine.db, recording: { [weak self] in
         guard let self else { return false }
@@ -169,6 +183,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         meetings.start()
         promises.start()
         workspaces.start()
+        phone.resume()
         Database.buildSlowIndexesInBackground(path: engine.config.dbPath)
 
         // ⌥⌘T (or the shortcut picked in Settings) opens the timeline from anywhere.
@@ -1231,6 +1246,39 @@ extension MenuBarApp {
     }
     func togglePromiseReminders() { togglePromises() }
     func openPromises() { showPromises() }
+
+    // Phone Access
+    var phoneOn: Bool { phone.isOn }
+    var phoneURLs: [String] { phone.urls }
+    var phoneProblem: String? { phone.problem }
+    var phoneDevices: [PhoneDevice] { engine.db.phoneDevices().filter(\.paired) }
+    var phoneAutoOff: Int {
+        get { phone.autoOffHours }
+        set { phone.autoOffHours = newValue }
+    }
+    func togglePhoneAccess() {
+        if !phone.enabled {
+            let a = NSAlert()
+            a.messageText = "Turn on Phone Access?"
+            a.informativeText = "Phones you pair can search your screen text and transcripts, ask AI about them and see your promises, "
+                + "from the same Wi-Fi (or a VPN such as Tailscale). Screenshots and audio never leave this Mac. Everything is encrypted with "
+                + "a key only the paired phone has; blocked apps stay hidden and nothing is answered while OpenRewind is locked.\n\n"
+                + "It listens on port \(PhoneServer.port) of this Mac's local network address and turns off by itself after the hours you pick."
+            a.addButton(withTitle: "Turn On")
+            a.addButton(withTitle: "Cancel")
+            guard Dialogs.run(a) == .alertFirstButtonReturn else { return }
+        }
+        phone.toggle()
+    }
+    func pairPhone() { phone.pair(db: engine.db) }
+    func revokePhone(_ d: PhoneDevice) {
+        let a = NSAlert()
+        a.messageText = "Revoke \(d.name.isEmpty ? "this phone" : d.name)?"
+        a.informativeText = "Its key is deleted, so it cannot search or ask again until you pair it again."
+        a.addButton(withTitle: "Revoke")
+        a.addButton(withTitle: "Cancel")
+        if Dialogs.run(a) == .alertFirstButtonReturn { engine.db.removePhoneDevice(d.id) }
+    }
 
     // Privacy & security
     var serverOn: Bool { engine.serverOn }

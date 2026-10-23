@@ -400,6 +400,43 @@ struct SettingsView: View {
             Toggle("Local search server (127.0.0.1:\(app.serverPort))", isOn: model.toggle({ app.serverOn }, app.toggleLocalServer))
             SettingsNote("Search in the browser and let local scripts read your history through the API. Only this Mac can connect.")
         }
+        SettingsRow("Phone Access") {
+            Toggle("Search and ask from my phone on this Wi-Fi", isOn: model.toggle({ app.phoneOn }, app.togglePhoneAccess))
+            SettingsNote("Paired phones can search screen text and transcripts, ask AI and see promises, encrypted end to end with a key only "
+                         + "they have. Screenshots and audio stay on this Mac. Works on the same network, or from anywhere over a VPN such as Tailscale.")
+            if let p = app.phoneProblem {
+                Text(p).font(.system(size: 12)).foregroundColor(SetupTheme.warn).fixedSize(horizontal: false, vertical: true)
+            }
+            if app.phoneOn {
+                Text("Listening on " + app.phoneURLs.joined(separator: ", ")).font(.system(size: 12)).foregroundColor(SetupTheme.dim)
+                    .textSelection(.enabled)
+            }
+            HStack(spacing: 10) {
+                Button("Pair a Phone…") { app.pairPhone(); model.refresh() }.disabled(!app.phoneOn)
+                Text("Turn off after").font(.system(size: 13))
+                Picker("", selection: model.choice({ app.phoneAutoOff }, { app.phoneAutoOff = $0 })) {
+                    ForEach(PhoneAccess.autoOffChoices, id: \.self) { h in
+                        Text(h == 0 ? "Never" : h == 1 ? "1 hour unused" : "\(h) hours unused" + (h == 4 ? " (default)" : "")).tag(h)
+                    }
+                }
+                .labelsHidden().frame(width: 190)
+            }
+            let devices = model.tick >= 0 ? app.phoneDevices : []
+            ForEach(devices) { d in
+                HStack(spacing: 10) {
+                    Image(systemName: "iphone").foregroundColor(SetupTheme.dim)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(d.name.isEmpty ? "Phone" : d.name).font(.system(size: 13, weight: .medium))
+                        Text("Paired " + d.created.formatted(date: .abbreviated, time: .omitted)
+                             + (d.lastSeen.map { ", last used " + $0.formatted(date: .abbreviated, time: .shortened) } ?? ""))
+                            .font(.system(size: 11.5)).foregroundColor(SetupTheme.faint)
+                    }
+                    Spacer()
+                    Button("Revoke") { app.revokePhone(d); model.refresh() }
+                }
+                .frame(maxWidth: 460)
+            }
+        }
     }
 
     // MARK: Storage

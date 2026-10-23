@@ -119,3 +119,18 @@ public class SecretsTests
         Assert.False(Secrets.Luhn("79927398710"));
     }
 }
+
+/// The cases the Mac CI checks with `features-check` (main.swift), so both apps redact alike.
+public class SecretsSharedCases
+{
+    [Theory]
+    [InlineData("password: hunter2!", "password: [redacted]")]
+    [InlineData("card 4111 1111 1111 1111 exp", "card [redacted] exp")]
+    [InlineData("Meeting at 10:30 on 2026-10-18, call 555-123-4567", "Meeting at 10:30 on 2026-10-18, call 555-123-4567")]
+    [InlineData("Forgot password? Reset it here", "Forgot password? Reset it here")]
+    public void SameAsTheMacCheck(string input, string want) => Assert.Equal(want, Secrets.Redact(input));
+
+    [Fact]
+    public void StripeKeyLikeTheMacCheck() =>
+        Assert.Equal("key [redacted]", Secrets.Redact("key " + "sk" + "_live_" + "4eC39HqLyjWDarjtT1zdp7dc"));
+}

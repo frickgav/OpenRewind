@@ -62,6 +62,27 @@ if command == "meaning-check" {
     exit(MeaningSelfTest.run(encrypted: false) && MeaningSelfTest.run(encrypted: true) ? 0 : 1)
 }
 
+// Hidden: secret redaction, Phone Access messages (against the phone page's SJCL vectors) and Restore
+// Workspace's saved form, on cases the Windows tests share (run by the Mac CI).
+if command == "features-check" {
+    var problems = PhoneCrypto.selfTest()
+    let stripe = "sk" + "_live_" + "4eC39HqLyjWDarjtT1zdp7dc"  // split so it is not taken for a real key
+    let cases: [(String, String)] = [
+        ("password: hunter2!", "password: [redacted]"),
+        ("card 4111 1111 1111 1111 exp", "card [redacted] exp"),
+        ("key " + stripe, "key [redacted]"),
+        ("Meeting at 10:30 on 2026-10-18, call 555-123-4567", "Meeting at 10:30 on 2026-10-18, call 555-123-4567"),
+        ("Forgot password? Reset it here", "Forgot password? Reset it here"),
+    ]
+    for (input, want) in cases where Secrets.redact(input) != want { problems.append("redact \"\(input.prefix(12))…\" gave \"\(Secrets.redact(input))\"") }
+    if Secrets.redactURL("https://user:hunter22@example.com/a?token=abc123def456&q=x").contains("hunter22") { problems.append("redactURL password") }
+    let items = [WorkspaceItem(kind: Workspace.tab, app: "Safari", appID: "com.apple.Safari", title: "Docs", url: "https://example.com/a", path: "")]
+    if Workspace.parse(Workspace.json(items)) != items { problems.append("workspace json round trip") }
+    for p in problems { print("FAIL: \(p)") }
+    print(problems.isEmpty ? "features check passed" : "features check failed (\(problems.count))")
+    exit(problems.isEmpty ? 0 : 1)
+}
+
 // Hidden: checks Parakeet's 30 s audio windows on edge-case clip lengths, without the model (run by the Mac CI).
 if command == "parakeet-check" {
     let problems = ParakeetMath.selfTest()
