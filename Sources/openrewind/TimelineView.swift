@@ -573,6 +573,7 @@ struct TimelineView: View {
         ("", [["H"]], "Hide this app from the timeline"),
         ("Copy", [["⌘", "C"]], "Copy the selected text, or the screenshot"),
         ("", [["drag"]], "Select text on the screenshot"),
+        ("", [["⇧", "⌘", "C"]], "Copy all the text on the screenshot"),
         ("", [["⌘", "S"]], "Save the screenshot as a PNG"),
         ("Clip", [["["], ["]"]], "Mark where a clip starts / ends"),
         ("", [["⌘", "E"]], "Export a clip as MP4 or GIF"),
@@ -734,8 +735,8 @@ struct FrameMenu: View {
 
     var body: some View {
         Menu {
-            Button("Copy Screenshot (or selected text)") { model.copy() }
-            Button("Copy All Text") { model.copyAllText() }
+            Button("Copy Screenshot (or selected text)   ⌘C") { model.copy() }
+            Button("Copy All Text   ⇧⌘C") { model.copyAllText() }
             Button("Save Screenshot…") { model.saveFrame() }
             Divider()
             Button("Mark Clip Start Here") { model.markStart() }

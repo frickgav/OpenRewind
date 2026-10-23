@@ -669,7 +669,7 @@ sealed class OverlayForm : Form
         }
         bool frame = model.Current != null && model.Image != null && !model.CurrentHidden;
         if (model.HasSelection) Add("Copy Text", "Ctrl+C", model.Copy);
-        if (model.Text is FrameText text && !text.IsEmpty) Add("Copy All Text", "", model.CopyAllText);
+        Add("Copy All Text", "Ctrl+Shift+C", model.CopyAllText, frame);
         Add("Copy Screenshot", model.HasSelection ? "" : "Ctrl+C", () => { model.ClearSelection(); model.Copy(); }, frame);
         Add("Save Screenshot…", "Ctrl+S", () => model.SaveFrame(this), frame);
         menu.Items.Add(new ToolStripSeparator());
@@ -1304,6 +1304,7 @@ sealed class OverlayForm : Form
         ("AUDIO", new[] { new[] { "space" } }, "Play or pause audio from here"),
         ("COPY", new[] { new[] { "Ctrl", "C" } }, "Copy the selected text, or the screenshot"),
         ("", new[] { new[] { "drag" } }, "Select text on the screenshot"),
+        ("", new[] { new[] { "Ctrl", "Shift", "C" } }, "Copy all the text on the screenshot"),
         ("", new[] { new[] { "Ctrl", "S" } }, "Save the screenshot as a PNG"),
         ("CLIP", new[] { new[] { "[" }, new[] { "]" } }, "Mark where a clip starts / ends"),
         ("", new[] { new[] { "Ctrl", "E" } }, "Export a clip as MP4 or GIF"),
@@ -1411,6 +1412,7 @@ sealed class OverlayForm : Form
                 default: return base.ProcessCmdKey(ref msg, keyData);  // let the text box have it
             }
         }
+        if (ctrl && shift && key == Keys.C) { model.CopyAllText(); return true; }
         if (ctrl && key == Keys.C) { model.Copy(); return true; }
         if (ctrl && key == Keys.S) { model.SaveFrame(this); return true; }
         if (ctrl && key == Keys.E) { ExportClip(); return true; }

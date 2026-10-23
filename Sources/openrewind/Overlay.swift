@@ -179,6 +179,7 @@ final class OverlayController {
             default: return false  // let the text field have it
             }
         }
+        if cmd && shift && e.keyCode == UInt16(kVK_ANSI_C) { model.copyAllText(); return true }
         if cmd && e.keyCode == UInt16(kVK_ANSI_C) { model.copy(); return true }
         if cmd && e.keyCode == UInt16(kVK_ANSI_S) { model.saveFrame(); return true }
         if cmd && e.keyCode == UInt16(kVK_ANSI_E) { model.openExport(); return true }
