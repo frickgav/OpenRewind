@@ -95,6 +95,24 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
   worked out on your computer without AI. See [Insights](#insights).
 - **Claude, Cursor and other AI apps** can search your history too, through MCP, once you turn
   it on. See [Use with Claude and other AI apps (MCP)](#use-with-claude-and-other-ai-apps-mcp).
+- **Hide secrets** (on by default, **Settings → Privacy**): before a screenshot is saved, password
+  fields, API keys and tokens (`sk-…`, `ghp_…`, `xox…-`, AWS and Google keys, JWTs, private key
+  blocks, long random strings) and card numbers (Luhn-checked) are blurred, and their text,
+  window title, address and audio transcripts get `[redacted]` instead. Search, AI and the local
+  server never see them. Older recordings are not changed.
+- **You promised** (off until you turn it on in **Settings → AI**): after meetings you take notes
+  for, and every 3 hours over chat and mail apps on screen, your own AI key picks out what you said
+  you would do, for whom and by when. Due ones show a notification; **You Promised…** in the menu
+  lists them with Done, Snooze, Dismiss and Go to Moment. Ask AI and MCP can read them
+  (`list_promises`). Blocked apps and sites are never sent.
+- **Restore Workspace**: while recording, the open apps, windows, documents (Mac) and the tab each
+  browser window shows are saved about once a minute when they change. On the timeline, **⇧O** /
+  **Shift+O** (or the top bar button) asks which of them to open again from the shown moment.
+  It never closes anything; blocked apps and sites are skipped.
+- **Phone Access** (off until you turn it on in **Settings → Security**): pair your phone with a
+  QR code, then search your screen text and transcripts, ask AI and see your promises from the
+  phone's browser on the same Wi-Fi. End-to-end encrypted with a key only the phone has; see
+  [docs/phone-access.md](docs/phone-access.md).
 
 ## Compress Older Recordings
 
@@ -206,6 +224,7 @@ send back capped, trimmed text:
 | `view_screenshot` | One screenshot near a moment, as a JPEG. Only offered when you turn on **Let AI look at screenshots** (off by default) |
 | `list_meetings` | Meetings in a time range, with their summary, decisions and action items when they have notes (see [Meetings](#meetings)) |
 | `list_starred` | Moments the user starred (⌥⌘S / Ctrl+Alt+S), with what was on screen; blocked apps and sites are left out |
+| `list_promises` | Things the user promised (what, for whom, due), open ones first. Only offered while **You promised** is on; blocked sources are left out |
 
 Each lookup shows in the chat with the arguments the AI asked for and exactly what was sent
 back. Times in answers link back to that moment in the timeline. Each answer shows the
@@ -278,6 +297,8 @@ Get things out of the timeline, on the Mac and on Windows:
 - **Copy text from the past**: drag across words on any screenshot in the timeline to select
   them, then **⌘C** / **Ctrl+C**. The Mac uses Live Text (VisionKit); Windows reads the shown
   screenshot with Windows OCR. Both run on your computer.
+- **Copy All Text** (**⇧⌘C** / **Ctrl+Shift+C**, or right-click the screenshot) copies all the text
+  saved for the shown moment, from the accessibility tree or OCR, even for frames recorded long ago.
 - **Copy Screenshot**: **⌘C** / **Ctrl+C** with no text selected copies the whole screenshot as
   an image. **Save Screenshot…** (**⌘S** / **Ctrl+S**) saves it as a PNG.
 - **Export Clip…** (**⌘E** / **Ctrl+E**) turns a stretch of the timeline into an MP4 video or an

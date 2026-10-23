@@ -108,6 +108,10 @@ sealed class Settings
     public bool PromisesOn { get; set; }
     public string? PromisesProvider { get; set; }
     public DateTime? PromisesLastScan { get; set; }
+    /// Phone Access (Settings → Security): paired phones search and ask over the local network. Off by default;
+    /// turns itself off after `PhoneAutoOffHours` unused (0 = never).
+    public bool PhoneAccess { get; set; }
+    public int PhoneAutoOffHours { get; set; } = 4;
 
     string path = "";
 

@@ -42,6 +42,7 @@ sealed partial class TrayApp : ApplicationContext
     readonly MeetingWatcher meetings;
     /// Saves what is open about once a minute, for Restore Workspace.
     readonly WorkspaceWatcher workspaces;
+    readonly PhoneAccessController phone;
     /// "You promised" reminders.
     readonly PromiseJobs promises;
 
@@ -96,6 +97,8 @@ sealed partial class TrayApp : ApplicationContext
         meetings.Ended = m => promises.MeetingEnded(m);
         meetings.Start();
         workspaces = new WorkspaceWatcher(engine.Db, () => engine.ScreenOn && PausedUntil == null);
+        phone = new PhoneAccessController(engine, settings, () => !appLock.IsUnlocked, overlay);
+        phone.Resume();
 
         // Ctrl+Alt+T (or the shortcut picked in Settings) opens the timeline from anywhere.
         hotKey = new HotKey(Shortcut, ToggleTimeline);
@@ -833,6 +836,7 @@ sealed partial class TrayApp : ApplicationContext
         updater.Dispose();
         meetings.Dispose();
         workspaces.Dispose();
+        phone.Dispose();
         promises.Dispose();
         engine.Shutdown();
         // Deletes the decrypted copies of open videos.
