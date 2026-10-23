@@ -127,6 +127,45 @@ enum OCR {
         return obs.compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
     }
 
+    /// Reads the image like recognize(_:) and also says where secrets are in it (see Secrets), as fractions
+    /// of its width and height (0–1, top-left origin), so they can be blurred before it is saved.
+    /// `fast` only looks for the secrets, for when the text came from Accessibility.
+    static func recognizeFindingSecrets(_ image: CGImage, fast: Bool = false) -> (text: String, secrets: [CGRect]) {
+        let req = VNRecognizeTextRequest()
+        req.recognitionLevel = fast ? .fast : .accurate
+        req.usesLanguageCorrection = !fast
+        do { try VNImageRequestHandler(cgImage: image, options: [:]).perform([req]) } catch {
+            log("ocr failed: \(error)")
+            return ("", [])
+        }
+        let obs = (req.results ?? []).sorted {
+            abs($0.boundingBox.midY - $1.boundingBox.midY) > 0.01
+                ? $0.boundingBox.midY > $1.boundingBox.midY
+                : $0.boundingBox.minX < $1.boundingBox.minX
+        }
+        let lines = obs.compactMap { $0.topCandidates(1).first }
+        // All lines in one text, so a key over several lines or a card number in pieces is still found.
+        var joined = ""
+        var starts: [Int] = []
+        for (i, line) in lines.enumerated() {
+            if i > 0 { joined += "\n" }
+            starts.append((joined as NSString).length)
+            joined += line.string
+        }
+        let hits = Secrets.find(joined)
+        var boxes: [CGRect] = []
+        for (i, line) in lines.enumerated() where !hits.isEmpty {
+            let a = starts[i], len = (line.string as NSString).length
+            for h in hits where h.location < a + len && a < h.location + h.length {
+                let lo = max(h.location, a) - a, hi = min(h.location + h.length, a + len) - a
+                guard hi > lo, let r = Range(NSRange(location: lo, length: hi - lo), in: line.string),
+                      let box = try? line.boundingBox(for: r)?.boundingBox else { continue }
+                boxes.append(CGRect(x: box.minX, y: 1 - box.maxY, width: box.width, height: box.height))
+            }
+        }
+        return (joined, boxes)
+    }
+
     /// Where the search terms appear in the image, as fractions of its width and height (0–1, top-left origin).
     static func find(_ terms: [String], in image: CGImage) -> [CGRect] {
         guard !terms.isEmpty else { return [] }

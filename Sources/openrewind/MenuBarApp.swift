@@ -77,6 +77,35 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var meetings = MeetingCenter(db: engine.db, chunkSeconds: engine.config.audioChunkSeconds,
                                               transcribing: { [weak self] in self?.engine.transcriber != nil })
 
+    /// "You promised" reminders: scans after meetings and every few hours, and reminds when one is due.
+    private lazy var promises: PromiseCenter = {
+        let c = PromiseCenter(db: engine.db)
+        c.openList = { [weak self] in self?.showPromises() }
+        let lock = appLock
+        c.locked = { !lock.isUnlocked }
+        return c
+    }()
+
+    /// Phone Access: paired phones search and ask over the local network (off by default).
+    private lazy var phone = PhoneAccess(makeServer: { [unowned self] in
+        let lock = self.appLock, db = self.engine.db
+        var api = API(db: db, config: self.engine.config, meaning: self.engine.meaning)
+        api.locked = { !lock.isUnlocked }
+        var ops = PhoneOps(db: db, api: api.handle, computer: Host.current().localizedName ?? "Mac")
+        ops.ai = {
+            let s = AISettings.load(interactive: false)
+            return s.isReady && AISettings.privacyAccepted ? s : nil
+        }
+        let answer = ops
+        return PhoneServer(db: db, locked: { !lock.isUnlocked }, ops: { await answer.run($0) })
+    })
+
+    /// Saves what is open about once a minute, for Restore Workspace.
+    private lazy var workspaces = WorkspaceWatcher(db: engine.db, recording: { [weak self] in
+        guard let self else { return false }
+        return self.engine.screenOn && !self.isPaused
+    })
+
     init(engine: Engine) {
         self.engine = engine
         super.init()
@@ -128,7 +157,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             // In use: OpenRewind is in front with a window that shows history.
             let open = self.overlay.isVisible || InsightsWindow.shared.isOpen
-                || ["ai", "journal", "meetings", "settings"].contains { SetupWindows.shared.isOpen($0) }
+                || ["ai", "journal", "meetings", "promises", "settings"].contains { SetupWindows.shared.isOpen($0) }
             self.appLock.tick(historyInUse: NSApp.isActive && open)
         }
         RunLoop.main.add(t, forMode: .common)
@@ -152,7 +181,11 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         retention.start()
         video = VideoJob(db: engine.db, dataDir: engine.config.dataDir, enabled: defaults.bool(forKey: compressKey))
         video.start()
+        meetings.onEnded = { [weak self] m in self?.promises.meetingEnded(m) }
         meetings.start()
+        promises.start()
+        workspaces.start()
+        phone.resume()
         Database.buildSlowIndexesInBackground(path: engine.config.dbPath)
 
         // ⌥⌘T (or the shortcut picked in Settings) opens the timeline from anywhere.
@@ -256,6 +289,57 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// What the user promised (behind App Lock: it quotes meetings and chats), with jumps to the moment.
+    @objc func showPromises() {
+        appLock.run("see your promises") { [weak self] in
+            guard let self else { return }
+            let model = PromiseListModel(db: self.engine.db)
+            model.openMoment = { [weak self] d in self?.appLock.run("see your timeline") { self?.overlay.show(at: d) } }
+            let center = self.promises
+            SetupWindows.shared.show("promises", title: "You Promised", size: NSSize(width: 640, height: 560), resizable: true) {
+                PromiseListView(model: model, center: center)
+            }
+        }
+    }
+
+    /// Turning it on says plainly what it sends and that it costs tokens.
+    func togglePromises() {
+        if PromiseCenter.isOn {
+            PromiseCenter.isOn = false
+            log("promise reminders off")
+            return
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        let ai = AISettings.load()
+        guard ai.isReady else {
+            let a = NSAlert()
+            a.messageText = "You Promised Reminders"
+            a.informativeText = "Promise reminders use your own AI key. Set up a provider in AI Settings first, then turn this on."
+            a.addButton(withTitle: "Open AI Settings…")
+            a.addButton(withTitle: "Cancel")
+            if Dialogs.run(a) == .alertFirstButtonReturn { showAISettings() }
+            return
+        }
+        let a = NSAlert()
+        a.messageText = "Look for things you promised?"
+        a.informativeText = Self.promiseConsentText(ai.kind.title)
+        a.addButton(withTitle: "Turn On")
+        a.addButton(withTitle: "Cancel")
+        guard Dialogs.run(a) == .alertFirstButtonReturn else { return }
+        PromiseCenter.isOn = true
+        PromiseCenter.askToNotify()
+        log("promise reminders on")
+    }
+
+    /// What promise reminders send, and where. Same words as the Windows app.
+    static func promiseConsentText(_ provider: String) -> String {
+        "OpenRewind sends to \(provider), using your key: the transcript of each meeting you take notes for, after it ends, and every "
+            + "3 hours the text read off your screen in chat and mail apps (Slack, Teams, Messages, Mail, Outlook, WhatsApp, Discord, web mail…) "
+            + "since the last look, up to about 12,000 characters each time.\n\n"
+            + "Blocked apps, sites and words are never sent, and passwords, keys and card numbers are taken out first. This costs tokens "
+            + "on your account and \(provider)'s privacy terms apply. If you switch providers in AI Settings, it pauses until you turn it on again."
+    }
+
     /// Turning it on says plainly what it sends and that it costs tokens.
     @objc private func toggleMeetingSummaries() {
         if MeetingCenter.autoSummarize {
@@ -341,7 +425,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func hideHistory() {
         if overlay.isVisible { overlay.hide(restoreFocus: false) }
         // Settings shows recent sites (Blocked Apps & Sites) and changes what is recorded, so it closes too.
-        for w in ["ai", "settings", "journal", "meetings", "mcp"] { SetupWindows.shared.close(w) }
+        for w in ["ai", "settings", "journal", "meetings", "promises", "mcp"] { SetupWindows.shared.close(w) }
         InsightsWindow.shared.close()
         FrameImages.shared.releaseAll()
     }
@@ -444,6 +528,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(action("Ask AI…", #selector(showAIChat)))
         menu.addItem(action("Journal…", #selector(showJournal)))
         menu.addItem(action("Meetings…", #selector(showMeetings)))
+        let due = PromiseCenter.isOn ? engine.db.promises(status: Promises.open).filter { ($0.remindAt ?? .distantFuture) <= Date() }.count : 0
+        menu.addItem(action(due > 0 ? "You Promised…  (\(due) due)" : "You Promised…", #selector(showPromises)))
         menu.addItem(action("Insights…", #selector(showInsights)))
         menu.addItem(action("Show Data Folder", #selector(openData)))
         for line in storageLines() {
@@ -1155,6 +1241,46 @@ extension MenuBarApp {
     var mcpOn: Bool { MCPSetup.enabled }
     func toggleAIApps() { toggleMCP() }
     func connectAIApps() { showConnectAIApps() }
+    var promisesOn: Bool { PromiseCenter.isOn }
+    var promisesPaused: Bool {
+        guard PromiseCenter.isOn else { return false }
+        return PromiseCenter.consent != MeetingNotes.consentKey(AISettings.load())
+    }
+    func togglePromiseReminders() { togglePromises() }
+    func openPromises() { showPromises() }
+
+    // Phone Access
+    var phoneOn: Bool { phone.isOn }
+    var phoneURLs: [String] { phone.urls }
+    var phoneProblem: String? { phone.problem }
+    var phoneDevices: [PhoneDevice] { engine.db.phoneDevices().filter(\.paired) }
+    var phoneAutoOff: Int {
+        get { phone.autoOffHours }
+        set { phone.autoOffHours = newValue }
+    }
+    func togglePhoneAccess() {
+        if !phone.enabled {
+            let a = NSAlert()
+            a.messageText = "Turn on Phone Access?"
+            a.informativeText = "Phones you pair can search your screen text and transcripts, ask AI about them and see your promises, "
+                + "from the same Wi-Fi (or a VPN such as Tailscale). Screenshots and audio never leave this Mac. Everything is encrypted with "
+                + "a key only the paired phone has; blocked apps stay hidden and nothing is answered while OpenRewind is locked.\n\n"
+                + "It listens on port \(PhoneServer.port) of this Mac's local network address and turns off by itself after the hours you pick."
+            a.addButton(withTitle: "Turn On")
+            a.addButton(withTitle: "Cancel")
+            guard Dialogs.run(a) == .alertFirstButtonReturn else { return }
+        }
+        phone.toggle()
+    }
+    func pairPhone() { phone.pair(db: engine.db) }
+    func revokePhone(_ d: PhoneDevice) {
+        let a = NSAlert()
+        a.messageText = "Revoke \(d.name.isEmpty ? "this phone" : d.name)?"
+        a.informativeText = "Its key is deleted, so it cannot search or ask again until you pair it again."
+        a.addButton(withTitle: "Revoke")
+        a.addButton(withTitle: "Cancel")
+        if Dialogs.run(a) == .alertFirstButtonReturn { engine.db.removePhoneDevice(d.id) }
+    }
 
     // Privacy & security
     var serverOn: Bool { engine.serverOn }

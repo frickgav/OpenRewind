@@ -70,6 +70,11 @@ public sealed partial class AiTools
         Schema(new() { ["start"] = TimeArg("Only after this time (optional)."), ["end"] = TimeArg("Only before this time (optional)."),
                        ["limit"] = Int("Moments to return, up to 50. Default 20.") }));
 
+    public static readonly AiToolSpec PromisesSpec = new("list_promises",
+        "Things the user promised to do (found by \"You promised\" reminders in meetings and chats), with who it is for, when it is due, its status (open, done, dismissed) and a link to the moment it was said. Use for questions like 'what did I promise this week' or 'what do I owe Sam'.",
+        Schema(new() { ["status"] = new JsonObject { ["type"] = "string", ["description"] = "open (default), done, dismissed or all." },
+                       ["limit"] = Int("Promises to return, up to 50. Default 25.") }));
+
     public static readonly AiToolSpec[] Specs =
     {
         new("activity_summary",
@@ -101,6 +106,7 @@ public sealed partial class AiTools
             "Meetings and calls found on this computer (Zoom, Teams, Google Meet, Webex, FaceTime, Slack huddles) between two times, with their summary, decisions and action items when they have notes. Use first for questions about meetings or calls, like 'what did we decide in my 2pm call'. For exactly what was said, use search_audio over the meeting's time range.",
             Schema(new() { ["start"] = TimeArg("Start time. Default: 7 days ago."), ["end"] = TimeArg("End time. Default: now.") })),
         StarredSpec,
+        PromisesSpec,
     };
 
     static JsonObject Schema(Dictionary<string, JsonNode> props, params string[] required)
@@ -116,7 +122,7 @@ public sealed partial class AiTools
 
     /// Whether web addresses in this lookup's answer may open from Ask AI's reply. Not for meeting
     /// notes: a model wrote them from what other people said on a call.
-    public static bool SuppliesLinks(string tool) => tool != "list_meetings";
+    public static bool SuppliesLinks(string tool) => tool is not ("list_meetings" or "list_promises");
 
     /// A short line for the chat window: what was looked up.
     public static string Describe(AiToolCall call)
@@ -134,6 +140,7 @@ public sealed partial class AiTools
             "get_screen_text" => "Read screen text" + when,
             "list_meetings" => "Listed meetings" + (range.Length == 0 ? " from the last 7 days" : when),
             "list_starred" => "Listed starred moments" + when,
+            "list_promises" => "Listed promises",
             "view_screenshot" => $"Looked at the screenshot from {S(a, "time")}",
             _ => call.Name,
         };
@@ -187,6 +194,7 @@ public sealed partial class AiTools
             case "search_by_meaning": out_ = SearchByMeaning(a); break;
             case "list_meetings": out_ = ListMeetings(a); break;
             case "list_starred": out_ = ListStarred(a); break;
+            case "list_promises": out_ = ListPromises(a); break;
             case "get_screen_text":
                 if (AiTime.Parse(a["start"]) is not DateTime s || AiTime.Parse(a["end"]) is not DateTime e)
                     return "Error: start and end are required, e.g. '2026-10-18 14:00'.";

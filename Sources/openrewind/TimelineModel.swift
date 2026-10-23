@@ -145,6 +145,18 @@ final class TimelineModel: ObservableObject {
     }
 
     /// Go back to this moment: the browser tab, the document, or the app window.
+    /// ⇧O and the top bar button: open again what was open at the shown moment, after asking which.
+    func restoreWorkspace() {
+        let at = current?.time ?? playhead
+        guard let snap = db.workspace(at: at) else { show(notice: "No workspace was saved around this moment"); return }
+        let items = Workspace.restorable(snap.items, BlocklistStore.shared.current)
+        guard !items.isEmpty else { show(notice: "Nothing from this moment can be opened again"); return }
+        guard let picked = WorkspaceRestore.ask(snap, items), !picked.isEmpty else { return }
+        closeForOpen?()
+        let n = WorkspaceRestore.open(picked)
+        log("restore workspace: opened \(n) of \(picked.count)")
+    }
+
     func openCurrent() {
         guard let target = currentTarget, let f = current else {
             show(notice: "Nothing to open for this moment")

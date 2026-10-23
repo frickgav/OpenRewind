@@ -29,6 +29,8 @@ sealed class Settings
     /// Window titles with any of these words are hidden too (bank sites in a browser).
     public List<string> BlockedKeywords { get; set; } = new();
     public bool BlockPrivateWindows { get; set; } = true;
+    /// Blur passwords, API keys, tokens and card numbers out of screenshots and text before they are saved.
+    public bool RedactSecrets { get; set; } = true;
     /// Websites and links whose tabs are hidden (see SiteRules): "chase.com", "docs.google.com/document/d/…".
     public List<string> BlockedSites { get; set; } = new();
     /// Apps left out of the timeline (see HiddenApps), by the name the timeline shows. Still recorded.
@@ -101,6 +103,15 @@ sealed class Settings
     public bool AskBeforeMeetingNotes { get; set; } = true;
     /// Answers remembered per meeting app ("Zoom" → "always" or "never"), from the popup.
     public Dictionary<string, string> MeetingChoices { get; set; } = new();
+    /// "You promised" reminders (Settings → AI). Off until turned on; `PromisesProvider` is the provider
+    /// agreed to (MeetingNotes.ConsentKey); it pauses when AI Settings point elsewhere.
+    public bool PromisesOn { get; set; }
+    public string? PromisesProvider { get; set; }
+    public DateTime? PromisesLastScan { get; set; }
+    /// Phone Access (Settings → Security): paired phones search and ask over the local network. Off by default;
+    /// turns itself off after `PhoneAutoOffHours` unused (0 = never).
+    public bool PhoneAccess { get; set; }
+    public int PhoneAutoOffHours { get; set; } = 4;
 
     string path = "";
 

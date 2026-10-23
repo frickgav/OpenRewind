@@ -63,6 +63,17 @@ sealed partial class TrayApp
             settings.Save();
         }
     }
+    internal bool RedactSecrets
+    {
+        get => settings.RedactSecrets;
+        set
+        {
+            settings.RedactSecrets = value;
+            engine.Recorder.RedactSecrets = Database.RedactSecrets = value;
+            settings.Save();
+            Log.Write($"hide secrets {(value ? "on" : "off")}");
+        }
+    }
     internal bool MeaningOn => settings.SearchByMeaning;
     internal void ToggleSearchByMeaning() => ToggleMeaning();
     internal string MeaningLine => meaning.StatusLine();
@@ -91,9 +102,32 @@ sealed partial class TrayApp
         JournalForm.Reload();
     }
     internal void ToggleAiApps() => ToggleMcp();
+    internal bool PromisesOn => settings.PromisesOn;
+    internal bool PromisesPaused => promises.Paused;
+    internal void TogglePromiseReminders() => TogglePromises();
+    internal void OpenPromises() => ShowPromises();
     internal void ConnectAiApps() => ShowConnectAiApps();
 
     // Security
+    internal bool PhoneOn => phone.On;
+    internal IReadOnlyList<string> PhoneUrls => phone.Urls;
+    internal string? PhoneProblem => phone.Problem;
+    internal List<PhoneDevice> PhoneDevices => engine.Db.PhoneDevices().Where(d => d.Paired).ToList();
+    internal int PhoneAutoOff
+    {
+        get => settings.PhoneAutoOffHours;
+        set { settings.PhoneAutoOffHours = value; settings.Save(); }
+    }
+    internal void TogglePhoneAccess() => phone.Toggle();
+    internal void PairPhone() => phone.Pair();
+    internal bool RevokePhone(PhoneDevice d)
+    {
+        var name = d.Name.Length > 0 ? d.Name : "this phone";
+        if (MessageBox.Show($"Its key is deleted, so it cannot search or ask again until you pair it again.", $"Revoke {name}?",
+                            MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK) return false;
+        engine.Db.RemovePhoneDevice(d.Id);
+        return true;
+    }
     internal bool ServerOn => engine.ServerOn;
     internal int ServerPort => engine.Config.Port;
     internal void ToggleLocalServer() => ToggleServer();

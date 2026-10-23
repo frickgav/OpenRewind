@@ -21,6 +21,8 @@ sealed class MeetingWatcher : IDisposable
 
     /// Raised on the UI thread when meetings were added, changed or summarized.
     public static event Action? Changed;
+    /// Called on the UI thread for each meeting that just ended (promise reminders read it).
+    public Action<Meeting>? Ended { get; set; }
 
     public MeetingWatcher(Database db, Settings settings, double chunkSeconds, Func<bool> transcribing, Action<Action> ui)
     {
@@ -62,7 +64,10 @@ sealed class MeetingWatcher : IDisposable
                     if (MeetingPrompt.Closes(db.MeetingById(id), now)) { prompts.Remove(id); form.Close(); }
                 Changed?.Invoke();
                 foreach (var m in ended)
+                {
                     if (db.MeetingById(m.Id) is Meeting fresh && AutoSummarizes(fresh)) _ = Summarize(fresh);
+                    if (db.MeetingById(m.Id) is Meeting done) Ended?.Invoke(done);
+                }
                 // Transcripts that came in after the notes were made: make them again, once.
                 foreach (var m in late)
                     if (!summarizing.Contains(m.Id) && AutoSummarizes(m))

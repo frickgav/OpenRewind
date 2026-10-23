@@ -86,6 +86,17 @@ on older recordings and on how time is counted). Click an app, site
   (670 MB). **Re-transcribe Recent Audio** runs older clips through the new model; the new text
   replaces the old for good. Parakeet stays loaded (about 1 GB) while audio recording is on. See
   [Choosing a transcription model](../README.md#choosing-a-transcription-model).
+- **Settings → Security → Phone Access** (off by default): **Pair a Phone…** shows a QR code; scan it
+  with the phone's camera and search, ask AI and see promises from the phone on the same Wi-Fi.
+  Listens on port 3032 of the PC's private network address only (Windows may ask to allow
+  OpenRewind on private networks), turns off after 1, 4 (default) or 12 hours unused, and lists
+  paired phones with **Revoke**. See [docs/phone-access.md](../docs/phone-access.md).
+- **Settings → Privacy → Hide passwords, API keys and card numbers** (on by default) blurs them in
+  screenshots and saves `[redacted]` in their place.
+- **Settings → AI → Promises** (off by default) finds what you promised in meetings and chats with
+  your AI key; **You Promised…** in the tray menu lists them. **Shift+O** on the timeline reopens the
+  apps and browser tabs that were open then, after asking which. **Ctrl+Shift+C** copies all the text
+  of the shown moment.
 - **Settings → Local Search Server** turns on the API and browser search page at
   http://127.0.0.1:3031. Off by default. Only this PC can connect. The terminal commands
   `record` and `serve` always start it. Blocked apps and sites are left out of it, as in Ask AI
