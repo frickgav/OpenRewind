@@ -84,3 +84,19 @@ public class WorkspaceTests : IDisposable
         Assert.Equal("Word — plan.docx", Workspace.Describe(Doc));
     }
 }
+
+public class WorkspaceDocumentTests
+{
+    [Theory]
+    [InlineData(@"C:\Users\sam\Documents\Plan.docx", true)]
+    [InlineData("/Users/sam/Notes/todo.md", true)]
+    [InlineData(@"C:\Users\sam\Downloads\setup.exe", false)]
+    [InlineData(@"C:\Users\sam\run.BAT", false)]
+    [InlineData(@"C:\Users\sam\Desktop\Thing.lnk", false)]
+    [InlineData(@"C:\Users\sam\x.ps1", false)]
+    [InlineData("/Users/sam/build.command", false)]
+    [InlineData("/Applications/Safari.app", false)]
+    [InlineData("/Users/sam/bin/tool", false)]
+    [InlineData(@"C:\Users\sam\evil.hta.", false)]
+    public void OnlyDocumentsThatDoNotRunAnything(string path, bool safe) => Assert.Equal(safe, Workspace.IsSafeDocument(path));
+}

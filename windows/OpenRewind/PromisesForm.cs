@@ -18,6 +18,8 @@ sealed class PromiseJobs : IDisposable
     public static event Action? Changed;
     /// The last thing it did, for the list window.
     public string Status { get; private set; } = "";
+    /// App Lock is locked: reminders then say only that one is due, not what it is.
+    public Func<bool> Locked { get; set; } = () => false;
 
     public PromiseJobs(Database db, Settings settings, Action<string, string> notify)
     {
@@ -39,10 +41,13 @@ sealed class PromiseJobs : IDisposable
     void Tick()
     {
         var list = Blocklist.Current;
+        bool locked = Locked(), told = false;
         foreach (var p in db.DuePromises(DateTime.UtcNow))
         {
             db.MarkPromiseNotified(p.Id);
-            if (!Promises.Hidden(p, list)) notify("You promised", Promises.Describe(p));
+            if (Promises.Hidden(p, list)) continue;
+            if (!locked) notify("You promised", Promises.Describe(p));
+            else if (!told) { notify("You promised", "Something you promised is due. Unlock OpenRewind to see it."); told = true; }
         }
         if (DateTime.UtcNow - (settings.PromisesLastScan ?? DateTime.MinValue) >= ScanEvery) ScanScreen();
     }

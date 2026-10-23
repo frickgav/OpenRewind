@@ -80,6 +80,21 @@ enum Workspace {
         return scheme == "http" || scheme == "https"
     }
 
+    /// File types that run something when opened (programs, scripts, shortcuts, installers, app bundles,
+    /// disk images): Restore Workspace never opens them, whatever a saved snapshot says. Same list on Windows.
+    static let runs: Set<String> = ["exe", "com", "bat", "cmd", "ps1", "psm1", "psd1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "hta", "msi", "msp", "msix", "appx", "scr", "pif", "lnk", "url", "reg", "cpl", "jar", "appref-ms", "application", "gadget", "inf", "scf", "sh", "bash", "zsh", "csh", "command", "tool", "app", "pkg", "mpkg", "workflow", "terminal", "scpt", "scptd", "applescript", "py", "pyw", "rb", "pl", "php", "action", "prefpane", "kext", "plugin", "webloc", "inetloc", "fileloc", "desktop", "run", "bin", "dll", "sys", "drv", "ocx", "xll", "ade", "adp", "mde", "chm", "settingcontent-ms", "library-ms", "diagcab", "iso", "img", "vhd", "vhdx", "dmg"]
+
+    /// A document that is safe to open again: a file (not a folder or bundle) with an extension that does
+    /// not run something, and not marked executable.
+    static func isSafeDocument(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        let ext = url.pathExtension.lowercased()
+        guard !ext.isEmpty, !runs.contains(ext) else { return false }
+        var dir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &dir), !dir.boolValue else { return false }
+        return !FileManager.default.isExecutableFile(atPath: path)
+    }
+
     /// What may be opened again: not blocked apps, private windows, blocked words or sites; tabs only with
     /// a web address; documents only when the file is still there. One entry per tab, document and app.
     static func restorable(_ items: [WorkspaceItem], _ list: Blocklist) -> [WorkspaceItem] {
@@ -91,7 +106,7 @@ enum Workspace {
                 guard isWebURL(i.url), !list.blocksURL(i.url), !Blocklist.hasKeyword(i.url, list.keywords) else { return false }
                 return seen.insert("tab:" + i.url).inserted
             case document:
-                guard !i.path.isEmpty, FileManager.default.fileExists(atPath: i.path) else { return false }
+                guard !i.path.isEmpty, isSafeDocument(i.path) else { return false }
                 return seen.insert("doc:" + i.path).inserted
             default:
                 guard !i.appID.isEmpty else { return false }
@@ -317,7 +332,7 @@ enum WorkspaceRestore {
                 if let appURL { NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: cfg) } else { NSWorkspace.shared.open(url) }
                 opened += 1
             case Workspace.document:
-                guard FileManager.default.fileExists(atPath: i.path) else { continue }
+                guard Workspace.isSafeDocument(i.path) else { continue }
                 let url = URL(fileURLWithPath: i.path)
                 if let appURL { NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: cfg) } else { NSWorkspace.shared.open(url) }
                 opened += 1

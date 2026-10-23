@@ -8,7 +8,9 @@ public class PhoneTests : IDisposable
     readonly Database db;
     readonly PhoneServer server;
     readonly string id;
-    readonly byte[] secret;
+    /// The QR code's key, then (after Pair) the phone's own key.
+    byte[] secret;
+    readonly byte[] token;
     bool locked;
     DateTime now = DateTime.UtcNow;
     long Ms => new DateTimeOffset(now).ToUnixTimeMilliseconds();
@@ -16,8 +18,9 @@ public class PhoneTests : IDisposable
     public PhoneTests()
     {
         db = new Database(Config.Load(new[] { "--home", home }).DbPath);
-        (id, secret) = PhoneCrypto.NewDevice();
-        db.AddPhoneDevice(id, secret);
+        (id, token) = PhoneCrypto.NewDevice();
+        secret = token;
+        db.AddPhoneDevice(id, token);
         server = new PhoneServer(db, (r, _) => Task.FromResult<JsonNode>(new JsonObject { ["ok"] = true, ["op"] = r.Op, ["q"] = r.Args["q"]?.GetValue<string>() }),
                                  () => locked, () => "<html>phone</html>", () => now);
     }
@@ -38,18 +41,107 @@ public class PhoneTests : IDisposable
     string Req(long seq, string op = "search", byte[]? key = null, string? device = null, long? ts = null) =>
         PhoneCrypto.SealRequest(device ?? id, key ?? secret, seq, ts ?? Ms, op, new JsonObject { ["q"] = "invoice" });
 
+    /// Pairs as the page does: the first request with the QR code's key gets the phone's own key back,
+    /// and the next request with that key finishes pairing. Leaves `secret` set to the phone's key.
+    async Task Pair()
+    {
+        var (status, body) = await Post(Req(1, "hello"));
+        Assert.Equal(200, status);
+        var key = PhoneCrypto.FromB64(PhoneCrypto.OpenResponse(body, id, token, 1)!["key"]!.GetValue<string>());
+        Assert.NotEqual(token, key);
+        Assert.False(db.PhoneDevice(id)!.Paired);
+        secret = key;
+        var (s2, b2) = await Post(Req(2, "hello"));
+        Assert.Equal(200, s2);
+        Assert.Null(PhoneCrypto.OpenResponse(b2, id, secret, 2)!["key"]);
+        Assert.True(db.PhoneDevice(id)!.Paired);
+    }
+
     [Fact]
     public async Task RoundTrip()
     {
-        var (status, body) = await Post(Req(1));
+        await Pair();
+        var (status, body) = await Post(Req(3));
         Assert.Equal(200, status);
-        var answer = PhoneCrypto.OpenResponse(body, id, secret, 1)!;
+        var answer = PhoneCrypto.OpenResponse(body, id, secret, 3)!;
         Assert.Equal("search", answer["op"]!.GetValue<string>());
         Assert.Equal("invoice", answer["q"]!.GetValue<string>());
         Assert.DoesNotContain("invoice", body);  // sealed on the wire
         // The answer only opens for the request it answers.
-        Assert.Null(PhoneCrypto.OpenResponse(body, id, secret, 2));
-        Assert.True(db.PhoneDevice(id)!.Paired);
+        Assert.Null(PhoneCrypto.OpenResponse(body, id, secret, 4));
+    }
+
+    [Fact]
+    public async Task TheQrCodeStopsWorkingOncePaired()
+    {
+        await Pair();
+        Assert.Equal(401, (await Post(Req(10, key: token))).Status);   // a photo of the code is useless now
+        Assert.Equal(200, (await Post(Req(11))).Status);
+        Assert.Equal(secret, db.PhoneDevice(id)!.Secret);
+    }
+
+    [Fact]
+    public async Task ALostKeyAnswerIsSentAgain()
+    {
+        var (_, b1) = await Post(Req(1, "hello"));
+        var (_, b2) = await Post(Req(2, "hello"));   // the first answer never arrived; the phone tries again
+        var k1 = PhoneCrypto.OpenResponse(b1, id, token, 1)!["key"]!.GetValue<string>();
+        Assert.Equal(k1, PhoneCrypto.OpenResponse(b2, id, token, 2)!["key"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task TheQrCodeExpiresAfterFifteenMinutes()
+    {
+        now = now.AddMinutes(16);
+        Assert.Equal(401, (await Post(Req(1, "hello"))).Status);
+    }
+
+    [Fact]
+    public async Task RequestsThatCrossOnTheWayAreAllAccepted()
+    {
+        await Pair();
+        Assert.Equal(200, (await Post(Req(10))).Status);
+        Assert.Equal(200, (await Post(Req(8))).Status);    // sent before 10, arrived after
+        Assert.Equal(200, (await Post(Req(9))).Status);
+        Assert.Equal(409, (await Post(Req(9))).Status);    // but each only once
+        Assert.Equal(200, (await Post(Req(100))).Status);
+        Assert.Equal(409, (await Post(Req(100 - PhoneCrypto.Window - 1))).Status);  // too far behind
+        // None of that counted as guessing.
+        for (int i = 0; i < PhoneGuard.PerAddress; i++) Assert.Equal(409, (await Post(Req(100))).Status);
+        Assert.Equal(200, (await Post(Req(101))).Status);
+    }
+
+    [Fact]
+    public void ReplayWindowMarksEachNumberOnce()
+    {
+        long last = 0, mask = 0;
+        foreach (var seq in new long[] { 5, 3, 70, 7, 69, 6 })
+        {
+            Assert.True(PhoneCrypto.Fresh(last, mask, seq), seq.ToString());
+            (last, mask) = PhoneCrypto.Mark(last, mask, seq);
+            Assert.False(PhoneCrypto.Fresh(last, mask, seq), seq.ToString());
+        }
+        Assert.False(PhoneCrypto.Fresh(last, mask, 5));   // 70 - 5 = 65: outside the window
+        Assert.True(PhoneCrypto.Fresh(last, mask, 8));
+        Assert.False(PhoneCrypto.Fresh(last, mask, 0));
+        Assert.False(PhoneCrypto.Fresh(last, mask, -1));
+        (last, mask) = PhoneCrypto.Mark(last, mask, 70 + 64);
+        Assert.False(PhoneCrypto.Fresh(last, mask, 70));
+        Assert.True(PhoneCrypto.Fresh(last, mask, 71));
+    }
+
+    [Fact]
+    public async Task OnlyRequestsToThisAddressFromThisPage()
+    {
+        server.Hosts.Add("192.168.1.5:3032");
+        Assert.Equal(403, (await server.Handle("POST", "/api", Encoding.UTF8.GetBytes(Req(1)), "192.168.1.20", "evil.example:3032")).Status);
+        Assert.Equal(403, (await server.Handle("POST", "/api", Encoding.UTF8.GetBytes(Req(1)), "192.168.1.20", "192.168.1.5:3032", "http://evil.example")).Status);
+        Assert.Equal(403, (await server.Handle("GET", "/", Array.Empty<byte>(), "192.168.1.20", "")).Status);
+        Assert.Equal(200, (await server.Handle("POST", "/api", Encoding.UTF8.GetBytes(Req(1, "hello")), "192.168.1.20", "192.168.1.5:3032", "http://192.168.1.5:3032")).Status);
+        // Refused pages never count toward blocking the phone.
+        for (int i = 0; i < PhoneGuard.PerAddress + 2; i++)
+            await server.Handle("POST", "/api", Encoding.UTF8.GetBytes("x"), "192.168.1.20", "192.168.1.5:3032", "http://evil.example");
+        Assert.Equal(200, (await Post(Req(2, "hello"))).Status);
     }
 
     [Fact]
@@ -80,13 +172,17 @@ public class PhoneTests : IDisposable
     [Fact]
     public async Task ReplaysAndOldRequestsAreRefused()
     {
+        await Pair();
         var first = Req(5);
         Assert.Equal(200, (await Post(first)).Status);
-        Assert.Equal(401, (await Post(first)).Status);    // the same again
-        Assert.Equal(401, (await Post(Req(4))).Status);   // an older number
+        Assert.Equal(409, (await Post(first)).Status);    // the same again
+        Assert.Equal(409, (await Post(Req(2))).Status);   // a number already used
         Assert.Equal(200, (await Post(Req(6))).Status);
-        Assert.Equal(401, (await Post(Req(7, ts: Ms - 10 * 60_000))).Status);  // too old
-        Assert.Equal(401, (await Post(Req(8, ts: Ms + 10 * 60_000))).Status);  // from the future
+        Assert.Equal(409, (await Post(Req(7, ts: Ms - 10 * 60_000))).Status);  // too old
+        Assert.Equal(409, (await Post(Req(8, ts: Ms + 10 * 60_000))).Status);  // from the future
+        // A copy sent by someone without the key changes nothing and reads nothing.
+        var (_, body) = await Post(first);
+        Assert.DoesNotContain("invoice", body);
     }
 
     [Fact]
@@ -94,18 +190,20 @@ public class PhoneTests : IDisposable
     {
         Assert.Equal(401, (await Post(Req(1, key: PhoneCrypto.NewDevice().Secret))).Status);
         Assert.Equal(401, (await Post(Req(1, device: "0123456789abcdef"))).Status);
-        Assert.Equal(200, (await Post(Req(2))).Status);
+        await Pair();
+        Assert.Equal(200, (await Post(Req(3))).Status);
         db.RemovePhoneDevice(id);
-        Assert.Equal(401, (await Post(Req(3))).Status);
+        Assert.Equal(401, (await Post(Req(4))).Status);
     }
 
     [Fact]
     public async Task LockedAnswersOnlySayLocked()
     {
+        await Pair();
         locked = true;
-        var (status, body) = await Post(Req(1));
+        var (status, body) = await Post(Req(3));
         Assert.Equal(200, status);
-        var answer = PhoneCrypto.OpenResponse(body, id, secret, 1)!;
+        var answer = PhoneCrypto.OpenResponse(body, id, secret, 3)!;
         Assert.Equal("locked", answer["error"]!.GetValue<string>());
         Assert.Null(answer["q"]);
     }
@@ -113,12 +211,13 @@ public class PhoneTests : IDisposable
     [Fact]
     public async Task TooManyFailuresBlockTheAddress()
     {
-        var bad = Req(1, key: PhoneCrypto.NewDevice().Secret);
+        await Pair();
+        var bad = Req(3, key: PhoneCrypto.NewDevice().Secret);
         for (int i = 0; i < PhoneGuard.PerAddress; i++) Assert.Equal(401, (await Post(bad, "192.168.1.66")).Status);
-        Assert.Equal(429, (await Post(Req(1), "192.168.1.66")).Status);  // even a good one, for a while
-        Assert.Equal(200, (await Post(Req(2), "192.168.1.20")).Status);  // other phones still work
+        Assert.Equal(429, (await Post(Req(3), "192.168.1.66")).Status);  // even a good one, for a while
+        Assert.Equal(200, (await Post(Req(4), "192.168.1.20")).Status);  // other phones still work
         now = now.AddMinutes(16);
-        Assert.Equal(200, (await Post(Req(3), "192.168.1.66")).Status);
+        Assert.Equal(200, (await Post(Req(5), "192.168.1.66")).Status);
     }
 
     [Fact]

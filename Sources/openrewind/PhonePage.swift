@@ -1333,6 +1333,8 @@ sjcl.mode.gcm = {
   })();
 
   var pair = load(), keys = null;
+  var phoneName = /iPhone/.test(navigator.userAgent) ? "iPhone" : /iPad/.test(navigator.userAgent) ? "iPad"
+                : /Android/.test(navigator.userAgent) ? "Android phone" : "Phone";
   function deriveKeys() {
     if (keys) return keys;
     var secret = b64.toBits(pair.k), salt = utf8.toBits("OpenRewind phone");
@@ -1342,13 +1344,20 @@ sjcl.mode.gcm = {
   }
   function nonce() { var a = new Uint32Array(3); crypto.getRandomValues(a); return [a[0] | 0, a[1] | 0, a[2] | 0]; }
 
-  // One sealed request and its sealed answer. Each request has a number higher than any before it,
-  // so a copy of it is refused; the answer is sealed to that number.
+  // Another tab may have used a number or got the new key meanwhile.
+  function reload() {
+    var s = load();
+    if (s && pair && s.d === pair.d) { if (s.k !== pair.k) keys = null; pair = s; }
+  }
+
+  // One sealed request and its sealed answer. Each request has its own number, used once: a copy of
+  // it is refused. The answer is sealed to that number.
   function call(op, args) {
     if (!pair) return Promise.reject(new Error("Pair this phone first."));
     if (!canSeal) return Promise.reject(new Error("This browser cannot encrypt, so nothing was sent."));
-    var k = deriveKeys(), now = Date.now();
-    var seq = Math.max(now, (pair.seq || 0) + 1);
+    reload();
+    var k = deriveKeys(), now = Date.now(), sentWith = pair.k;
+    var seq = (pair.seq || 0) + 1;
     pair.seq = seq; save(pair);
     var n = nonce();
     var plain = JSON.stringify({ seq: seq, ts: now, op: op, args: args || {} });
@@ -1357,7 +1366,11 @@ sjcl.mode.gcm = {
     return fetch("/api", { method: "POST", headers: { "Content-Type": "text/plain" }, body: body, cache: "no-store", credentials: "omit" })
       .catch(function () { throw new Error("Cannot reach your computer. Is it on, on this Wi-Fi, with Phone Access on?"); })
       .then(function (r) {
-        if (r.status === 401) throw new Error("Your computer did not accept this phone. If you revoked it, pair it again.");
+        if (r.status === 401) throw new Error("Your computer did not accept this phone. If you revoked it, or pairing took more than 15 minutes, pair it again.");
+        if (r.status === 409) return r.json().then(function (e) {
+          throw new Error(e && e.error === "clock" ? "This phone's clock is more than 5 minutes off from your computer's. Fix the time, then try again."
+                                                   : "That crossed with another request. Try again.");
+        });
         if (r.status === 429) throw new Error("Too many refused tries. Wait a few minutes.");
         if (!r.ok) throw new Error("Your computer answered with an error (" + r.status + ").");
         return r.json();
@@ -1368,6 +1381,14 @@ sjcl.mode.gcm = {
           pt = sjcl.mode.gcm.decrypt(k.res, b64.toBits(env.c), b64.toBits(env.n), utf8.toBits("openrewind-phone-v1|res|" + pair.d + "|" + seq), 128);
         } catch (e) { throw new Error("The answer was changed on the way, so it was thrown away."); }
         var res = JSON.parse(utf8.fromBits(pt));
+        // Pairing: the QR code's key is replaced by this phone's own key, which the next request uses
+        // (and so finishes pairing; after that the QR code is worthless).
+        if (res && typeof res.key === "string" && /^[A-Za-z0-9_-]{43}$/.test(res.key)) {
+          reload();
+          if (pair.k === sentWith) { pair.k = res.key; keys = null; save(pair); }
+          delete res.key;
+          setTimeout(function () { call("hello", { name: phoneName }).catch(function () {}); }, 0);
+        }
         if (res && res.ok === false) throw new Error(res.message || "That did not work.");
         return res;
       });
@@ -1464,15 +1485,15 @@ sjcl.mode.gcm = {
   if (!pair) return;
   $("unpaired").hidden = true;
   $("tabs").hidden = false;
-  var name = /iPhone/.test(navigator.userAgent) ? "iPhone" : /iPad/.test(navigator.userAgent) ? "iPad"
-           : /Android/.test(navigator.userAgent) ? "Android phone" : "Phone";
   var first;
   try { first = sessionStorage.getItem("openrewind-tab"); } catch (e) {}
-  show(first === "ask" || first === "promises" ? first : "search");
-  call("hello", { name: name }).then(function (r) {
+  var tab = first === "ask" || first === "promises" ? first : "search";
+  // Hello first, so a new pairing finishes before anything else is asked.
+  call("hello", { name: phoneName }).then(function (r) {
     $("computer").textContent = r.computer || "";
     if (!r.ai) { $("question").disabled = true; $("askbtn").disabled = true; note($("astatus"), "Set up Ask AI on your computer first (Settings, then AI)."); }
-  }).catch(function (e) { bad($("sstatus"), e.message); });
+    show(tab);
+  }).catch(function (e) { show(tab === "promises" ? "search" : tab); bad($("sstatus"), e.message); });
 })();
 </script>
 </body>

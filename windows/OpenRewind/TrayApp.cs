@@ -93,6 +93,7 @@ sealed partial class TrayApp : ApplicationContext
         // Finds meetings (and asks about notes) within seconds of a call; the window and the AI notes read what it stores.
         meetings = new MeetingWatcher(engine.Db, settings, engine.Config.AudioChunkSeconds, () => engine.Transcriber != null, a => overlay.BeginInvoke(a));
         promises = new PromiseJobs(engine.Db, settings, (title, text) => icon?.ShowBalloonTip(8000, title, text, ToolTipIcon.Info));
+        promises.Locked = () => !appLock.IsUnlocked;
         AiTools.PromisesOn = () => settings.PromisesOn;
         meetings.Ended = m => promises.MeetingEnded(m);
         meetings.Start();

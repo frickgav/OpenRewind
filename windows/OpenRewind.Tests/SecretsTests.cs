@@ -134,3 +134,36 @@ public class SecretsSharedCases
     public void StripeKeyLikeTheMacCheck() =>
         Assert.Equal("key [redacted]", Secrets.Redact("key " + "sk" + "_live_" + "4eC39HqLyjWDarjtT1zdp7dc"));
 }
+
+/// Secret formats with '/' (base64), named like secrets in settings, and passwords inside addresses in text.
+public class SecretsMoreFormats
+{
+    static readonly string awsSecret = "wJalrXUtnFEMI" + "/K7MDENG/" + "bPxRfiCYEXAMPLEKEY";
+    static readonly string azureKey = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsu" + "Fq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==";
+
+    public static IEnumerable<object[]> Cases() => new[]
+    {
+        new object[] { "AWS_SECRET_ACCESS_KEY=" + awsSecret, "AWS_SECRET_ACCESS_KEY=[redacted]" },
+        new object[] { "aws_secret_access_key = " + awsSecret, "aws_secret_access_key = [redacted]" },
+        new object[] { "DefaultEndpointsProtocol=https;AccountName=acme;AccountKey=" + azureKey + ";EndpointSuffix=core.windows.net",
+                       "DefaultEndpointsProtocol=https;AccountName=acme;AccountKey=[redacted];EndpointSuffix=core.windows.net" },
+        new object[] { "export GITHUB_TOKEN=" + "abc123def456" + "ghi789", "export GITHUB_TOKEN=[redacted]" },
+        new object[] { "CLIENT_SECRET: " + "s3cr3t-value-99", "CLIENT_SECRET: [redacted]" },
+        new object[] { "db at postgres://app:" + "Tr0ub4dor" + "@db.internal:5432/main", "db at postgres://app:[redacted]@db.internal:5432/main" },
+        new object[] { "key " + awsSecret + " end", "key [redacted] end" },
+        new object[] { "blob " + azureKey, "blob [redacted]" },
+    };
+
+    [Theory]
+    [MemberData(nameof(Cases))]
+    public void Finds(string input, string want) => Assert.Equal(want, Secrets.Redact(input));
+
+    [Theory]
+    [InlineData("/Users/sam/Projects/OpenRewind2024/Sources/openrewind/Recorder.swift")]
+    [InlineData("Users/Sam/Documents/Invoices2024Q3/Final/Report2/Summary9")]
+    [InlineData("https://github.com/frickgav/OpenRewind/pull/57/files")]
+    [InlineData("SORT_KEY=timestamp PRIMARY_KEY=id CACHE_KEY=user_profile")]
+    [InlineData("see http://localhost:8080/api and mailto:sam@example.com")]
+    [InlineData("src/components/Timeline/TimelineView2.swift and Sources/openrewind/AITools.swift")]
+    public void LeavesPathsAndSettingsAlone(string text) => Assert.Equal(text, Secrets.Redact(text));
+}

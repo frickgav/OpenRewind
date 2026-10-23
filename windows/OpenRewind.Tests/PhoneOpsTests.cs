@@ -77,7 +77,7 @@ public class PhoneOpsTests : IDisposable
         try { Directory.Delete(home, true); } catch { }
     }
 
-    Task<JsonNode> Run(string op, JsonObject? args = null) => ops.Run(new PhoneRequest(device, 1, op, args ?? new JsonObject()), default);
+    Task<JsonNode> Run(string op, JsonObject? args = null) => ops.Run(new PhoneRequest(device, 1, op, args ?? new JsonObject(), device.Secret), default);
 
     void AddFrame(string app, string text) =>
         db.Insert(new Frame(0, Time.Iso(DateTime.UtcNow.AddMinutes(-3)), app, "Window", true, Path.Combine(home, "secret-path.jpg"), text, "ocr", 0));
@@ -130,4 +130,18 @@ public class PhoneOpsTests : IDisposable
         public Task<AiReply> Send(string system, IReadOnlyList<AiMessage> messages, IReadOnlyList<AiToolSpec> tools, CancellationToken ct) =>
             Task.FromResult(new AiReply("You worked on invoices.", new(), new AiUsage(10, 5)));
     }
+}
+
+public class LanAdapterTests
+{
+    [Theory]
+    [InlineData("vEthernet (WSL) Hyper-V Virtual Ethernet Adapter", true)]
+    [InlineData("vEthernet (Default Switch) Hyper-V Virtual Ethernet Adapter #2", true)]
+    [InlineData("Ethernet 3 VirtualBox Host-Only Ethernet Adapter", true)]
+    [InlineData("VMware Network Adapter VMnet8 VMware Virtual Ethernet Adapter for VMnet8", true)]
+    [InlineData("vEthernet (DockerNAT)", true)]
+    [InlineData("Wi-Fi Intel(R) Wi-Fi 6E AX211 160MHz", false)]
+    [InlineData("Ethernet Realtek PCIe GbE Family Controller", false)]
+    [InlineData("Tailscale Tailscale Tunnel", false)]
+    public void LeavesOutVirtualAdapters(string nameAndDescription, bool isVirtual) => Assert.Equal(isVirtual, Lan.IsVirtual(nameAndDescription));
 }

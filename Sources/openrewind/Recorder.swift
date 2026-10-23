@@ -198,8 +198,9 @@ final class Recorder {
                 return nil
             }
         }
-        // Secrets are found in the words OCR reads, which also says where they are on screen.
-        let redact = Secrets.enabled && !blocked
+        // Secrets are found in the words OCR reads, which also says where they are on screen. Also with a
+        // blocked window in front: it is blurred, but the rest of the screen is saved too.
+        let redact = Secrets.enabled
         var secretBoxes: [CGRect]?
         if text.isEmpty {
             if redact {

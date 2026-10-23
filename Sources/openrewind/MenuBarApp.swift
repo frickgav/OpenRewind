@@ -81,6 +81,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var promises: PromiseCenter = {
         let c = PromiseCenter(db: engine.db)
         c.openList = { [weak self] in self?.showPromises() }
+        let lock = appLock
+        c.locked = { !lock.isUnlocked }
         return c
     }()
 
@@ -155,7 +157,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             // In use: OpenRewind is in front with a window that shows history.
             let open = self.overlay.isVisible || InsightsWindow.shared.isOpen
-                || ["ai", "journal", "meetings", "settings"].contains { SetupWindows.shared.isOpen($0) }
+                || ["ai", "journal", "meetings", "promises", "settings"].contains { SetupWindows.shared.isOpen($0) }
             self.appLock.tick(historyInUse: NSApp.isActive && open)
         }
         RunLoop.main.add(t, forMode: .common)
@@ -423,7 +425,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func hideHistory() {
         if overlay.isVisible { overlay.hide(restoreFocus: false) }
         // Settings shows recent sites (Blocked Apps & Sites) and changes what is recorded, so it closes too.
-        for w in ["ai", "settings", "journal", "meetings", "mcp"] { SetupWindows.shared.close(w) }
+        for w in ["ai", "settings", "journal", "meetings", "promises", "mcp"] { SetupWindows.shared.close(w) }
         InsightsWindow.shared.close()
         FrameImages.shared.releaseAll()
     }

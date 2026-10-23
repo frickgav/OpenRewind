@@ -108,11 +108,12 @@ sealed class Recorder
                 return null;
             }
         }
-        // Secrets are found in the words OCR reads, which also says where they are on screen.
+        // Secrets are found in the words OCR reads, which also says where they are on screen. Also with a
+        // blocked window in front: it is blurred, but the rest of the screen is saved too.
         FrameText? words = null;
         if (text.Length == 0)
         {
-            if (RedactSecrets && !blocked) { words = Ocr.Words(image); text = words.AllText; }
+            if (RedactSecrets) { words = Ocr.Words(image); text = words.AllText; }
             else text = Ocr.Recognize(image);
         }
         // Pixels moved (cursor blink, animation) but the text is the same: nothing new to search.
@@ -130,7 +131,7 @@ sealed class Recorder
         // Nothing is written until secrets are blurred out of the picture and taken out of the text.
         var title = window.WindowName;
         var rawText = text;
-        if (RedactSecrets && !blocked)
+        if (RedactSecrets)
         {
             words ??= Ocr.Words(image);
             Redactor.BlurSecrets(image, Secrets.Boxes(words), passwords, screen);

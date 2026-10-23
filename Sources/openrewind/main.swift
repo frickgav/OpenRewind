@@ -67,12 +67,23 @@ if command == "meaning-check" {
 if command == "features-check" {
     var problems = PhoneCrypto.selfTest()
     let stripe = "sk" + "_live_" + "4eC39HqLyjWDarjtT1zdp7dc"  // split so it is not taken for a real key
+    let awsSecret = "wJalrXUtnFEMI" + "/K7MDENG/" + "bPxRfiCYEXAMPLEKEY"
+    let azureKey = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsu" + "Fq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
     let cases: [(String, String)] = [
         ("password: hunter2!", "password: [redacted]"),
         ("card 4111 1111 1111 1111 exp", "card [redacted] exp"),
         ("key " + stripe, "key [redacted]"),
         ("Meeting at 10:30 on 2026-10-18, call 555-123-4567", "Meeting at 10:30 on 2026-10-18, call 555-123-4567"),
         ("Forgot password? Reset it here", "Forgot password? Reset it here"),
+        ("AWS_SECRET_ACCESS_KEY=" + awsSecret, "AWS_SECRET_ACCESS_KEY=[redacted]"),
+        ("aws_secret_access_key = " + awsSecret, "aws_secret_access_key = [redacted]"),
+        ("AccountName=acme;AccountKey=" + azureKey + ";EndpointSuffix=core.windows.net", "AccountName=acme;AccountKey=[redacted];EndpointSuffix=core.windows.net"),
+        ("export GITHUB_TOKEN=" + "abc123def456" + "ghi789", "export GITHUB_TOKEN=[redacted]"),
+        ("db at postgres://app:" + "Tr0ub4dor" + "@db.internal:5432/main", "db at postgres://app:[redacted]@db.internal:5432/main"),
+        ("key " + awsSecret + " end", "key [redacted] end"),
+        ("/Users/sam/Projects/OpenRewind2024/Sources/openrewind/Recorder.swift", "/Users/sam/Projects/OpenRewind2024/Sources/openrewind/Recorder.swift"),
+        ("https://github.com/frickgav/OpenRewind/pull/57/files", "https://github.com/frickgav/OpenRewind/pull/57/files"),
+        ("SORT_KEY=timestamp PRIMARY_KEY=id CACHE_KEY=user_profile", "SORT_KEY=timestamp PRIMARY_KEY=id CACHE_KEY=user_profile"),
     ]
     for (input, want) in cases where Secrets.redact(input) != want { problems.append("redact \"\(input.prefix(12))…\" gave \"\(Secrets.redact(input))\"") }
     if Secrets.redactURL("https://user:hunter22@example.com/a?token=abc123def456&q=x").contains("hunter22") { problems.append("redactURL password") }

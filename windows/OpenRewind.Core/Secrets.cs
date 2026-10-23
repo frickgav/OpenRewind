@@ -36,15 +36,21 @@ public static class Secrets
 
     /// Rules where only the `v` group is the secret: what follows a label.
     static readonly Regex labeled = new(
-        @"(?i)(?<![A-Za-z])(password|passwd|passcode|pwd|api[ _\-]?key|secret[ _\-]?key|client[ _\-]?secret|access[ _\-]?token|auth[ _\-]?token|bearer)[ \t]*[:=][ \t]*[""']?(?<v>[^\s""']{4,})",
+        @"(?i)(?<![A-Za-z])(password|passwd|passcode|pwd|api[ _\-]?key|secret[ _\-]?key|(?:aws[ _\-]?)?secret[ _\-]?access[ _\-]?key|access[ _\-]?key|account[ _\-]?key|private[ _\-]?key|client[ _\-]?secret|access[ _\-]?token|auth[ _\-]?token|refresh[ _\-]?token|bearer)[ \t]*[:=][ \t]*[""']?(?<v>[^\s""';]{4,})",
         Opts);
+    /// Environment variables and settings named like a secret: FOO_SECRET=…, GITHUB_TOKEN=…, STRIPE_KEY=….
+    static readonly Regex envVar = new(
+        @"(?<![A-Za-z0-9_])[A-Z][A-Z0-9_]*_(SECRET|TOKEN|KEY|PASSWORD|PASS|PWD|APIKEY|CREDENTIALS?)[ \t]*[:=][ \t]*[""']?(?<v>[^\s""';]{8,})", Opts);
+    /// A password inside an address in text: postgres://user:pass@host, https://me:pw@example.com.
+    static readonly Regex userinfo = new(@"(?<![A-Za-z0-9+.\-])[a-zA-Z][a-zA-Z0-9+.\-]*://[^/@:\s]+:(?<v>[^/@\s]{3,})@", Opts);
     static readonly Regex bearer = new(@"(?<![A-Za-z])Bearer[ \t]+(?<v>[A-Za-z0-9._~+/\-]{20,}=*)", Opts);
 
     /// 13 to 19 digits, maybe in groups split by single spaces or dashes.
     static readonly Regex digits = new(@"(?<![\d\-.,/:])\d(?:[ \-]?\d){12,18}(?![\d\-]|[.,/:]\d)", Opts);
 
     /// Long runs of letters, digits and token punctuation, checked for randomness.
-    static readonly Regex token = new(@"(?<![A-Za-z0-9+_=\-/.])[A-Za-z0-9+_=\-]{32,}(?![A-Za-z0-9+_=\-/])", Opts);
+    /// '/' may be inside (base64: AWS and Azure keys) but not first; IsRandom keeps paths out.
+    static readonly Regex token = new(@"(?<![A-Za-z0-9+_\-/.])[A-Za-z0-9+_\-][A-Za-z0-9+/_\-]{31,}={0,2}(?![A-Za-z0-9+/_=\-])", Opts);
 
     /// Every secret in `text`, in order, without overlaps.
     public static List<Hit> Find(string text)
@@ -53,11 +59,13 @@ public static class Secrets
         if (string.IsNullOrEmpty(text)) return hits;
         foreach (var (kind, re) in whole)
             foreach (Match m in re.Matches(text)) hits.Add(new Hit(m.Index, m.Length, kind));
-        foreach (var re in new[] { labeled, bearer })
+        foreach (var re in new[] { labeled, bearer, envVar, userinfo })
             foreach (Match m in re.Matches(text))
             {
                 var v = m.Groups["v"];
                 if (!LooksLikeValue(v.Value)) continue;
+                // SORT_KEY=timestamp: a plain word is a setting, not a secret.
+                if (re == envVar && Regex.IsMatch(v.Value, "^[a-z_.]+$")) continue;
                 hits.Add(new Hit(v.Index, v.Length, "password"));
             }
         foreach (Match m in digits.Matches(text))
@@ -186,10 +194,14 @@ public static class Secrets
             else if (char.IsAsciiLetterLower(c)) lower++;
             else if (char.IsAsciiDigit(c)) digit++;
         }
-        if (upper < 2 || lower < 2 || digit < 2) return false;
+        // Base64 with '/' or '+' (AWS and Azure keys) may happen to have fewer digits.
+        bool base64 = s.Length >= 40 && (s.Contains('/') || s.Contains('+'));
+        if (upper < 2 || lower < 2 || (digit < 2 && !base64)) return false;
         // Words joined by dashes or underscores ("my-long-branch-name-2024-v2") are not random.
         var parts = s.Split('-', '_');
         if (parts.Length > 3 && parts.All(p => p.Length < 12)) return false;
+        // Paths ("Users/sam/Projects/App2024/Sources"): a word between slashes, or "//".
+        if (s.Contains('/') && (s.Contains("//") || s.Split('/').Any(p => Regex.IsMatch(p, "^[A-Z]?[a-z]{3,}$")))) return false;
         return Entropy(s) >= 4.2;
     }
 

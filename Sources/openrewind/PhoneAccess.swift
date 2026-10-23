@@ -5,9 +5,11 @@ import Foundation
 import Network
 import SQLCipher
 
-/// A phone paired with Phone Access. `secret` is the 256-bit key shared through the pairing QR code;
-/// `lastSeq` is the highest request number accepted from it (anything not higher is a replay).
-/// A device that has never been seen is still pairing, and is forgotten after 15 minutes.
+/// A phone paired with Phone Access. `secret` is its 256-bit key: first the one-time pairing key from the
+/// QR code, then, from the phone's first request on, a new key this Mac sends it sealed (`nextSecret`
+/// until the phone has used it once). `lastSeq` is the highest request number accepted from it and
+/// `seenMask` which of the 64 numbers below it were used (bit 0 = lastSeq - 1), so requests that cross on
+/// the way are each accepted once. One that has not finished pairing within 15 minutes is forgotten.
 struct PhoneDevice: Identifiable, Equatable {
     var id: String
     var name: String
@@ -15,18 +17,27 @@ struct PhoneDevice: Identifiable, Equatable {
     var lastSeen: Date?
     var lastSeq: Int64
     var secret: Data
-    var paired: Bool { lastSeen != nil }
+    var nextSecret: Data? = nil
+    var seenMask: Int64 = 0
+    /// The phone has used the key it got after pairing, so the QR code's key is gone.
+    var paired: Bool { lastSeen != nil && nextSecret == nil }
 }
 
-/// Why a request was refused. The phone only ever hears "not paired" (401), whatever the reason.
-enum PhoneFailure: Error { case malformed, unknownDevice, badSeal, replayed, stale }
+/// Why a request was refused. malformed, unknownDevice, expired and badSeal answer "not paired" (401) and
+/// count as tries at guessing; replayed and stale come from a phone that has the key, so they answer
+/// "try again" (409) and do not count. Same as the Windows app.
+enum PhoneFailure: Error { case malformed, unknownDevice, expired, badSeal, replayed, stale }
 
-/// A request that passed every check: sealed with the device's key, fresh, never seen before.
+/// A request that passed every check: sealed with the device's key, fresh, never seen before. `key` is the
+/// secret it was sealed with (its answer is sealed with the same); `newKey` is true when that was the key
+/// sent after pairing, used for the first time.
 struct PhoneRequest {
     var device: PhoneDevice
     var seq: Int64
     var op: String
     var args: [String: Any]
+    var key: Data
+    var newKey = false
 }
 
 /// Phone Access messages: end-to-end encrypted between the phone's browser and this Mac, so the Wi-Fi,
@@ -39,6 +50,28 @@ struct PhoneRequest {
 enum PhoneCrypto {
     static let salt = "OpenRewind phone"
     static let maxSkew: TimeInterval = 5 * 60
+    /// How long a QR code can be used to pair.
+    static let pairingWindow: TimeInterval = 15 * 60
+    /// How far below the highest request number a request may still arrive.
+    static let window: Int64 = 64
+
+    /// True when request `seq` was not used yet: above `last`, or in the window below it and not marked.
+    static func fresh(_ last: Int64, _ mask: Int64, _ seq: Int64) -> Bool {
+        if seq <= 0 { return false }
+        if seq > last { return true }
+        let back = last - seq
+        return back >= 1 && back <= window && (mask & (Int64(1) << (back - 1))) == 0
+    }
+
+    /// `last` and `mask` with `seq` marked as used (call only when fresh).
+    static func mark(_ last: Int64, _ mask: Int64, _ seq: Int64) -> (last: Int64, mask: Int64) {
+        if seq > last {
+            let shift = seq - last
+            let m: Int64 = shift > window ? 0 : shift == window ? Int64.min : (mask << shift) | (Int64(1) << (shift - 1))
+            return (seq, m)
+        }
+        return (last, mask | (Int64(1) << (last - seq - 1)))
+    }
 
     static func keys(_ secret: Data, _ deviceId: String) -> (req: SymmetricKey, res: SymmetricKey) {
         let ikm = SymmetricKey(data: secret)
@@ -99,19 +132,27 @@ enum PhoneCrypto {
               let id = env["d"] as? String, !id.isEmpty, id.count <= 64, (env["v"] as? NSNumber)?.intValue == 1 else { throw PhoneFailure.malformed }
         guard let d = device(id) else { throw PhoneFailure.unknownDevice }
         guard let nonce = (env["n"] as? String).flatMap(fromB64), let sealed = (env["c"] as? String).flatMap(fromB64) else { throw PhoneFailure.malformed }
-        guard let plain = unseal(keys(d.secret, d.id).req, nonce, sealed, requestAAD(d.id)) else { throw PhoneFailure.badSeal }
+        var key = d.secret, newKey = false
+        var opened: Data?
+        if let next = d.nextSecret, let p = unseal(keys(next, d.id).req, nonce, sealed, requestAAD(d.id)) {
+            opened = p; key = next; newKey = true
+        }
+        if opened == nil { opened = unseal(keys(d.secret, d.id).req, nonce, sealed, requestAAD(d.id)) }
+        guard let plain = opened else { throw PhoneFailure.badSeal }
+        // The QR code's key works only while pairing, for 15 minutes.
+        if !newKey && !d.paired && now.timeIntervalSince(d.created) > pairingWindow { throw PhoneFailure.expired }
         guard let msg = try? JSONSerialization.jsonObject(with: plain) as? [String: Any] else { throw PhoneFailure.malformed }
         let seq = (msg["seq"] as? NSNumber)?.int64Value ?? -1
         let ts = (msg["ts"] as? NSNumber)?.doubleValue ?? 0
-        if seq <= d.lastSeq { throw PhoneFailure.replayed }
+        if !fresh(d.lastSeq, d.seenMask, seq) { throw PhoneFailure.replayed }
         if abs(ts / 1000 - now.timeIntervalSince1970) > maxSkew { throw PhoneFailure.stale }
-        return PhoneRequest(device: d, seq: seq, op: msg["op"] as? String ?? "", args: msg["args"] as? [String: Any] ?? [:])
+        return PhoneRequest(device: d, seq: seq, op: msg["op"] as? String ?? "", args: msg["args"] as? [String: Any] ?? [:], key: key, newKey: newKey)
     }
 
-    /// The sealed answer to request `seq` from `d`.
-    static func sealResponse(_ d: PhoneDevice, _ seq: Int64, _ result: [String: Any]) -> Data {
+    /// The sealed answer to request `seq` from `d`, with `key` (the secret the request was sealed with).
+    static func sealResponse(_ d: PhoneDevice, _ seq: Int64, _ result: [String: Any], key: Data? = nil) -> Data {
         let plain = (try? JSONSerialization.data(withJSONObject: result)) ?? Data("{}".utf8)
-        guard let s = seal(keys(d.secret, d.id).res, plain, responseAAD(d.id, seq)) else { return Data() }
+        guard let s = seal(keys(key ?? d.secret, d.id).res, plain, responseAAD(d.id, seq)) else { return Data() }
         return (try? JSONSerialization.data(withJSONObject: ["n": b64(s.nonce), "c": b64(s.sealed)])) ?? Data()
     }
 
@@ -160,6 +201,22 @@ enum PhoneCrypto {
             || Lan.isPrivate([8, 8, 8, 8]) || Lan.isPrivate([172, 32, 0, 1]) || Lan.isPrivate([127, 0, 0, 1]) || Lan.isPrivate([100, 128, 0, 1]) {
             problems.append("private addresses")
         }
+        var last: Int64 = 0, mask: Int64 = 0
+        for seq: Int64 in [5, 3, 70, 7, 69, 6] {
+            if !fresh(last, mask, seq) { problems.append("window: \(seq) refused") }
+            (last, mask) = mark(last, mask, seq)
+            if fresh(last, mask, seq) { problems.append("window: \(seq) twice") }
+        }
+        if fresh(last, mask, 5) || !fresh(last, mask, 8) || fresh(last, mask, 0) { problems.append("window edges") }
+        (last, mask) = mark(last, mask, 70 + 64)
+        if fresh(last, mask, 70) || !fresh(last, mask, 71) { problems.append("window shift") }
+        var old = dev(); old.created = then.addingTimeInterval(-16 * 60)
+        refused(.expired, req, old, then)
+        var rotated = dev(); rotated.nextSecret = Data(repeating: 9, count: 32); rotated.lastSeen = then
+        do {
+            let r = try open(req, device: { _ in rotated }, now: then)
+            if r.newKey || r.key != key { problems.append("old key while pairing") }
+        } catch { problems.append("old key while pairing refused: \(error)") }
         if !PhonePage.html.hasPrefix("<!doctype html>") || !PhonePage.html.contains("sjcl.mode.gcm") { problems.append("phone page") }
         return problems
     }
@@ -181,12 +238,15 @@ final class PhoneGuard {
         return now >= allBlockedUntil && (blockedUntil[ip].map { now >= $0 } ?? true)
     }
 
-    func failed(_ ip: String, _ now: Date) {
+    /// A refused try from `ip`. Only wrong-key tries (`global`) count toward blocking every phone, so stray
+    /// requests from web pages on the network cannot shut phones out.
+    func failed(_ ip: String, _ now: Date, global: Bool = true) {
         lock.lock(); defer { lock.unlock() }
         var l = (fails[ip] ?? []).filter { now.timeIntervalSince($0) <= Self.window }
         l.append(now)
         if l.count >= Self.perAddress { blockedUntil[ip] = now.addingTimeInterval(Self.block); l = [] }
         fails[ip] = l
+        guard global else { return }
         all = all.filter { now.timeIntervalSince($0) <= Self.window } + [now]
         if all.count >= Self.total { allBlockedUntil = now.addingTimeInterval(Self.window); all = [] }
         if fails.count > 1000 { fails = [:] }  // memory bound; blocks stay
@@ -201,7 +261,12 @@ enum Lan {
         return b[0] == 10 || (b[0] == 172 && (16...31).contains(b[1])) || (b[0] == 192 && b[1] == 168) || (b[0] == 100 && (64...127).contains(b[1]))
     }
 
-    /// This Mac's private IPv4 addresses on interfaces that are up, Wi-Fi and Ethernet (en…) first.
+    /// Interfaces of virtual machines, Internet Sharing and Apple's peer-to-peer links: never listened on.
+    static let virtualPrefixes = ["bridge", "vmnet", "vboxnet", "awdl", "llw", "anpi", "ap1"]
+
+    /// This Mac's private IPv4 addresses a phone can reach: Wi-Fi and Ethernet (en…) first, then other
+    /// interfaces, and VPN tunnels (utun) only with Tailscale's 100.64/10 addresses. Virtual machine and
+    /// bridge interfaces are left out.
     static func addresses() -> [String] {
         var found: [(ip: String, rank: Int)] = []
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
@@ -216,8 +281,12 @@ enum Lan {
             }
             guard isPrivate(bytes) else { continue }
             let name = String(cString: i.ifa_name)
+            if virtualPrefixes.contains(where: { name.hasPrefix($0) }) { continue }
+            let tailscale = bytes[0] == 100 && (64...127).contains(bytes[1])
+            if name.hasPrefix("utun") && !tailscale { continue }
             let ip = bytes.map(String.init).joined(separator: ".")
-            if !found.contains(where: { $0.ip == ip }) { found.append((ip, name.hasPrefix("en") ? 0 : 1)) }
+            let rank = name.hasPrefix("en") && !tailscale ? 0 : tailscale ? 2 : 1
+            if !found.contains(where: { $0.ip == ip }) { found.append((ip, rank)) }
         }
         return found.sorted { $0.rank < $1.rank }.map(\.ip)
     }
@@ -243,20 +312,33 @@ extension Database {
             secret TEXT NOT NULL,
             created_at TEXT NOT NULL,
             last_seen TEXT,
-            last_seq INTEGER NOT NULL DEFAULT 0
+            last_seq INTEGER NOT NULL DEFAULT 0,
+            next_secret TEXT,
+            seen_mask INTEGER NOT NULL DEFAULT 0
         );
         """)
+        // Tables made by earlier test builds lack the last two columns.
+        let cols = strings("SELECT name FROM pragma_table_info('phone_devices')", [])
+        if !cols.contains("next_secret") { try exec("ALTER TABLE phone_devices ADD COLUMN next_secret TEXT") }
+        if !cols.contains("seen_mask") { try exec("ALTER TABLE phone_devices ADD COLUMN seen_mask INTEGER NOT NULL DEFAULT 0") }
     }
 
-    /// Paired phones, and ones still pairing (never seen) from the last 15 minutes; older pending ones are removed.
+    private static let phoneCols = "id, name, created_at, last_seen, last_seq, secret, next_secret, seen_mask"
+
+    private func readPhone(_ st: OpaquePointer?) -> PhoneDevice? {
+        guard let secret = Data(base64Encoded: col(st, 5)) else { return nil }
+        return PhoneDevice(id: col(st, 0), name: col(st, 1), created: Time.iso.date(from: col(st, 2)) ?? Date(timeIntervalSince1970: 0),
+                           lastSeen: sqlite3_column_type(st, 3) == SQLITE_NULL ? nil : Time.iso.date(from: col(st, 3)),
+                           lastSeq: sqlite3_column_int64(st, 4), secret: secret,
+                           nextSecret: sqlite3_column_type(st, 6) == SQLITE_NULL ? nil : Data(base64Encoded: col(st, 6)),
+                           seenMask: sqlite3_column_int64(st, 7))
+    }
+
+    /// Paired phones, and ones still pairing from the last 15 minutes; older unfinished pairings are removed.
     func phoneDevices() -> [PhoneDevice] {
-        run("DELETE FROM phone_devices WHERE last_seen IS NULL AND created_at < ?", [.text(Time.iso.string(from: Date().addingTimeInterval(-15 * 60)))])
-        return rowsChecked("SELECT id, name, created_at, last_seen, last_seq, secret FROM phone_devices ORDER BY created_at", [], logErrors: false) { st in
-            guard let secret = Data(base64Encoded: self.col(st, 5)) else { return nil }
-            return PhoneDevice(id: self.col(st, 0), name: self.col(st, 1), created: Time.iso.date(from: self.col(st, 2)) ?? Date(timeIntervalSince1970: 0),
-                               lastSeen: sqlite3_column_type(st, 3) == SQLITE_NULL ? nil : Time.iso.date(from: self.col(st, 3)),
-                               lastSeq: sqlite3_column_int64(st, 4), secret: secret)
-        } ?? []
+        run("DELETE FROM phone_devices WHERE (last_seen IS NULL OR next_secret IS NOT NULL) AND created_at < ?",
+            [.text(Time.iso.string(from: Date().addingTimeInterval(-PhoneCrypto.pairingWindow)))])
+        return rowsChecked("SELECT \(Self.phoneCols) FROM phone_devices ORDER BY created_at", [], logErrors: false) { self.readPhone($0) } ?? []
     }
 
     func phoneDevice(_ id: String) -> PhoneDevice? { phoneDevices().first { $0.id == id } }
@@ -271,12 +353,41 @@ extension Database {
 
     func renamePhoneDevice(_ id: String, _ name: String) { run("UPDATE phone_devices SET name = ? WHERE id = ?", [.text(name), .text(id)]) }
 
-    /// Records request `seq` as used, only if it is higher than every one before (in one statement, so two
-    /// copies of a request sent at once cannot both pass). False means a replay.
-    func acceptPhoneRequest(_ id: String, _ seq: Int64) -> Bool {
+    /// Records request `seq` as used, if it was not used before (checked and written under the lock, so two
+    /// copies sent at once cannot both pass). `newKey`: the request was sealed with the key sent after
+    /// pairing, which now replaces the QR code's key. While pairing, returns the key to send to the phone
+    /// (`candidate` the first time, the same one after). accepted is false for a replay or a revoked phone.
+    func acceptPhoneRequest(_ id: String, _ seq: Int64, newKey: Bool, candidate: Data) -> (accepted: Bool, sendKey: Data?) {
         lock.lock(); defer { lock.unlock() }
-        return runLocked("UPDATE phone_devices SET last_seq = ?, last_seen = ? WHERE id = ? AND last_seq < ?",
-                         [.int(seq), .text(Time.iso.string(from: Date())), .text(id), .int(seq)]) == 1
+        let rows = rowsLocked("SELECT \(Self.phoneCols) FROM phone_devices WHERE id = ?", [.text(id)]) { self.readPhone($0) }
+        guard let row = rows.first, PhoneCrypto.fresh(row.lastSeq, row.seenMask, seq) else { return (false, nil) }
+        let (last, mask) = PhoneCrypto.mark(row.lastSeq, row.seenMask, seq)
+        let now = Arg.text(Time.iso.string(from: Date()))
+        if newKey && row.nextSecret != nil {
+            let ok = runLocked("UPDATE phone_devices SET secret = next_secret, next_secret = NULL, last_seq = ?, seen_mask = ?, last_seen = ? WHERE id = ?",
+                               [.int(last), .int(mask), now, .text(id)]) == 1
+            return (ok, nil)
+        }
+        if !row.paired {
+            let next = row.nextSecret ?? candidate
+            let ok = runLocked("UPDATE phone_devices SET next_secret = ?, last_seq = ?, seen_mask = ?, last_seen = ? WHERE id = ?",
+                               [.text(next.base64EncodedString()), .int(last), .int(mask), now, .text(id)]) == 1
+            return (ok, ok ? next : nil)
+        }
+        let ok = runLocked("UPDATE phone_devices SET last_seq = ?, seen_mask = ?, last_seen = ? WHERE id = ?",
+                           [.int(last), .int(mask), now, .text(id)]) == 1
+        return (ok, nil)
+    }
+
+    /// Rows with `lock` held.
+    private func rowsLocked<T>(_ sql: String, _ args: [Arg], _ make: (OpaquePointer?) -> T?) -> [T] {
+        var st: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { log("sql error: \(errmsg)"); return [] }
+        defer { sqlite3_finalize(st) }
+        bindAll(st, args)
+        var out: [T] = []
+        while sqlite3_step(st) == SQLITE_ROW { if let v = make(st) { out.append(v) } }
+        return out
     }
 }
 
@@ -285,6 +396,8 @@ extension Database {
 /// phones (see PhoneCrypto). Connections from addresses outside the local network are dropped.
 final class PhoneServer {
     static let port: UInt16 = 3032
+    /// Time to send a whole request, then time to answer it (Ask AI can take a minute; same as Windows).
+    static let readTimeout: TimeInterval = 15, answerTimeout: TimeInterval = 120
     let db: Database
     let ops: (PhoneRequest) async -> [String: Any]
     let locked: () -> Bool
@@ -294,6 +407,15 @@ final class PhoneServer {
     private let stateLock = NSLock()
     private var used = Date()
     private(set) var urls: [String] = []
+    /// The Host headers it answers ("192.168.1.5:3032"): its own addresses only, so a web page that renames
+    /// itself to this address (DNS rebinding) is refused.
+    private var allowedHosts: Set<String> = []
+    private var hosts: Set<String> {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return allowedHosts }
+        set { stateLock.lock(); allowedHosts = newValue; stateLock.unlock() }
+    }
+    /// The addresses it listens on, to notice when the network changed.
+    private(set) var addresses: [String] = []
 
     /// When a paired phone last asked something; for turning Phone Access off after hours unused.
     var lastUsed: Date { stateLock.lock(); defer { stateLock.unlock() }; return used }
@@ -309,7 +431,7 @@ final class PhoneServer {
         for ip in Lan.addresses() {
             let params = NWParameters.tcp
             params.requiredLocalEndpoint = .hostPort(host: NWEndpoint.Host(ip), port: NWEndpoint.Port(rawValue: Self.port)!)
-            params.allowLocalEndpointReuse = true
+            // No address reuse: no other program can take the port while it is ours.
             guard let l = try? NWListener(using: params) else { log("phone access: cannot listen on \(ip):\(Self.port)"); continue }
             l.newConnectionHandler = { [weak self] c in self?.accept(c) }
             l.stateUpdateHandler = { state in
@@ -317,7 +439,9 @@ final class PhoneServer {
             }
             l.start(queue: queue)
             listeners.append(l)
+            addresses.append(ip)
             urls.append("http://\(ip):\(Self.port)")
+            hosts.insert("\(ip):\(Self.port)")
         }
         if !urls.isEmpty { log("phone access on \(urls.joined(separator: ", "))") }
         return !urls.isEmpty
@@ -327,62 +451,81 @@ final class PhoneServer {
         listeners.forEach { $0.cancel() }
         listeners = []
         urls = []
+        hosts = []
+        addresses = []
     }
 
     private func accept(_ c: NWConnection) {
         // Only the local network; anything else is dropped without a word.
         guard let ip = Lan.remote(c), Lan.isPrivate(ip) else { c.cancel(); return }
         c.start(queue: queue)
-        queue.asyncAfter(deadline: .now() + 15) { [weak c] in c?.cancel() }
-        receive(c, Data(), remote: ip.map(String.init).joined(separator: "."))
+        // Until the whole request is in; then answerTimeout (see receive).
+        let reading = DispatchWorkItem { c.cancel() }
+        queue.asyncAfter(deadline: .now() + Self.readTimeout, execute: reading)
+        receive(c, Data(), remote: ip.map(String.init).joined(separator: "."), reading: reading)
     }
 
-    private func receive(_ c: NWConnection, _ buffer: Data, remote: String) {
+    private func receive(_ c: NWConnection, _ buffer: Data, remote: String, reading: DispatchWorkItem) {
         c.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, done, err in
             guard let self else { return }
             var buf = buffer
             if let data { buf.append(data) }
             guard let end = buf.range(of: Data("\r\n\r\n".utf8)) else {
-                if done || err != nil || buf.count > 16384 { c.cancel() } else { self.receive(c, buf, remote: remote) }
+                if done || err != nil || buf.count > 16384 { c.cancel() } else { self.receive(c, buf, remote: remote, reading: reading) }
                 return
             }
             let head = String(decoding: buf[..<end.lowerBound], as: UTF8.self)
             let lines = head.components(separatedBy: "\r\n")
             let first = lines.first?.split(separator: " ").map(String.init) ?? []
             var length = 0
-            for h in lines.dropFirst() where h.lowercased().hasPrefix("content-length:") {
-                guard let n = Int(h.dropFirst(15).trimmingCharacters(in: .whitespaces)) else { c.cancel(); return }
-                length = n
+            var host = "", origin: String?
+            for h in lines.dropFirst() {
+                let lower = h.lowercased()
+                func value(_ name: String) -> String { String(h.dropFirst(name.count)).trimmingCharacters(in: .whitespaces) }
+                if lower.hasPrefix("content-length:") {
+                    guard let n = Int(value("content-length:")) else { c.cancel(); return }
+                    length = n
+                } else if lower.hasPrefix("host:") {
+                    host = value("host:")
+                } else if lower.hasPrefix("origin:") {
+                    origin = value("origin:")
+                }
             }
             guard first.count >= 2, (0...65536).contains(length) else { c.cancel(); return }
             let body = buf[end.upperBound...]
             if body.count >= length {
+                reading.cancel()
+                let answering = DispatchWorkItem { c.cancel() }
+                self.queue.asyncAfter(deadline: .now() + Self.answerTimeout, execute: answering)
                 let req = Data(body.prefix(length))
                 Task {
-                    let r = await self.handle(first[0], first[1], req, remote: remote)
-                    self.respond(c, r)
+                    let r = await self.handle(first[0], first[1], req, remote: remote, host: host, origin: origin)
+                    self.respond(c, r) { answering.cancel() }
                 }
             } else if done || err != nil {
                 c.cancel()
             } else {
-                self.receive(c, buf, remote: remote)
+                self.receive(c, buf, remote: remote, reading: reading)
             }
         }
     }
 
-    private func respond(_ c: NWConnection, _ r: (status: Int, type: String, body: Data)) {
-        let reason = [200: "OK", 401: "Unauthorized", 404: "Not Found", 405: "Method Not Allowed", 429: "Too Many Requests"][r.status] ?? "Error"
-        var head = "HTTP/1.1 \(r.status) \(reason)\r\nContent-Type: \(r.type)\r\nContent-Length: \(r.body.count)\r\nCache-Control: no-store\r\n"
+    private func respond(_ c: NWConnection, _ r: (status: Int, type: String, body: Data), sent: @escaping () -> Void) {
+        let reasons = [200: "OK", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed", 409: "Conflict", 429: "Too Many Requests"]
+        var head = "HTTP/1.1 \(r.status) \(reasons[r.status] ?? "Error")\r\nContent-Type: \(r.type)\r\nContent-Length: \(r.body.count)\r\nCache-Control: no-store\r\n"
         head += "X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nX-Frame-Options: DENY\r\nConnection: close\r\n\r\n"
-        c.send(content: Data(head.utf8) + r.body, completion: .contentProcessed { _ in c.cancel() })
+        c.send(content: Data(head.utf8) + r.body, completion: .contentProcessed { _ in sent(); c.cancel() })
     }
 
     private static func plain(_ status: Int, _ msg: String) -> (Int, String, Data) {
         (status, "application/json", (try? JSONSerialization.data(withJSONObject: ["error": msg])) ?? Data())
     }
 
-    /// One request, without the socket.
-    func handle(_ method: String, _ target: String, _ body: Data, remote: String) async -> (status: Int, type: String, body: Data) {
+    /// One request, without the socket. `host` and `origin` are the request's headers.
+    func handle(_ method: String, _ target: String, _ body: Data, remote: String, host: String, origin: String?) async -> (status: Int, type: String, body: Data) {
+        // Only requests addressed to this Mac, and only from the phone page it served (or none).
+        guard hosts.contains(host.lowercased()) else { return Self.plain(403, "wrong address") }
+        if let origin, origin.lowercased() != "http://" + host.lowercased() { return Self.plain(403, "wrong page") }
         let path = target.split(separator: "?").first.map(String.init) ?? target
         if method == "GET" && (path == "/" || path == "/index.html") { return (200, "text/html; charset=utf-8", Data(PhonePage.html.utf8)) }
         guard path == "/api" else { return Self.plain(404, "not found") }
@@ -390,18 +533,27 @@ final class PhoneServer {
         let now = Date()
         guard guardList.allowed(remote, now) else { return Self.plain(429, "too many tries; wait a few minutes") }
         let req: PhoneRequest
+        let sendKey: Data?
         do {
             req = try PhoneCrypto.open(body, device: { self.db.phoneDevice($0) }, now: now)
-            guard db.acceptPhoneRequest(req.device.id, req.seq) else { throw PhoneFailure.replayed }
+            let r = db.acceptPhoneRequest(req.device.id, req.seq, newKey: req.newKey, candidate: PhoneCrypto.random(32))
+            guard r.accepted else { throw PhoneFailure.replayed }
+            sendKey = r.sendKey
+        } catch let f as PhoneFailure where f == .replayed || f == .stale {
+            // Sealed with the right key, so it is the phone itself: requests that crossed, or a wrong clock.
+            log("phone access: \(f) request from \(remote)")
+            return Self.plain(409, f == .stale ? "clock" : "retry")
         } catch {
-            guardList.failed(remote, now)
+            guardList.failed(remote, now, global: (error as? PhoneFailure) == .badSeal)
             log("phone access: refused a request from \(remote) (\(error))")
             return Self.plain(401, "not paired")
         }
         stateLock.lock(); used = now; stateLock.unlock()
         var result: [String: Any] = ["ok": false, "error": "locked", "message": "OpenRewind is locked. Unlock it on the Mac, then try again."]
         if !locked() { result = await ops(req) }
-        return (200, "application/json", PhoneCrypto.sealResponse(req.device, req.seq, result))
+        // Pairing: the phone's own key, replacing the QR code's (sealed, so only that phone reads it).
+        if let sendKey { result["key"] = PhoneCrypto.b64(sendKey) }
+        return (200, "application/json", PhoneCrypto.sealResponse(req.device, req.seq, result, key: req.key))
     }
 }
 
@@ -519,7 +671,24 @@ final class PhoneAccess {
     /// Hours unused before it turns off; 0 is never.
     static let autoOffChoices = [1, 4, 12, 0]
 
-    init(makeServer: @escaping () -> PhoneServer) { self.makeServer = makeServer }
+    private let monitor = NWPathMonitor()
+
+    init(makeServer: @escaping () -> PhoneServer) {
+        self.makeServer = makeServer
+        // A new address (other Wi-Fi, DHCP renewal): listen again on the addresses there are now.
+        monitor.pathUpdateHandler = { [weak self] _ in DispatchQueue.main.async { self?.networkChanged() } }
+        monitor.start(queue: DispatchQueue(label: "openrewind.phone.path"))
+    }
+
+    private func networkChanged() {
+        guard enabled else { return }
+        let now = Lan.addresses()
+        if let s = server, s.addresses == now { return }
+        if server == nil && now.isEmpty { return }
+        log("phone access: network changed, listening again")
+        stop()
+        start()
+    }
 
     var enabled: Bool {
         get { d.bool(forKey: "phoneAccess") }
@@ -541,7 +710,7 @@ final class PhoneAccess {
         guard server == nil else { return }
         let s = makeServer()
         guard s.start() else {
-            problem = "No Wi-Fi or Ethernet network with a private address, so phones cannot reach this Mac."
+            problem = "No Wi-Fi or Ethernet network with a private address, so phones cannot reach this Mac. It starts again by itself when there is one."
             return
         }
         problem = nil
@@ -571,7 +740,10 @@ final class PhoneAccess {
         stop()
     }
 
-    /// A new pairing code, shown until the phone has used it or the user closes it.
+    /// A new pairing code, shown until the phone has finished pairing or the user closes it. The code is a
+    /// one-time key: the phone gets its own key in the first answer, and once it has used it the code is
+    /// worthless. The window is never recorded (OpenRewind leaves its own windows out of screenshots) and
+    /// is hidden from other screen capture too.
     func pair(db: Database) {
         guard let base = urls.first else { return }
         let (id, secret) = PhoneCrypto.newDevice()
@@ -579,8 +751,9 @@ final class PhoneAccess {
         let url = PhoneCrypto.pairingURL(base, id, secret)
         let alert = NSAlert()
         alert.messageText = "Scan with your phone's camera"
-        alert.informativeText = "Your phone must be on the same Wi-Fi as this Mac. The code works for one phone and expires in 15 minutes; "
-            + "it holds the key, so don't share it.\n\nAfter scanning, add the page to your home screen to open it again."
+        alert.informativeText = "Your phone must be on the same Wi-Fi as this Mac (\(base.replacingOccurrences(of: "http://", with: ""))). "
+            + "The code works once, for one phone, within 15 minutes; it closes by itself when the phone is paired.\n\n"
+            + "After scanning, add the page to your home screen to open it again."
         if let image = Self.qrCode(url, size: 260) {
             let view = NSImageView(frame: NSRect(x: 0, y: 0, width: 260, height: 260))
             view.image = image
@@ -588,7 +761,26 @@ final class PhoneAccess {
         }
         alert.addButton(withTitle: "Done")
         alert.addButton(withTitle: "Cancel")
-        if Dialogs.run(alert) != .alertFirstButtonReturn, db.phoneDevice(id)?.paired != true { db.removePhoneDevice(id) }
+        alert.window.sharingType = .none
+        final class Flag { var on = false }
+        let paired = Flag()
+        let poll = Timer(timeInterval: 1, repeats: true) { t in
+            guard db.phoneDevice(id)?.paired == true else { return }
+            paired.on = true
+            t.invalidate()
+            NSApp.stopModal(withCode: .alertFirstButtonReturn)
+        }
+        RunLoop.main.add(poll, forMode: .modalPanel)
+        let answer = Dialogs.run(alert)
+        poll.invalidate()
+        if paired.on {
+            let done = NSAlert()
+            done.messageText = "Phone paired"
+            done.informativeText = "It has its own key now; the code you scanned no longer works. Revoke it in Settings → Security if you lose the phone."
+            Dialogs.run(done)
+        } else if answer != .alertFirstButtonReturn, db.phoneDevice(id)?.paired != true {
+            db.removePhoneDevice(id)
+        }
     }
 
     /// The QR code of `text`, sharp at `size` points.

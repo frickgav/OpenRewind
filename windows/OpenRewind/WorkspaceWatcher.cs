@@ -115,7 +115,7 @@ static class WorkspaceRestore
                 case Workspace.Tab when Workspace.IsWebUrl(i.Url):
                     if (File.Exists(i.AppId) && UiaText.IsBrowser(i.AppId) ? Reopen.Start(i.AppId, i.Url) : OpenShell(i.Url)) opened++;
                     break;
-                case Workspace.Document when File.Exists(i.Path):
+                case Workspace.Document when Workspace.IsSafeDocument(i.Path) && File.Exists(i.Path):
                     if (OpenShell(i.Path)) opened++;
                     break;
                 case Workspace.App:

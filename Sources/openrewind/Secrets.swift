@@ -33,12 +33,24 @@ enum Secrets {
 
     /// Rules where only the `v` group is the secret: what follows a label.
     private static let labeled = re(
-        #"(?i)(?<![A-Za-z])(password|passwd|passcode|pwd|api[ _\-]?key|secret[ _\-]?key|client[ _\-]?secret|access[ _\-]?token|auth[ _\-]?token|bearer)[ \t]*[:=][ \t]*["']?(?<v>[^\s"']{4,})"#)
+        #"(?i)(?<![A-Za-z])(password|passwd|passcode|pwd|api[ _\-]?key|secret[ _\-]?key|(?:aws[ _\-]?)?secret[ _\-]?access[ _\-]?key|access[ _\-]?key|account[ _\-]?key|private[ _\-]?key|client[ _\-]?secret|access[ _\-]?token|auth[ _\-]?token|refresh[ _\-]?token|bearer)[ \t]*[:=][ \t]*["']?(?<v>[^\s"';]{4,})"#)
+    /// Environment variables and settings named like a secret: FOO_SECRET=…, GITHUB_TOKEN=…, STRIPE_KEY=….
+    private static let envVar = re(
+        #"(?<![A-Za-z0-9_])[A-Z][A-Z0-9_]*_(SECRET|TOKEN|KEY|PASSWORD|PASS|PWD|APIKEY|CREDENTIALS?)[ \t]*[:=][ \t]*["']?(?<v>[^\s"';]{8,})"#)
+    /// A password inside an address in text: postgres://user:pass@host, https://me:pw@example.com.
+    private static let userinfo = re(#"(?<![A-Za-z0-9+.\-])[a-zA-Z][a-zA-Z0-9+.\-]*://[^/@:\s]+:(?<v>[^/@\s]{3,})@"#)
+    private static let plainWord = re(#"^[a-z_.]+$"#)
+    private static let pathWord = re(#"^[A-Z]?[a-z]{3,}$"#)
     private static let bearer = re(#"(?<![A-Za-z])Bearer[ \t]+(?<v>[A-Za-z0-9._~+/\-]{20,}=*)"#)
     /// 13 to 19 digits, maybe in groups split by single spaces or dashes.
     private static let digits = re(#"(?<![\d\-.,/:])\d(?:[ \-]?\d){12,18}(?![\d\-]|[.,/:]\d)"#)
     /// Long runs of letters, digits and token punctuation, checked for randomness.
-    private static let token = re(#"(?<![A-Za-z0-9+_=\-/.])[A-Za-z0-9+_=\-]{32,}(?![A-Za-z0-9+_=\-/])"#)
+    /// '/' may be inside (base64: AWS and Azure keys) but not first; isRandom keeps paths out.
+    private static let token = re(#"(?<![A-Za-z0-9+_\-/.])[A-Za-z0-9+_\-][A-Za-z0-9+/_\-]{31,}={0,2}(?![A-Za-z0-9+/_=\-])"#)
+
+    private static func matches(_ r: NSRegularExpression, _ s: String) -> Bool {
+        r.firstMatch(in: s, range: NSRange(location: 0, length: (s as NSString).length)) != nil
+    }
 
     /// Every secret in `text` (UTF-16 ranges), in order, without overlaps.
     static func find(_ text: String) -> [NSRange] {
@@ -47,10 +59,12 @@ enum Secrets {
         let all = NSRange(location: 0, length: ns.length)
         var hits: [NSRange] = []
         for r in whole { hits += r.matches(in: text, range: all).map(\.range) }
-        for r in [labeled, bearer] {
+        for r in [labeled, bearer, envVar, userinfo] {
             for m in r.matches(in: text, range: all) {
                 let v = m.range(withName: "v")
                 guard v.location != NSNotFound, looksLikeValue(ns.substring(with: v)) else { continue }
+                // SORT_KEY=timestamp: a plain word is a setting, not a secret.
+                if r === envVar && matches(plainWord, ns.substring(with: v)) { continue }
                 hits.append(v)
             }
         }
@@ -147,10 +161,14 @@ enum Secrets {
             default: break
             }
         }
-        guard upper >= 2, lower >= 2, digit >= 2 else { return false }
+        // Base64 with '/' or '+' (AWS and Azure keys) may happen to have fewer digits.
+        let base64 = s.count >= 40 && (s.contains("/") || s.contains("+"))
+        guard upper >= 2, lower >= 2, digit >= 2 || base64 else { return false }
         // Words joined by dashes or underscores ("my-long-branch-name-2024-v2") are not random.
         let parts = s.split(whereSeparator: { $0 == "-" || $0 == "_" })
         if parts.count > 3, parts.allSatisfy({ $0.count < 12 }) { return false }
+        // Paths ("Users/sam/Projects/App2024/Sources"): a word between slashes, or "//".
+        if s.contains("/"), s.contains("//") || s.split(separator: "/").contains(where: { matches(pathWord, String($0)) }) { return false }
         return entropy(s) >= 4.2
     }
 

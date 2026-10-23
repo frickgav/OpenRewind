@@ -8,16 +8,23 @@ using System.Text.Json.Nodes;
 
 namespace OpenRewind;
 
-/// A phone paired with Phone Access. `Secret` is the 256-bit key shared through the pairing QR code;
-/// `LastSeq` is the highest request number accepted from it (anything not higher is a replay).
-/// A device that has never been seen is still pairing, and is forgotten after 15 minutes.
-public sealed record PhoneDevice(string Id, string Name, DateTime Created, DateTime? LastSeen, long LastSeq, byte[] Secret)
+/// A phone paired with Phone Access. `Secret` is its 256-bit key: first the one-time pairing key from
+/// the QR code, then, from the phone's first request on, a new key the computer sends it sealed
+/// (`NextSecret` until the phone has used it once). `LastSeq` is the highest request number accepted
+/// from it and `SeenMask` which of the 64 numbers below it were used (bit 0 = LastSeq - 1), so requests
+/// that cross on the way are all accepted once and a copy of any of them never is.
+/// A phone that has not finished pairing within 15 minutes is forgotten, and its QR code stops working.
+public sealed record PhoneDevice(string Id, string Name, DateTime Created, DateTime? LastSeen, long LastSeq, byte[] Secret,
+                                 byte[]? NextSecret = null, long SeenMask = 0)
 {
-    public bool Paired => LastSeen != null;
+    /// The phone has used the key it got after pairing, so the QR code's key is gone.
+    public bool Paired => LastSeen != null && NextSecret == null;
 }
 
-/// Why a request was refused. The phone only ever hears "not paired" (401), whatever the reason.
-public enum PhoneFailure { Malformed, UnknownDevice, BadSeal, Replayed, Stale }
+/// Why a request was refused. Malformed, UnknownDevice, Expired and BadSeal answer "not paired" (401) and
+/// count as tries at guessing; Replayed and Stale come from a phone that has the key (the seal opened),
+/// so they answer "try again" (409) and do not count.
+public enum PhoneFailure { Malformed, UnknownDevice, Expired, BadSeal, Replayed, Stale }
 
 public sealed class PhoneAuthException : Exception
 {
@@ -26,7 +33,9 @@ public sealed class PhoneAuthException : Exception
 }
 
 /// A request that passed every check: sealed with the device's key, fresh, never seen before.
-public sealed record PhoneRequest(PhoneDevice Device, long Seq, string Op, JsonObject Args);
+/// `Key` is the secret it was sealed with (its answer is sealed with the same); `NewKey` is true when
+/// that was the key sent after pairing, used for the first time.
+public sealed record PhoneRequest(PhoneDevice Device, long Seq, string Op, JsonObject Args, byte[] Key, bool NewKey = false);
 
 /// Phone Access messages: end-to-end encrypted between the phone's browser and this computer, so the
 /// Wi-Fi, the router and anyone else on the network see only noise. See docs/phone-access.md.
@@ -35,13 +44,40 @@ public sealed record PhoneRequest(PhoneDevice Device, long Seq, string Op, JsonO
 /// answers ("openrewind/phone/v1/req/" or "…/res/" + device id). Every message is AES-256-GCM with a fresh
 /// random 96-bit nonce. A request is {"v":1,"d":device,"n":nonce,"c":ciphertext+tag} sealing
 /// {"seq","ts","op","args"} with the extra data "openrewind-phone-v1|req|"+device; seq must be higher than
-/// any before it from that device and ts (Unix ms) within 5 minutes of now. An answer is {"n","c"} sealing
-/// the result with "openrewind-phone-v1|res|"+device+"|"+seq, so it only fits the request it answers.
+/// any before it from that device, or one of the 64 below the highest not used yet, and ts (Unix ms) within
+/// 5 minutes of now. An answer is {"n","c"} sealing the result with "openrewind-phone-v1|res|"+device+"|"+seq,
+/// so it only fits the request it answers. The QR code's key is for pairing only: the answer to the
+/// first request carries a new random key ("key"), and once the phone has used it the old one is gone.
 /// The Mac app (PhoneAccess.swift) and the phone page (PhonePage.swift, using SJCL) do exactly the same.
 public static class PhoneCrypto
 {
     public const string Salt = "OpenRewind phone";
     public static readonly TimeSpan MaxSkew = TimeSpan.FromMinutes(5);
+    /// How long a QR code can be used to pair.
+    public static readonly TimeSpan PairingWindow = TimeSpan.FromMinutes(15);
+    /// How far below the highest request number a request may still arrive.
+    public const int Window = 64;
+
+    /// True when request `seq` was not used yet: above `last`, or in the window below it and not marked.
+    public static bool Fresh(long last, long mask, long seq)
+    {
+        if (seq <= 0) return false;
+        if (seq > last) return true;
+        long back = last - seq;
+        return back >= 1 && back <= Window && (mask & (1L << (int)(back - 1))) == 0;
+    }
+
+    /// `last` and `mask` with `seq` marked as used (call only when Fresh).
+    public static (long Last, long Mask) Mark(long last, long mask, long seq)
+    {
+        if (seq > last)
+        {
+            long shift = seq - last;
+            mask = shift > Window ? 0 : shift == Window ? long.MinValue : (mask << (int)shift) | (1L << (int)(shift - 1));
+            return (seq, mask);
+        }
+        return (last, mask | (1L << (int)(last - seq - 1)));
+    }
 
     public static (byte[] Req, byte[] Res) Keys(byte[] secret, string deviceId) =>
         (HKDF.DeriveKey(HashAlgorithmName.SHA256, secret, 32, Encoding.UTF8.GetBytes(Salt), Encoding.UTF8.GetBytes("openrewind/phone/v1/req/" + deviceId)),
@@ -101,8 +137,8 @@ public static class PhoneCrypto
         return new JsonObject { ["v"] = 1, ["d"] = deviceId, ["n"] = B64(n), ["c"] = B64(c) }.ToJsonString();
     }
 
-    /// Checks and opens a request. `device` finds a paired (or pairing) device by id. Does not check the
-    /// sequence against the database; PhoneServer does that atomically (Database.AcceptPhoneRequest).
+    /// Checks and opens a request. `device` finds a paired (or pairing) device by id. The sequence is checked
+    /// here against the device as read, and again atomically when it is recorded (Database.AcceptPhoneRequest).
     public static PhoneRequest Open(string body, Func<string, PhoneDevice?> device, DateTime nowUtc)
     {
         JsonObject env;
@@ -116,22 +152,32 @@ public static class PhoneCrypto
         byte[] nonce, sealed_;
         try { nonce = FromB64(S(env, "n")); sealed_ = FromB64(S(env, "c")); }
         catch (FormatException) { throw new PhoneAuthException(PhoneFailure.Malformed); }
-        var plain = Unseal(Keys(d.Secret, d.Id).Req, nonce, sealed_, RequestAad(d.Id)) ?? throw new PhoneAuthException(PhoneFailure.BadSeal);
+        byte[] key = d.Secret;
+        bool newKey = false;
+        byte[]? plain = null;
+        if (d.NextSecret != null && (plain = Unseal(Keys(d.NextSecret, d.Id).Req, nonce, sealed_, RequestAad(d.Id))) != null)
+        {
+            key = d.NextSecret;
+            newKey = true;
+        }
+        plain ??= Unseal(Keys(d.Secret, d.Id).Req, nonce, sealed_, RequestAad(d.Id)) ?? throw new PhoneAuthException(PhoneFailure.BadSeal);
+        // The QR code's key works only while pairing, for 15 minutes.
+        if (!newKey && !d.Paired && nowUtc - d.Created > PairingWindow) throw new PhoneAuthException(PhoneFailure.Expired);
         JsonObject msg;
         try { msg = JsonNode.Parse(plain) as JsonObject ?? throw new PhoneAuthException(PhoneFailure.Malformed); }
         catch (JsonException) { throw new PhoneAuthException(PhoneFailure.Malformed); }
         long seq = msg["seq"] is JsonValue sv && sv.TryGetValue<long>(out var sq) ? sq : -1;
         long ts = msg["ts"] is JsonValue tv && tv.TryGetValue<long>(out var t) ? t : 0;
-        if (seq <= d.LastSeq) throw new PhoneAuthException(PhoneFailure.Replayed);
+        if (!Fresh(d.LastSeq, d.SeenMask, seq)) throw new PhoneAuthException(PhoneFailure.Replayed);
         var when = DateTimeOffset.FromUnixTimeMilliseconds(Math.Clamp(ts, 0, 253402300799999)).UtcDateTime;
         if ((when - nowUtc).Duration() > MaxSkew) throw new PhoneAuthException(PhoneFailure.Stale);
-        return new PhoneRequest(d, seq, S(msg, "op"), msg["args"] as JsonObject ?? new JsonObject());
+        return new PhoneRequest(d, seq, S(msg, "op"), msg["args"] as JsonObject ?? new JsonObject(), key, newKey);
     }
 
-    /// The sealed answer to request `seq` from `d`.
-    public static string SealResponse(PhoneDevice d, long seq, JsonNode result)
+    /// The sealed answer to request `seq` from `d`, with `key` (the secret the request was sealed with).
+    public static string SealResponse(PhoneDevice d, long seq, JsonNode result, byte[]? key = null)
     {
-        var (n, c) = Seal(Keys(d.Secret, d.Id).Res, Encoding.UTF8.GetBytes(result.ToJsonString()), ResponseAad(d.Id, seq));
+        var (n, c) = Seal(Keys(key ?? d.Secret, d.Id).Res, Encoding.UTF8.GetBytes(result.ToJsonString()), ResponseAad(d.Id, seq));
         return new JsonObject { ["n"] = B64(n), ["c"] = B64(c) }.ToJsonString();
     }
 
@@ -165,7 +211,9 @@ public sealed class PhoneGuard
             return now >= allBlockedUntil && (!blockedUntil.TryGetValue(ip, out var u) || now >= u);
     }
 
-    public void Failed(string ip, DateTime now)
+    /// A refused try from `ip`. Only wrong-key tries (`global`) count toward blocking every phone, so
+    /// stray requests from web pages on the network cannot shut phones out.
+    public void Failed(string ip, DateTime now, bool global = true)
     {
         lock (fails)
         {
@@ -173,6 +221,7 @@ public sealed class PhoneGuard
             l.Add(now);
             l.RemoveAll(t => now - t > Window);
             if (l.Count >= PerAddress) { blockedUntil[ip] = now + Block; l.Clear(); }
+            if (!global) return;
             all.Add(now);
             all.RemoveAll(t => now - t > Window);
             if (all.Count >= Total) { allBlockedUntil = now + Window; all.Clear(); }
@@ -193,7 +242,10 @@ public static class Lan
         return b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) || (b[0] == 192 && b[1] == 168) || (b[0] == 100 && b[1] >= 64 && b[1] <= 127);
     }
 
-    /// This computer's private IPv4 addresses on network adapters that are up, Wi-Fi and Ethernet first.
+    /// This computer's private IPv4 addresses that a phone can reach: adapters that are up and have a
+    /// default gateway (the Wi-Fi or Ethernet the PC is on), plus Tailscale's 100.64/10 addresses.
+    /// Virtual adapters of WSL, Hyper-V, Docker, VirtualBox and VMware are left out, so the pairing code
+    /// never points at them and nothing in a container or VM can reach the server. Wi-Fi and Ethernet first.
     public static List<IPAddress> Addresses()
     {
         var out_ = new List<(IPAddress Ip, int Rank)>();
@@ -202,14 +254,27 @@ public static class Lan
             foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
             {
                 if (nic.OperationalStatus != OperationalStatus.Up || nic.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
-                int rank = nic.NetworkInterfaceType is NetworkInterfaceType.Wireless80211 or NetworkInterfaceType.Ethernet ? 0 : 1;
-                foreach (var a in nic.GetIPProperties().UnicastAddresses)
-                    if (IsPrivate(a.Address)) out_.Add((a.Address, rank));
+                if (IsVirtual(nic.Name + " " + nic.Description)) continue;
+                var props = nic.GetIPProperties();
+                bool gateway = props.GatewayAddresses.Any(g => g.Address.AddressFamily == AddressFamily.InterNetwork && !g.Address.Equals(IPAddress.Any));
+                foreach (var a in props.UnicastAddresses)
+                {
+                    if (!IsPrivate(a.Address)) continue;
+                    bool tailscale = a.Address.GetAddressBytes() is [100, >= 64 and <= 127, _, _];
+                    if (!gateway && !tailscale) continue;
+                    int rank = gateway && nic.NetworkInterfaceType is NetworkInterfaceType.Wireless80211 or NetworkInterfaceType.Ethernet ? 0 : gateway ? 1 : 2;
+                    out_.Add((a.Address, rank));
+                }
             }
         }
         catch (NetworkInformationException) { }
         return out_.OrderBy(x => x.Rank).Select(x => x.Ip).Distinct().ToList();
     }
+
+    /// Adapters that belong to virtual machines and containers, by their name or description.
+    public static bool IsVirtual(string nameAndDescription) =>
+        new[] { "vEthernet", "Hyper-V", "WSL", "Docker", "VirtualBox", "VMware", "VMnet", "Npcap Loopback" }
+            .Any(v => nameAndDescription.Contains(v, StringComparison.OrdinalIgnoreCase));
 }
 
 public sealed partial class Database
@@ -224,23 +289,33 @@ public sealed partial class Database
             secret TEXT NOT NULL,
             created_at TEXT NOT NULL,
             last_seen TEXT,
-            last_seq INTEGER NOT NULL DEFAULT 0
+            last_seq INTEGER NOT NULL DEFAULT 0,
+            next_secret TEXT,
+            seen_mask INTEGER NOT NULL DEFAULT 0
         );
         """);
+        // Tables made by earlier test builds lack the last two columns.
+        var cols = Strings("SELECT name FROM pragma_table_info('phone_devices')");
+        if (!cols.Contains("next_secret")) Exec("ALTER TABLE phone_devices ADD COLUMN next_secret TEXT");
+        if (!cols.Contains("seen_mask")) Exec("ALTER TABLE phone_devices ADD COLUMN seen_mask INTEGER NOT NULL DEFAULT 0");
     }
+
+    const string PhoneCols = "id, name, created_at, last_seen, last_seq, secret, next_secret, seen_mask";
 
     static PhoneDevice ReadPhone(Microsoft.Data.Sqlite.SqliteDataReader r) =>
         new(r.GetString(0), r.GetString(1), Time.ParseIso(r.GetString(2)) ?? DateTime.UnixEpoch,
-            r.IsDBNull(3) ? null : Time.ParseIso(r.GetString(3)), r.GetInt64(4), System.Convert.FromBase64String(r.GetString(5)));
+            r.IsDBNull(3) ? null : Time.ParseIso(r.GetString(3)), r.GetInt64(4), System.Convert.FromBase64String(r.GetString(5)),
+            r.IsDBNull(6) ? null : System.Convert.FromBase64String(r.GetString(6)), r.GetInt64(7));
 
-    /// Paired phones, and ones still pairing (never seen) from the last 15 minutes; older pending ones are removed.
+    /// Paired phones, and ones still pairing from the last 15 minutes; older unfinished pairings are removed.
     public List<PhoneDevice> PhoneDevices()
     {
         lock (gate)
         {
             if (!HasTable("phone_devices")) return new();
-            Run("DELETE FROM phone_devices WHERE last_seen IS NULL AND created_at < ?", Time.Iso(DateTime.UtcNow.AddMinutes(-15)));
-            return Rows("SELECT id, name, created_at, last_seen, last_seq, secret FROM phone_devices ORDER BY created_at", ReadPhone);
+            Run("DELETE FROM phone_devices WHERE (last_seen IS NULL OR next_secret IS NOT NULL) AND created_at < ?",
+                Time.Iso(DateTime.UtcNow - PhoneCrypto.PairingWindow));
+            return Rows($"SELECT {PhoneCols} FROM phone_devices ORDER BY created_at", ReadPhone);
         }
     }
 
@@ -254,14 +329,32 @@ public sealed partial class Database
 
     public void RenamePhoneDevice(string id, string name) => Run("UPDATE phone_devices SET name = ? WHERE id = ?", name, id);
 
-    /// Records request `seq` as used, only if it is higher than every one before (in one statement, so two
-    /// copies of a request sent at once cannot both pass). False means a replay.
-    public bool AcceptPhoneRequest(string id, long seq)
+    /// Records request `seq` as used, if it was not used before (checked and written under the lock, so two
+    /// copies sent at once cannot both pass). `newKey`: the request was sealed with the key sent after
+    /// pairing, which now replaces the QR code's key. While pairing, returns the key to send to the phone
+    /// (`candidate` the first time, the same one after). Accepted is false for a replay or a revoked phone.
+    public (bool Accepted, byte[]? SendKey) AcceptPhoneRequest(string id, long seq, bool newKey = false, byte[]? candidate = null)
     {
         lock (gate)
         {
-            using var cmd = Cmd("UPDATE phone_devices SET last_seq = ?, last_seen = ? WHERE id = ? AND last_seq < ?", seq, Time.Now(), id, seq);
-            return cmd.ExecuteNonQuery() == 1;
+            var row = Rows($"SELECT {PhoneCols} FROM phone_devices WHERE id = ?", ReadPhone, id).FirstOrDefault();
+            if (row == null || !PhoneCrypto.Fresh(row.LastSeq, row.SeenMask, seq)) return (false, null);
+            var (last, mask) = PhoneCrypto.Mark(row.LastSeq, row.SeenMask, seq);
+            if (newKey && row.NextSecret != null)
+            {
+                Run("UPDATE phone_devices SET secret = next_secret, next_secret = NULL, last_seq = ?, seen_mask = ?, last_seen = ? WHERE id = ?",
+                    last, mask, Time.Now(), id);
+                return (true, null);
+            }
+            if (!row.Paired)
+            {
+                var next = row.NextSecret ?? candidate ?? RandomNumberGenerator.GetBytes(32);
+                Run("UPDATE phone_devices SET next_secret = ?, last_seq = ?, seen_mask = ?, last_seen = ? WHERE id = ?",
+                    System.Convert.ToBase64String(next), last, mask, Time.Now(), id);
+                return (true, next);
+            }
+            Run("UPDATE phone_devices SET last_seq = ?, seen_mask = ?, last_seen = ? WHERE id = ?", last, mask, Time.Now(), id);
+            return (true, null);
         }
     }
 }
@@ -284,6 +377,9 @@ public sealed class PhoneServer : IDisposable
     /// When a paired phone last asked something (UTC); for turning Phone Access off after hours unused.
     public DateTime LastUsed { get; private set; }
     public IReadOnlyList<string> Urls { get; private set; } = Array.Empty<string>();
+    /// The Host headers it answers ("192.168.1.5:3032"): its own addresses only, so a web page that renames
+    /// itself to this address (DNS rebinding) is refused. Filled by Start; tests add their own.
+    public HashSet<string> Hosts { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// `ops` answers a checked request ("search", "ask", "promises"…); `locked` is the app lock;
     /// `page` is the phone page's HTML.
@@ -307,6 +403,7 @@ public sealed class PhoneServer : IDisposable
                 l.Start();
                 listeners.Add(l);
                 urls.Add($"http://{ip}:{port}");
+                Hosts.Add($"{ip}:{port}");
                 _ = Task.Run(() => Accept(l));
             }
             catch (SocketException e) { Log.Write($"phone access: cannot listen on {ip}:{port}: {e.Message}"); }
@@ -353,8 +450,14 @@ public sealed class PhoneServer : IDisposable
             var first = lines[0].Split(' ');
             if (first.Length < 2) return;
             int length = 0;
+            string host = "";
+            string? origin = null;
             foreach (var h in lines.Skip(1))
+            {
                 if (h.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase) && !int.TryParse(h[15..].Trim(), out length)) return;
+                if (h.StartsWith("Host:", StringComparison.OrdinalIgnoreCase)) host = h[5..].Trim();
+                if (h.StartsWith("Origin:", StringComparison.OrdinalIgnoreCase)) origin = h[7..].Trim();
+            }
             if (length is < 0 or > 65536) return;
             var body = new MemoryStream();
             body.Write(data.GetBuffer(), end + 4, (int)data.Length - end - 4);
@@ -364,8 +467,12 @@ public sealed class PhoneServer : IDisposable
                 if (n <= 0) return;
                 body.Write(buf, 0, n);
             }
-            var (status, type, bytes) = await Handle(first[0], first[1], body.ToArray().AsSpan(0, length).ToArray(), remote.ToString()).ConfigureAwait(false);
-            var reason = status switch { 200 => "OK", 401 => "Unauthorized", 404 => "Not Found", 405 => "Method Not Allowed", 429 => "Too Many Requests", _ => "Error" };
+            var (status, type, bytes) = await Handle(first[0], first[1], body.ToArray().AsSpan(0, length).ToArray(), remote.ToString(), host, origin).ConfigureAwait(false);
+            var reason = status switch
+            {
+                200 => "OK", 401 => "Unauthorized", 403 => "Forbidden", 404 => "Not Found", 405 => "Method Not Allowed", 409 => "Conflict",
+                429 => "Too Many Requests", _ => "Error",
+            };
             var hdr = $"HTTP/1.1 {status} {reason}\r\nContent-Type: {type}\r\nContent-Length: {bytes.Length}\r\nCache-Control: no-store\r\n" +
                       "X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nX-Frame-Options: DENY\r\nConnection: close\r\n\r\n";
             await stream.WriteAsync(Encoding.ASCII.GetBytes(hdr), stop.Token).ConfigureAwait(false);
@@ -377,9 +484,14 @@ public sealed class PhoneServer : IDisposable
     static (int, string, byte[]) Plain(int status, string msg) =>
         (status, "application/json", Encoding.UTF8.GetBytes(new JsonObject { ["error"] = msg }.ToJsonString()));
 
-    /// One request, without the socket (tests call this directly).
-    public async Task<(int Status, string ContentType, byte[] Body)> Handle(string method, string target, byte[] body, string remote)
+    /// One request, without the socket (tests call this directly). `host` and `origin` are the request's
+    /// headers; null skips that check (tests).
+    public async Task<(int Status, string ContentType, byte[] Body)> Handle(string method, string target, byte[] body, string remote,
+                                                                          string? host = null, string? origin = null)
     {
+        // Only requests addressed to this computer, and only from the phone page it served (or none).
+        if (host != null && !Hosts.Contains(host)) return Plain(403, "wrong address");
+        if (origin != null && (host == null || !origin.Equals("http://" + host, StringComparison.OrdinalIgnoreCase))) return Plain(403, "wrong page");
         var path = target.Split('?')[0];
         if (method == "GET" && (path == "/" || path == "/index.html"))
             return (200, "text/html; charset=utf-8", Encoding.UTF8.GetBytes(page()));
@@ -388,14 +500,23 @@ public sealed class PhoneServer : IDisposable
         var t = now();
         if (!guard.Allowed(remote, t)) return Plain(429, "too many tries; wait a few minutes");
         PhoneRequest req;
+        byte[]? sendKey;
         try
         {
             req = PhoneCrypto.Open(Encoding.UTF8.GetString(body), id => db.PhoneDevice(id), t);
-            if (!db.AcceptPhoneRequest(req.Device.Id, req.Seq)) throw new PhoneAuthException(PhoneFailure.Replayed);
+            bool ok;
+            (ok, sendKey) = db.AcceptPhoneRequest(req.Device.Id, req.Seq, req.NewKey, RandomNumberGenerator.GetBytes(32));
+            if (!ok) throw new PhoneAuthException(PhoneFailure.Replayed);
+        }
+        catch (PhoneAuthException e) when (e.Failure is PhoneFailure.Replayed or PhoneFailure.Stale)
+        {
+            // Sealed with the right key, so it is the phone itself: requests that crossed, or a wrong clock.
+            Log.Write($"phone access: {e.Failure} request from {remote}");
+            return Plain(409, e.Failure == PhoneFailure.Stale ? "clock" : "retry");
         }
         catch (PhoneAuthException e)
         {
-            guard.Failed(remote, t);
+            guard.Failed(remote, t, global: e.Failure == PhoneFailure.BadSeal);
             Log.Write($"phone access: refused a request from {remote} ({e.Failure})");
             return Plain(401, "not paired");
         }
@@ -407,7 +528,9 @@ public sealed class PhoneServer : IDisposable
             try { result = await ops(req, stop.Token).ConfigureAwait(false); }
             catch (Exception e) { result = new JsonObject { ["ok"] = false, ["error"] = "failed", ["message"] = e.Message }; }
         }
-        return (200, "application/json", Encoding.UTF8.GetBytes(PhoneCrypto.SealResponse(req.Device, req.Seq, result)));
+        // Pairing: the phone's own key, replacing the QR code's (sealed, so only that phone reads it).
+        if (sendKey != null && result is JsonObject o) o["key"] = PhoneCrypto.B64(sendKey);
+        return (200, "application/json", Encoding.UTF8.GetBytes(PhoneCrypto.SealResponse(req.Device, req.Seq, result, req.Key)));
     }
 
     public void Dispose()
