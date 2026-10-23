@@ -38,7 +38,7 @@ enum Secrets {
     private static let envVar = re(
         #"(?<![A-Za-z0-9_])[A-Z][A-Z0-9_]*_(SECRET|TOKEN|KEY|PASSWORD|PASS|PWD|APIKEY|CREDENTIALS?)[ \t]*[:=][ \t]*["']?(?<v>[^\s"';]{8,})"#)
     /// A password inside an address in text: postgres://user:pass@host, https://me:pw@example.com.
-    private static let userinfo = re(#"(?<![A-Za-z0-9+.\-])[a-zA-Z][a-zA-Z0-9+.\-]*://[^/@:\s]+:(?<v>[^/@\s]{3,})@"#)
+    private static let textUserinfo = re(#"(?<![A-Za-z0-9+.\-])[a-zA-Z][a-zA-Z0-9+.\-]*://[^/@:\s]+:(?<v>[^/@\s]{3,})@"#)
     private static let plainWord = re(#"^[a-z_.]+$"#)
     private static let pathWord = re(#"^[A-Z]?[a-z]{3,}$"#)
     private static let bearer = re(#"(?<![A-Za-z])Bearer[ \t]+(?<v>[A-Za-z0-9._~+/\-]{20,}=*)"#)
@@ -59,7 +59,7 @@ enum Secrets {
         let all = NSRange(location: 0, length: ns.length)
         var hits: [NSRange] = []
         for r in whole { hits += r.matches(in: text, range: all).map(\.range) }
-        for r in [labeled, bearer, envVar, userinfo] {
+        for r in [labeled, bearer, envVar, textUserinfo] {
             for m in r.matches(in: text, range: all) {
                 let v = m.range(withName: "v")
                 guard v.location != NSNotFound, looksLikeValue(ns.substring(with: v)) else { continue }

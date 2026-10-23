@@ -419,6 +419,7 @@ final class PhoneServer {
 
     /// When a paired phone last asked something; for turning Phone Access off after hours unused.
     var lastUsed: Date { stateLock.lock(); defer { stateLock.unlock() }; return used }
+    private func markUsed(_ when: Date) { stateLock.lock(); used = when; stateLock.unlock() }
 
     init(db: Database, locked: @escaping () -> Bool, ops: @escaping (PhoneRequest) async -> [String: Any]) {
         self.db = db
@@ -548,7 +549,7 @@ final class PhoneServer {
             log("phone access: refused a request from \(remote) (\(error))")
             return Self.plain(401, "not paired")
         }
-        stateLock.lock(); used = now; stateLock.unlock()
+        markUsed(now)
         var result: [String: Any] = ["ok": false, "error": "locked", "message": "OpenRewind is locked. Unlock it on the Mac, then try again."]
         if !locked() { result = await ops(req) }
         // Pairing: the phone's own key, replacing the QR code's (sealed, so only that phone reads it).
