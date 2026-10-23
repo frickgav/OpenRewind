@@ -29,6 +29,8 @@ sealed class Settings
     /// Window titles with any of these words are hidden too (bank sites in a browser).
     public List<string> BlockedKeywords { get; set; } = new();
     public bool BlockPrivateWindows { get; set; } = true;
+    /// Blur passwords, API keys, tokens and card numbers out of screenshots and text before they are saved.
+    public bool RedactSecrets { get; set; } = true;
     /// Websites and links whose tabs are hidden (see SiteRules): "chase.com", "docs.google.com/document/d/…".
     public List<string> BlockedSites { get; set; } = new();
     /// Apps left out of the timeline (see HiddenApps), by the name the timeline shows. Still recorded.

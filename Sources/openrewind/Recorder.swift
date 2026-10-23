@@ -134,9 +134,9 @@ final class Recorder {
         if list.blocksWindow(bundleID: app?.bundleIdentifier, appName: win.appName, path: app?.bundleURL?.path, title: win.windowName)
             || siteWindows.blocks(win.windowID, list) {
             _ = try ingest(image: image, window: ActiveWindow(appName: win.appName, windowName: "", pid: win.pid, windowID: win.windowID), pid: nil,
-                           blocked: true, display: shot.display)
+                           blocked: true, display: shot.display, bounds: shot.bounds)
         } else {
-            _ = try ingest(image: image, window: win, pid: win.pid, display: shot.display)
+            _ = try ingest(image: image, window: win, pid: win.pid, display: shot.display, bounds: shot.bounds)
         }
     }
 
@@ -170,8 +170,10 @@ final class Recorder {
     /// `blocked`: a blocked window or site is in front (pass no pid, so its text is not read); the frame
     /// is marked so Insights leaves it out. `display` names the screen (older frames of one screen go
     /// into one video, see VideoCompactor). `url` is the address when there is no pid to read it from
-    /// (`openrewind ingest --url`).
-    func ingest(image: CGImage, window: ActiveWindow, pid: pid_t?, blocked: Bool = false, display: String = "", url: String = "") throws -> Int64? {
+    /// (`openrewind ingest --url`). `bounds` is where the screenshot is on the desktop, for blurring
+    /// password fields.
+    func ingest(image: CGImage, window: ActiveWindow, pid: pid_t?, blocked: Bool = false, display: String = "", url: String = "",
+                bounds: CGRect? = nil) throws -> Int64? {
         let hash = ImageTools.dHash(image)
         let thumb = ImageTools.thumbnail(image)
         let key = window.appName + "\u{1F}" + window.windowName
@@ -184,17 +186,30 @@ final class Recorder {
         var text = ""
         var source = "ocr"
         var url = url
+        var secureFields: [CGRect] = []
         if config.useAccessibility, let pid, pid > 0 {
             let w = Accessibility.focusedWindow(pid: pid)
             if let ax = w.text { text = ax; source = "accessibility" }
             url = w.url ?? ""
+            secureFields = w.secureFields
             // The tab changed to a blocked site after the check in tick(), so the screenshot is not blurred: drop it.
             if BlocklistStore.shared.current.blocksURL(url) {
                 siteWindows.saw(window.windowID, title: window.windowName, url: url)
                 return nil
             }
         }
-        if text.isEmpty { text = OCR.recognize(image) }
+        // Secrets are found in the words OCR reads, which also says where they are on screen.
+        let redact = Secrets.enabled && !blocked
+        var secretBoxes: [CGRect]?
+        if text.isEmpty {
+            if redact {
+                let read = OCR.recognizeFindingSecrets(image)
+                text = read.text
+                secretBoxes = read.secrets
+            } else {
+                text = OCR.recognize(image)
+            }
+        }
         // Pixels moved (cursor blink, animation) but the text is the same: nothing new to search.
         if key == lastKey, text == lastText, !heartbeatDue {
             lastThumb = thumb
@@ -207,16 +222,35 @@ final class Recorder {
             return nil
         }
 
+        // Nothing is written until secrets are blurred out of the picture and taken out of the text.
+        var image = image
+        var title = window.windowName
+        let rawText = text
+        if redact {
+            // Text from Accessibility: a quick read finds where things are, a careful one when it has a secret.
+            let boxes = secretBoxes ?? OCR.recognizeFindingSecrets(image, fast: !Secrets.has(text)).secrets
+            if !boxes.isEmpty || !secureFields.isEmpty {
+                guard let blurred = Redaction.blurSecrets(image, boxes: boxes, fields: secureFields, bounds: bounds) else {
+                    log("could not blur secrets; skipping this frame")
+                    return nil
+                }
+                image = blurred
+            }
+            text = Secrets.redact(text)
+            title = Secrets.redact(title)
+            url = Secrets.redactURL(url)
+        }
+
         let ts = Time.now()
         let dayDir = config.dataDir.appendingPathComponent(String(ts.prefix(10)))
         try FileManager.default.createDirectory(at: dayDir, withIntermediateDirectories: true)
         let file = try ImageTools.writeSnapshot(ImageTools.scaled(image, by: Recorder.snapshotScale(default: config.snapshotScale)),
                                                 to: dayDir.appendingPathComponent(ts.replacingOccurrences(of: ":", with: "-")))
 
-        let id = try db.insert(Frame(id: 0, timestamp: ts, appName: window.appName, windowName: window.windowName,
+        let id = try db.insert(Frame(id: 0, timestamp: ts, appName: window.appName, windowName: title,
                                      focused: true, snapshotPath: file.path, text: text, textSource: source,
                                      hash: Int64(bitPattern: hash), browserUrl: url, blocked: blocked, display: display))
-        lastThumb = thumb; lastText = text; lastKey = key; lastWrite = Date()
+        lastThumb = thumb; lastText = rawText; lastKey = key; lastWrite = Date()
         // With Encrypt Recordings on, the log (a plain file) does not name the app.
         log(RecordingFile.encryptNew ? "frame \(id) — \(text.count) chars via \(source)"
                                      : "frame \(id) \(window.appName) — \(text.count) chars via \(source)")

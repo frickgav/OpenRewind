@@ -63,6 +63,17 @@ sealed partial class TrayApp
             settings.Save();
         }
     }
+    internal bool RedactSecrets
+    {
+        get => settings.RedactSecrets;
+        set
+        {
+            settings.RedactSecrets = value;
+            engine.Recorder.RedactSecrets = Database.RedactSecrets = value;
+            settings.Save();
+            Log.Write($"hide secrets {(value ? "on" : "off")}");
+        }
+    }
     internal bool MeaningOn => settings.SearchByMeaning;
     internal void ToggleSearchByMeaning() => ToggleMeaning();
     internal string MeaningLine => meaning.StatusLine();

@@ -16,6 +16,8 @@ sealed class Recorder
     DateTime lastWrite = DateTime.MinValue;
     /// Seconds between stored frames while only a few words change. At or below the capture interval: every capture.
     public double MinorChangeGap { get; set; } = 2;
+    /// Hide passwords, API keys and card numbers before a frame is saved (Settings → Privacy).
+    public bool RedactSecrets { get; set; } = true;
     static volatile bool locked;
 
     static Recorder()
@@ -70,16 +72,17 @@ sealed class Recorder
         Redactor.Apply(image, screen.Bounds, wins);
         // A blocked window in front: keep the app name for the timeline, but not its title or text.
         if (list.BlocksWindow(Blocklist.IdFor(win.ExePath), win.AppName, win.WindowName) || siteWindows.Blocks(win.Hwnd, list))
-            Ingest(image, win with { WindowName = "" }, blocked: true, display: screen.DeviceName);
+            Ingest(image, win with { WindowName = "" }, blocked: true, display: screen.DeviceName, screen: screen.Bounds);
         else
-            Ingest(image, win, display: screen.DeviceName);
+            Ingest(image, win, display: screen.DeviceName, screen: screen.Bounds);
     }
 
     /// Dedup, extract text, store snapshot, insert row. Returns the new frame id, or null if skipped.
     /// `blocked`: a blocked window or site is in front; its text is not read and the frame is marked,
     /// so Insights leaves it out. `display` names the screen (older frames of one screen go into one
-    /// video, see VideoCompactor).
-    public long? Ingest(Bitmap image, ActiveWindow window, bool blocked = false, string display = "")
+    /// video, see VideoCompactor). `screen` is where the screenshot is on the desktop, for blurring
+    /// password fields.
+    public long? Ingest(Bitmap image, ActiveWindow window, bool blocked = false, string display = "", Rectangle? screen = null)
     {
         var hash = ImageTools.DHash(image);
         var thumb = ImageTools.Thumbnail(image);
@@ -92,9 +95,10 @@ sealed class Recorder
         var text = "";
         var source = "ocr";
         var url = "";
+        var passwords = new List<Rectangle>();
         if (config.UseAccessibility && !blocked)
         {
-            var w = UiaText.FocusedWindow(window.Hwnd, UiaText.IsBrowser(window.ExePath));
+            var w = UiaText.FocusedWindow(window.Hwnd, UiaText.IsBrowser(window.ExePath), passwords: RedactSecrets ? passwords : null);
             if (w.Text is string ax) { text = ax; source = "accessibility"; }
             url = w.Url ?? "";
             // The tab changed to a blocked site after the check above, so the screenshot is not blurred: drop it.
@@ -104,7 +108,13 @@ sealed class Recorder
                 return null;
             }
         }
-        if (text.Length == 0) text = Ocr.Recognize(image);
+        // Secrets are found in the words OCR reads, which also says where they are on screen.
+        FrameText? words = null;
+        if (text.Length == 0)
+        {
+            if (RedactSecrets && !blocked) { words = Ocr.Words(image); text = words.AllText; }
+            else text = Ocr.Recognize(image);
+        }
         // Pixels moved (cursor blink, animation) but the text is the same: nothing new to search.
         if (key == lastKey && text == lastText && !heartbeatDue)
         {
@@ -117,14 +127,26 @@ sealed class Recorder
             && (DateTime.UtcNow - lastWrite).TotalSeconds < MinorChangeGap && FrameDedup.IsMinorChange(lastText, text))
             return null;
 
+        // Nothing is written until secrets are blurred out of the picture and taken out of the text.
+        var title = window.WindowName;
+        var rawText = text;
+        if (RedactSecrets && !blocked)
+        {
+            words ??= Ocr.Words(image);
+            Redactor.BlurSecrets(image, Secrets.Boxes(words), passwords, screen);
+            text = Secrets.Redact(text);
+            title = Secrets.Redact(title);
+            url = Secrets.RedactUrl(url);
+        }
+
         var ts = Time.Now();
         var dayDir = Path.Combine(config.DataDir, ts[..10]);
         Directory.CreateDirectory(dayDir);
         var file = Path.Combine(dayDir, ts.Replace(':', '-') + ".jpg");
         using (var small = ImageTools.Scaled(image, config.SnapshotScale)) ImageTools.WriteJpeg(small, file);
 
-        var id = db.Insert(new Frame(0, ts, window.AppName, window.WindowName, true, file, text, source, unchecked((long)hash), url, blocked, display));
-        lastThumb = thumb; lastText = text; lastKey = key; lastWrite = DateTime.UtcNow;
+        var id = db.Insert(new Frame(0, ts, window.AppName, title, true, file, text, source, unchecked((long)hash), url, blocked, display));
+        lastThumb = thumb; lastText = rawText; lastKey = key; lastWrite = DateTime.UtcNow;
         // The log is a plain file: with Encrypt Recordings on, it does not name the app.
         Log.Write(RecordingFile.EncryptNew ? $"frame {id} — {text.Length} chars via {source}" : $"frame {id} {window.AppName} — {text.Length} chars via {source}");
         return id;

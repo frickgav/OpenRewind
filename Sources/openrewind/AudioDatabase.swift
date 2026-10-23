@@ -184,7 +184,8 @@ extension Database {
                 bind(st, 2, Time.iso.string(from: base.addingTimeInterval(s.start)))
                 sqlite3_bind_double(st, 3, s.start)
                 sqlite3_bind_double(st, 4, s.end)
-                bind(st, 5, s.text); bind(st, 6, chunk.device)
+                // Passwords, keys and card numbers said out loud are not saved either (Settings → Privacy).
+                bind(st, 5, Secrets.enabled ? Secrets.redact(s.text) : s.text); bind(st, 6, chunk.device)
                 sqlite3_bind_int(st, 7, chunk.isInput ? 1 : 0)
                 bind(st, 8, engine)
                 if sqlite3_step(st) != SQLITE_DONE { let m = errmsg; sqlite3_finalize(st); lock.unlock(); throw DBError.step(m) }

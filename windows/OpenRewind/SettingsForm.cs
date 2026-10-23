@@ -129,6 +129,17 @@ sealed class SettingsForm : Form
             var blocked = BlockedAppsForm.Embedded(app.AppSettings, app.Db, app.TimelineHiddenChanged);
             body.Controls.Add(blocked);
             blocked.Show();
+            // Hide Secrets sits above the lists.
+            var top = new Page(this);
+            top.Row("Secrets");
+            top.Check("Hide passwords, API keys and card numbers", () => app.RedactSecrets, () => app.RedactSecrets = !app.RedactSecrets);
+            top.Note("Before a screenshot is saved, password fields, API keys and tokens, private keys and card numbers are blurred " +
+                     "and their text becomes [redacted], so search, AI and the local server never see them. Older recordings are not changed.");
+            top.Finish();
+            top.Panel.AutoScroll = false;
+            top.Panel.Dock = DockStyle.Top;
+            top.Panel.Height = top.Bottom + (int)(4 * k);
+            body.Controls.Add(top.Panel);
         }
         else
         {
@@ -520,6 +531,9 @@ sealed class SettingsForm : Form
             EndRow();
             Add(new Panel { BackColor = Ui.Stroke, Height = Math.Max(1, (int)k) }, margin, x + w - margin, 20);
         }
+
+        /// How far down the page the rows reach.
+        public int Bottom => y;
 
         public void Finish()
         {

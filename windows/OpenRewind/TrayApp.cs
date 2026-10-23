@@ -71,6 +71,7 @@ sealed partial class TrayApp : ApplicationContext
         if (settings.LocalSearchServer) StartServer();
         engine.StartTranscriber();
         engine.Recorder.MinorChangeGap = settings.TypingFrameGap;
+        engine.Recorder.RedactSecrets = Database.RedactSecrets = settings.RedactSecrets;
         engine.Config.SnapshotScale = ScreenshotSizes.Scale(settings.ScreenshotPercent);
         resumeTimer.Tick += (_, _) => CheckPause();
         retention = new RetentionJob(engine.Db, settings.Screen, settings.Audio);

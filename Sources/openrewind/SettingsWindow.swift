@@ -132,7 +132,18 @@ struct SettingsView: View {
         switch model.tab {
         case .privacy:
             // Has its own scrolling lists, so it fills the tab instead of scrolling as a whole.
-            BlockedAppsView(db: app.engine.db, embedded: true)
+            VStack(spacing: 0) {
+                SettingsRow("Secrets") {
+                    Toggle("Hide passwords, API keys and card numbers", isOn: model.toggle({ Secrets.enabled }, { Secrets.enabled.toggle() }))
+                    SettingsNote("Before a screenshot is saved, password fields, API keys and tokens, private keys and card numbers are " +
+                                 "blurred and their text becomes [redacted], so search, AI and the local server never see them. " +
+                                 "Older recordings are not changed.")
+                }
+                .padding(.horizontal, 36).padding(.top, 20).padding(.bottom, 4)
+                .frame(maxWidth: 720, alignment: .leading)
+                .frame(maxWidth: .infinity)
+                BlockedAppsView(db: app.engine.db, embedded: true)
+            }
         case .ai:
             page {
                 AISettingsView(embedded: true) { app.savedAISettings() }

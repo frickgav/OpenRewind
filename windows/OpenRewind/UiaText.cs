@@ -30,8 +30,9 @@ static class UiaText
     public static string? Url(IntPtr hwnd) => FocusedWindow(hwnd, true, maxNodes: 1500, maxMillis: 400, urlOnly: true).Url;
 
     /// Text of the window, and for a browser the address of the tab on screen (or null).
+    /// `passwords` collects where password fields are on screen, so they can be blurred.
     public static (string? Text, string? Url) FocusedWindow(IntPtr hwnd, bool browser, int maxNodes = 4000, int maxChars = 60_000, int maxMillis = 1500,
-                                                           bool urlOnly = false)
+                                                           bool urlOnly = false, List<System.Drawing.Rectangle>? passwords = null)
     {
         if (hwnd == IntPtr.Zero) return (null, null);
         lock (gate)
@@ -56,7 +57,13 @@ static class UiaText
                     visited++;
                     try
                     {
-                        if (el.CurrentIsPassword != 0) continue;
+                        if (el.CurrentIsPassword != 0)
+                        {
+                            var r = el.CurrentBoundingRectangle;
+                            if (passwords != null && r.right > r.left && r.bottom > r.top)
+                                passwords.Add(System.Drawing.Rectangle.FromLTRB(r.left, r.top, r.right, r.bottom));
+                            continue;
+                        }
                         if (browser && docUrl == null)
                         {
                             var type = el.CurrentControlType;
