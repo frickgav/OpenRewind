@@ -103,6 +103,11 @@ sealed class Settings
     public bool AskBeforeMeetingNotes { get; set; } = true;
     /// Answers remembered per meeting app ("Zoom" → "always" or "never"), from the popup.
     public Dictionary<string, string> MeetingChoices { get; set; } = new();
+    /// "You promised" reminders (Settings → AI). Off until turned on; `PromisesProvider` is the provider
+    /// agreed to (MeetingNotes.ConsentKey); it pauses when AI Settings point elsewhere.
+    public bool PromisesOn { get; set; }
+    public string? PromisesProvider { get; set; }
+    public DateTime? PromisesLastScan { get; set; }
 
     string path = "";
 

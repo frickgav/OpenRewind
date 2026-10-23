@@ -307,7 +307,7 @@ sealed class OverlayForm : Form
         const string askLabel = "✦  Ask AI";
         float btn = 30 * k, inner = 6 * k;
         float askW = Chat != null ? Draw.Measure(g, askLabel, Semibold(12.5f)).Width + 28 * k : 0;
-        float rightW = inner + (askW > 0 ? askW + 6 * k : 0) + 4 * btn + 3 * 6 * k + inner;
+        float rightW = inner + (askW > 0 ? askW + 6 * k : 0) + 5 * btn + 4 * 6 * k + inner;
         var rightGroup = new RectangleF(r.Right - rightW, r.Y, rightW, r.Height);
         Glass(g, rightGroup, r.Height / 2);
         float by = r.Y + (r.Height - btn) / 2, bx = rightGroup.Right - inner - btn;
@@ -320,7 +320,10 @@ sealed class OverlayForm : Form
         RoundButton(g, star, "", () => model.ToggleStar());
         var starred = model.CurrentStar != null;
         Draw.TextCentered(g, starred ? "★" : "☆", Semibold(13), starred ? Yellow : TextColor, star.X + star.Width / 2, star.Y + star.Height / 2);
-        if (Chat != null) AskAiButton(g, star.X - 6 * k, by);
+        var restore = new RectangleF(star.X - btn - 6 * k, by, btn, btn);
+        RoundButton(g, restore, "", RestoreWorkspace);
+        DrawWorkspaceIcon(g, restore.X + restore.Width / 2, restore.Y + restore.Height / 2);
+        if (Chat != null) AskAiButton(g, restore.X - 6 * k, by);
 
         // The time and how long ago, in its own pill left of the buttons.
         var time = model.Playhead.ToLocalTime().ToString("T", CultureInfo.CurrentCulture);
@@ -629,6 +632,16 @@ sealed class OverlayForm : Form
         using (var b = new SolidBrush(Ink(hover ? 0.2 : 0.1))) g.FillEllipse(b, r);
         Draw.TextCentered(g, glyph, Semibold(12), TextColor, r.X + r.Width / 2, r.Y + r.Height / 2);
         hot.Add((r, act));
+    }
+
+    /// Restore Workspace: two windows, one over the other, drawn so no font is needed.
+    void DrawWorkspaceIcon(Graphics g, float cx, float cy)
+    {
+        float w = 8 * k, h = 6 * k;
+        using var pen = new Pen(Color.White, 1.5f * k) { LineJoin = LineJoin.Round };
+        g.DrawRectangle(pen, cx - w / 2 - 2 * k, cy - h / 2 - 2 * k, w, h);
+        using (var b = new SolidBrush(Ink(0.35))) g.FillRectangle(b, cx - w / 2 + 2 * k, cy - h / 2 + 2 * k, w, h);
+        g.DrawRectangle(pen, cx - w / 2 + 2 * k, cy - h / 2 + 2 * k, w, h);
     }
 
     /// "Open outside": a box with an arrow leaving its top-right corner, drawn so no font is needed.
@@ -1298,6 +1311,7 @@ sealed class OverlayForm : Form
         ("", new[] { new[] { "scroll" } }, "Scroll the wheel or touchpad"),
         ("", new[] { new[] { "N" } }, "Go to now"),
         ("OPEN", new[] { new[] { "O" } }, "Open the tab or window from this moment"),
+        ("", new[] { new[] { "Shift", "O" } }, "Restore the workspace: reopen what was open then"),
         ("STAR", new[] { new[] { "S" } }, "Star this moment / remove its star"),
         ("FILTER", new[] { new[] { "A" } }, "Only this app / all apps again"),
         ("", new[] { new[] { "H" } }, "Hide this app from the timeline"),
@@ -1368,6 +1382,25 @@ sealed class OverlayForm : Form
     void LeaveSearch() { ActiveControl = null; Focus(); Invalidate(); }
 
     /// Go back to this moment: the browser tab, or the app window.
+    /// Shift+O and the top bar button: open again what was open at the shown moment, after asking.
+    void RestoreWorkspace()
+    {
+        var at = model.Current?.Time ?? model.Playhead;
+        if (model.Db.WorkspaceAt(at) is not WorkspaceSnapshot snap)
+        {
+            model.ShowNotice("No workspace was saved around this moment");
+            return;
+        }
+        var items = Workspace.Restorable(snap.Items, Blocklist.Current, File.Exists);
+        if (items.Count == 0) { model.ShowNotice("Nothing from this moment can be opened again"); return; }
+        using var dialog = new RestoreWorkspaceForm(snap, items);
+        if (dialog.ShowDialog(this) != DialogResult.OK || dialog.Picked.Count == 0) return;
+        var picked = dialog.Picked;
+        HideOverlay(restoreFocus: false);
+        var n = WorkspaceRestore.Open(picked);
+        Log.Write($"restore workspace: opened {n} of {picked.Count}");
+    }
+
     void OpenCurrent()
     {
         if (model.CurrentTarget is not OpenTarget t || model.Current is not TimelineFrame f)
@@ -1435,6 +1468,7 @@ sealed class OverlayForm : Form
             case Keys.Down: model.Jump(model.Playhead.AddSeconds(600)); break;
             case Keys.Space: model.ToggleAudio(); break;
             case Keys.N: case Keys.End: model.JumpToNow(); break;
+            case Keys.O when !ctrl && shift: RestoreWorkspace(); break;
             case Keys.O when !ctrl: OpenCurrent(); break;
             case Keys.A when !ctrl: ToggleAppFilter(); break;
             case Keys.S when !ctrl: model.ToggleStar(); break;

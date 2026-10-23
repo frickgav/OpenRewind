@@ -287,6 +287,14 @@ sealed class SettingsForm : Form
         p.Row("Daily recap");
         p.Check("Write each day's recap automatically", () => app.AutoRecapOn, app.ToggleDailyRecap);
         p.LiveText(() => Journal.AutoRecapInfo(app.AppSettings.Ai().Kind.Title()), Ui.Faint, 11.5f, lines: 4);
+        p.Row("Promises");
+        p.Check("Remind me of things I promised", () => app.PromisesOn, app.TogglePromiseReminders);
+        p.LiveText(() => $"After meetings you take notes for, and every 3 hours, sends the transcript or the text of chat and mail apps on screen to {app.AppSettings.Ai().Kind.Title()} " +
+                         "to find what you said you would do, who for and by when. Blocked apps and sites are never sent; passwords and keys are taken out first. " +
+                         "Uses your key and costs tokens. Off by default.", Ui.Faint, 11.5f, lines: 4);
+        p.LiveText(() => app.PromisesPaused ? "Paused: AI Settings point at another provider than the one you agreed to. Turn it off and on to use this one." : "",
+                   Ui.Warn, 11.5f, lines: 2);
+        p.Buttons(("You Promised…", app.OpenPromises));
         p.Row("AI apps");
         p.Check("Allow AI apps to read my history (MCP)", () => app.AppSettings.McpEnabled, app.ToggleAiApps);
         p.Note("Lets Claude, ChatGPT, Cursor and other AI apps search your history on this PC. Blocked apps and sites are left out of screen text; audio transcripts are not filtered by app. Connect AI Apps has the details.");

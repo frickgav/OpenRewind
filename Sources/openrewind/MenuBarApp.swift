@@ -77,6 +77,19 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var meetings = MeetingCenter(db: engine.db, chunkSeconds: engine.config.audioChunkSeconds,
                                               transcribing: { [weak self] in self?.engine.transcriber != nil })
 
+    /// "You promised" reminders: scans after meetings and every few hours, and reminds when one is due.
+    private lazy var promises: PromiseCenter = {
+        let c = PromiseCenter(db: engine.db)
+        c.openList = { [weak self] in self?.showPromises() }
+        return c
+    }()
+
+    /// Saves what is open about once a minute, for Restore Workspace.
+    private lazy var workspaces = WorkspaceWatcher(db: engine.db, recording: { [weak self] in
+        guard let self else { return false }
+        return self.engine.screenOn && !self.isPaused
+    })
+
     init(engine: Engine) {
         self.engine = engine
         super.init()
@@ -152,7 +165,10 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         retention.start()
         video = VideoJob(db: engine.db, dataDir: engine.config.dataDir, enabled: defaults.bool(forKey: compressKey))
         video.start()
+        meetings.onEnded = { [weak self] m in self?.promises.meetingEnded(m) }
         meetings.start()
+        promises.start()
+        workspaces.start()
         Database.buildSlowIndexesInBackground(path: engine.config.dbPath)
 
         // ⌥⌘T (or the shortcut picked in Settings) opens the timeline from anywhere.
@@ -254,6 +270,57 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 MeetingsView(model: model, center: center)
             }
         }
+    }
+
+    /// What the user promised (behind App Lock: it quotes meetings and chats), with jumps to the moment.
+    @objc func showPromises() {
+        appLock.run("see your promises") { [weak self] in
+            guard let self else { return }
+            let model = PromiseListModel(db: self.engine.db)
+            model.openMoment = { [weak self] d in self?.appLock.run("see your timeline") { self?.overlay.show(at: d) } }
+            let center = self.promises
+            SetupWindows.shared.show("promises", title: "You Promised", size: NSSize(width: 640, height: 560), resizable: true) {
+                PromiseListView(model: model, center: center)
+            }
+        }
+    }
+
+    /// Turning it on says plainly what it sends and that it costs tokens.
+    func togglePromises() {
+        if PromiseCenter.isOn {
+            PromiseCenter.isOn = false
+            log("promise reminders off")
+            return
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        let ai = AISettings.load()
+        guard ai.isReady else {
+            let a = NSAlert()
+            a.messageText = "You Promised Reminders"
+            a.informativeText = "Promise reminders use your own AI key. Set up a provider in AI Settings first, then turn this on."
+            a.addButton(withTitle: "Open AI Settings…")
+            a.addButton(withTitle: "Cancel")
+            if Dialogs.run(a) == .alertFirstButtonReturn { showAISettings() }
+            return
+        }
+        let a = NSAlert()
+        a.messageText = "Look for things you promised?"
+        a.informativeText = Self.promiseConsentText(ai.kind.title)
+        a.addButton(withTitle: "Turn On")
+        a.addButton(withTitle: "Cancel")
+        guard Dialogs.run(a) == .alertFirstButtonReturn else { return }
+        PromiseCenter.isOn = true
+        PromiseCenter.askToNotify()
+        log("promise reminders on")
+    }
+
+    /// What promise reminders send, and where. Same words as the Windows app.
+    static func promiseConsentText(_ provider: String) -> String {
+        "OpenRewind sends to \(provider), using your key: the transcript of each meeting you take notes for, after it ends, and every "
+            + "3 hours the text read off your screen in chat and mail apps (Slack, Teams, Messages, Mail, Outlook, WhatsApp, Discord, web mail…) "
+            + "since the last look, up to about 12,000 characters each time.\n\n"
+            + "Blocked apps, sites and words are never sent, and passwords, keys and card numbers are taken out first. This costs tokens "
+            + "on your account and \(provider)'s privacy terms apply. If you switch providers in AI Settings, it pauses until you turn it on again."
     }
 
     /// Turning it on says plainly what it sends and that it costs tokens.
@@ -444,6 +511,8 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(action("Ask AI…", #selector(showAIChat)))
         menu.addItem(action("Journal…", #selector(showJournal)))
         menu.addItem(action("Meetings…", #selector(showMeetings)))
+        let due = PromiseCenter.isOn ? engine.db.promises(status: Promises.open).filter { ($0.remindAt ?? .distantFuture) <= Date() }.count : 0
+        menu.addItem(action(due > 0 ? "You Promised…  (\(due) due)" : "You Promised…", #selector(showPromises)))
         menu.addItem(action("Insights…", #selector(showInsights)))
         menu.addItem(action("Show Data Folder", #selector(openData)))
         for line in storageLines() {
@@ -1155,6 +1224,13 @@ extension MenuBarApp {
     var mcpOn: Bool { MCPSetup.enabled }
     func toggleAIApps() { toggleMCP() }
     func connectAIApps() { showConnectAIApps() }
+    var promisesOn: Bool { PromiseCenter.isOn }
+    var promisesPaused: Bool {
+        guard PromiseCenter.isOn else { return false }
+        return PromiseCenter.consent != MeetingNotes.consentKey(AISettings.load())
+    }
+    func togglePromiseReminders() { togglePromises() }
+    func openPromises() { showPromises() }
 
     // Privacy & security
     var serverOn: Bool { engine.serverOn }

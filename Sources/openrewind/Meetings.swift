@@ -1046,6 +1046,8 @@ final class MeetingCenter: ObservableObject {
     private var timer: Timer?
     private var running = false
     @Published private(set) var summarizing = Set<Int64>()
+    /// Called on the main thread for each meeting that just ended (promise reminders read it).
+    var onEnded: ((Meeting) -> Void)?
 
     /// Send each meeting's transcript to the AI provider when it ends. Off unless the user turns it on:
     /// it spends their tokens and sends what was said. Turning it on records the provider agreed to.
@@ -1144,6 +1146,7 @@ final class MeetingCenter: ObservableObject {
                 NotificationCenter.default.post(name: Self.changed, object: nil)
                 for m in ended {
                     if let fresh = db.meeting(id: m.id), self.autoSummarizes(fresh) { self.summarize(fresh) { _ in } }
+                    if let fresh = db.meeting(id: m.id) { self.onEnded?(fresh) }
                 }
                 // Transcripts that came in after the notes were made: make them again, once.
                 for m in late where !self.summarizing.contains(m.id) && self.autoSummarizes(m) {

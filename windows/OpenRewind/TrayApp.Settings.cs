@@ -102,6 +102,10 @@ sealed partial class TrayApp
         JournalForm.Reload();
     }
     internal void ToggleAiApps() => ToggleMcp();
+    internal bool PromisesOn => settings.PromisesOn;
+    internal bool PromisesPaused => promises.Paused;
+    internal void TogglePromiseReminders() => TogglePromises();
+    internal void OpenPromises() => ShowPromises();
     internal void ConnectAiApps() => ShowConnectAiApps();
 
     // Security

@@ -177,6 +177,15 @@ public static class Promises
         return (Parse(reply.Text, lines), reply.Usage);
     }
 
+    /// A promise from an app or meeting the block list covers now is left out everywhere.
+    public static bool Hidden(Promise p, Blocklist list)
+    {
+        var colon = p.Source.IndexOf(':');
+        if (colon < 0) return false;
+        var name = p.Source[(colon + 1)..].Trim();
+        return list.BlocksWindow(null, name, name);
+    }
+
     /// For lists and the AI tool: "Send the deck → Sam, due Fri 24 Oct 17:00".
     public static string Describe(Promise p)
     {
@@ -271,6 +280,11 @@ public sealed partial class Database
     public void SnoozePromise(long id, DateTime until) =>
         Run("UPDATE promises SET snoozed_until = ?, notified = 0, status = 'open' WHERE id = ?", Time.Iso(until), id);
 
+    /// Recent frames for the promise scan, oldest first.
+    public List<Frame> FramesForPromises(DateTime from, DateTime to, int limit = 3000) =>
+        Enumerable.Reverse(Frames($"SELECT {cols} FROM frames f WHERE f.timestamp >= ? AND f.timestamp <= ? ORDER BY f.timestamp DESC LIMIT ?",
+                                  Time.Iso(from), Time.Iso(to), limit)).ToList();
+
     /// Promises go with the recordings of their time: all with the screen recordings, the ones from
     /// meetings with the audio.
     public void DeletePromisesWith(DateTime? from, DateTime? to, bool meetingsOnly = false)
@@ -278,5 +292,31 @@ public sealed partial class Database
         var (where, args) = Range("timestamp", from, to);
         if (meetingsOnly) where = (where.Length == 0 ? "WHERE" : where + " AND") + " source LIKE 'meeting:%'";
         Run($"DELETE FROM promises {where}", args);
+    }
+}
+
+public sealed partial class AiTools
+{
+    /// Set by the app: whether "You promised" reminders are on, for the answer when there are none.
+    public static Func<bool> PromisesOn { get; set; } = () => true;
+
+    string ListPromises(JsonObject a)
+    {
+        var limit = Math.Clamp(I(a, "limit") ?? 25, 1, 50);
+        var want = (a["status"] is JsonValue v && v.TryGetValue<string>(out var s) ? s : Promises.Open).ToLowerInvariant();
+        var list = Blocked ?? Blocklist.Current;
+        var lines = new List<string>();
+        foreach (var p in db.PromiseList(want == "all" ? null : want))
+        {
+            if (Promises.Hidden(p, list)) continue;
+            var line = new StringBuilder($"- [{p.Status}] {p.What}");
+            if (p.Who.Length > 0) line.Append($" — for {p.Who}");
+            if (p.Due is DateTime d) line.Append($" — due {AiTime.Label(d)}");
+            line.Append($" — said {AiTime.Label(p.Time)} in {p.Source} (link: {AiTime.Link(p.Time)})");
+            lines.Add(line.ToString());
+            if (lines.Count >= limit) break;
+        }
+        if (lines.Count == 0) return PromisesOn() ? "No promises found." : "No promises found. \"You promised\" reminders are off (Settings → AI).";
+        return string.Join("\n", lines);
     }
 }

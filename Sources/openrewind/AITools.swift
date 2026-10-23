@@ -97,6 +97,7 @@ struct AITools {
                                        "app": ["type": "string", "description": "Only this app (optional)."]],
                                       required: ["start", "end"])),
         starredSpec,
+        promisesSpec,
         AIToolSpec(name: "list_meetings",
                    description: "Meetings and calls found on this computer (Zoom, Teams, Google Meet, Webex, FaceTime, Slack huddles) between two times, with their summary, decisions and action items when they have notes. Use first for questions about meetings or calls, like 'what did we decide in my 2pm call'. For exactly what was said, use search_audio over the meeting's time range.",
                    parameters: schema(["start": timeArg("Start time. Default: 7 days ago."),
@@ -113,7 +114,7 @@ struct AITools {
 
     /// Whether web addresses in this lookup's answer may open from Ask AI's reply. Not for meeting
     /// notes: a model wrote them from what other people said on a call.
-    static func suppliesLinks(_ tool: String) -> Bool { tool != "list_meetings" }
+    static func suppliesLinks(_ tool: String) -> Bool { tool != "list_meetings" && tool != "list_promises" }
 
     /// A short line for the chat window: what was looked up.
     static func describe(_ call: AIToolCall) -> String {
@@ -130,6 +131,7 @@ struct AITools {
         case "get_screen_text": return "Read screen text" + when
         case "list_meetings": return "Listed meetings" + (range.isEmpty ? " from the last 7 days" : when)
         case "list_starred": return "Listed starred moments" + when
+        case "list_promises": return "Listed promises"
         case "view_screenshot": return "Looked at the screenshot from \((a["time"] as? String) ?? "")"
         default: return call.name
         }
@@ -164,6 +166,8 @@ struct AITools {
             out = listMeetings(a)
         case "list_starred":
             out = listStarred(a)
+        case "list_promises":
+            out = listPromises(a)
         case "get_screen_text":
             guard let start = AITime.parse(a["start"]), let end = AITime.parse(a["end"]) else {
                 return "Error: start and end are required, e.g. '2026-10-18 14:00'."

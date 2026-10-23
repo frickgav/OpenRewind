@@ -94,7 +94,7 @@ public class McpTests : IDisposable
     {
         var names = ((JsonArray)Ask(Server(), """{"jsonrpc":"2.0","id":1,"method":"tools/list"}""")["result"]!["tools"]!)
             .Select(t => (string)t!["name"]!).ToList();
-        Assert.Equal(new[] { "activity_summary", "search_screen", "search_audio", "get_screen_text", "list_meetings", "list_starred" }, names);
+        Assert.Equal(new[] { "activity_summary", "search_screen", "search_audio", "get_screen_text", "list_meetings", "list_starred", "list_promises" }, names);
         var tool = Ask(Server(), """{"jsonrpc":"2.0","id":1,"method":"tools/list"}""")["result"]!["tools"]![1]!;
         Assert.Equal("object", (string?)tool["inputSchema"]!["type"]);
         Assert.Equal("query", (string?)tool["inputSchema"]!["required"]![0]);

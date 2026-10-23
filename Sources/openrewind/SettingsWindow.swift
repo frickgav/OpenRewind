@@ -349,6 +349,17 @@ struct SettingsView: View {
             Toggle("Write each day's recap automatically", isOn: model.toggle({ app.autoRecapOn }, app.toggleDailyRecap))
             SettingsNote(Journal.autoRecapInfo(AISettings.load().kind.title))
         }
+        SettingsRow("Promises") {
+            Toggle("Remind me of things I promised", isOn: model.toggle({ app.promisesOn }, app.togglePromiseReminders))
+            SettingsNote("After meetings you take notes for, and every 3 hours, sends the transcript or the text of chat and mail apps on screen "
+                         + "to \(AISettings.load().kind.title) to find what you said you would do, who for and by when. Blocked apps and sites "
+                         + "are never sent; passwords and keys are taken out first. Uses your key and costs tokens. Off by default.")
+            if app.promisesPaused {
+                Text("Paused: AI Settings point at another provider than the one you agreed to. Turn it off and on to use this one.")
+                    .font(.system(size: 12)).foregroundColor(SetupTheme.warn).fixedSize(horizontal: false, vertical: true)
+            }
+            Button("You Promised…") { app.openPromises() }
+        }
         SettingsRow("AI apps") {
             Toggle("Allow AI apps to read my history (MCP)", isOn: model.toggle({ app.mcpOn }, app.toggleAIApps))
             SettingsNote("Lets Claude, ChatGPT, Cursor and other AI apps search your history on this Mac. " + ConnectAIAppsView.whatTheyGet)

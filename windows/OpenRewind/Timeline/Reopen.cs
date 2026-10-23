@@ -67,7 +67,7 @@ static class Reopen
         catch (Exception e) { Log.Write($"cannot open {url}: {e.Message}"); return false; }
     }
 
-    static bool Start(string exe, string? arg)
+    internal static bool Start(string exe, string? arg)
     {
         try
         {
