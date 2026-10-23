@@ -417,3 +417,117 @@ public sealed class PhoneServer : IDisposable
         listeners.Clear();
     }
 }
+
+/// What a paired phone may ask for, answered with the same rules as the computer: the search goes through
+/// the local API's /search (so the block list and App Lock apply exactly as there), Ask AI uses the
+/// user's provider with the Ask AI lookups (no screenshots), and promises leave out blocked sources.
+/// Answers carry text only: no screenshots, audio or file paths. Mac: PhoneOps in PhoneAccess.swift.
+public sealed class PhoneOps
+{
+    readonly Database db;
+    readonly Func<HttpRequest, HttpResponse> api;
+    readonly Func<Blocklist> blocked;
+    readonly string computer;
+
+    /// Settings for Ask AI when the user set up a provider and accepted what Ask AI sends; else null.
+    public Func<AiSettings?> Ai { get; set; } = () => null;
+    /// Makes the client for a request (tests pass a fake).
+    public Func<AiSettings, IAiClient> Client { get; set; } = s => new AiClient(s);
+    /// Called with what each question cost, to add to the totals in AI Settings.
+    public Action<AiSettings, AiUsage, double?>? Spent { get; set; }
+    public Func<string, AiPrice?> Price { get; set; } = _ => null;
+
+    public PhoneOps(Database db, Func<HttpRequest, HttpResponse> api, string computer, Func<Blocklist>? blocked = null)
+    {
+        this.db = db; this.api = api; this.computer = computer;
+        this.blocked = blocked ?? (() => Blocklist.Current);
+    }
+
+    static string Arg(JsonObject a, string k, int max) =>
+        a[k] is JsonValue v && v.TryGetValue<string>(out var s) ? (s.Length > max ? s[..max] : s).Trim() : "";
+
+    static JsonObject Fail(string error, string message) => new() { ["ok"] = false, ["error"] = error, ["message"] = message };
+
+    public async Task<JsonNode> Run(PhoneRequest r, CancellationToken ct)
+    {
+        switch (r.Op)
+        {
+            case "hello":
+                var name = Arg(r.Args, "name", 60);
+                if (name.Length > 0 && name != r.Device.Name) db.RenamePhoneDevice(r.Device.Id, name);
+                return new JsonObject { ["ok"] = true, ["computer"] = computer, ["ai"] = Ai() != null };
+            case "search":
+                return Search(Arg(r.Args, "q", 200), Arg(r.Args, "kind", 10));
+            case "promises":
+                return Promises();
+            case "ask":
+                return await Ask(Arg(r.Args, "question", 2000), ct);
+            default:
+                return Fail("unknown", "This phone page is newer or older than OpenRewind. Reload it.");
+        }
+    }
+
+    JsonNode Search(string q, string kind)
+    {
+        if (q.Length == 0) return Fail("empty", "Type something to search for.");
+        var query = new Dictionary<string, string>
+        {
+            ["q"] = q, ["limit"] = "30", ["max_content_length"] = "400",
+            ["content_type"] = kind is "screen" ? "ocr" : kind is "audio" ? "audio" : "all",
+        };
+        var res = api(new HttpRequest("GET", "/search", query));
+        if (res.Status == 423) return Fail("locked", "OpenRewind is locked. Unlock it on the computer, then try again.");
+        if (res.Status != 200) return Fail("failed", "The search did not work.");
+        var results = new JsonArray();
+        if (JsonNode.Parse(res.Body)?["data"] is JsonArray data)
+            foreach (var item in data)
+            {
+                var c = item?["content"];
+                if (c == null) continue;
+                var audio = item!["type"]?.GetValue<string>() == "Audio";
+                results.Add(new JsonObject
+                {
+                    ["kind"] = audio ? "audio" : "screen",
+                    ["time"] = c["timestamp"]?.GetValue<string>() ?? "",
+                    ["app"] = audio ? (c["device_type"]?.GetValue<string>() == "Input" ? "Microphone" : "Computer audio") : c["app_name"]?.GetValue<string>() ?? "",
+                    ["title"] = audio ? "" : c["window_name"]?.GetValue<string>() ?? "",
+                    ["text"] = (audio ? c["transcription"] : c["text"])?.GetValue<string>() ?? "",
+                });
+            }
+        return new JsonObject { ["ok"] = true, ["results"] = results };
+    }
+
+    JsonNode Promises()
+    {
+        var list = blocked();
+        var arr = new JsonArray();
+        foreach (var p in db.PromiseList(OpenRewind.Promises.Open, 100))
+        {
+            if (OpenRewind.Promises.Hidden(p, list)) continue;
+            arr.Add(new JsonObject
+            {
+                ["what"] = p.What, ["who"] = p.Who, ["due"] = p.RemindAt is DateTime d ? Time.Iso(d) : null,
+                ["time"] = Time.Iso(p.Time), ["source"] = p.Source,
+            });
+        }
+        return new JsonObject { ["ok"] = true, ["promises"] = arr };
+    }
+
+    async Task<JsonNode> Ask(string question, CancellationToken ct)
+    {
+        if (question.Length == 0) return Fail("empty", "Type a question.");
+        if (Ai() is not AiSettings ai) return Fail("no-ai", "Set up Ask AI on the computer first (Settings → AI).");
+        var convo = new AiConversation();
+        var tools = new AiTools(db) { Blocked = blocked() };
+        var answer = new List<string>();
+        string? error = null;
+        await convo.Ask(question, Client(ai), tools, item =>
+        {
+            if (item.Kind == AiChatKind.Assistant) answer.Add(item.Text);
+            if (item.Kind == AiChatKind.Error) error = item.Text;
+        }, Price(ai.Model), ct);
+        Spent?.Invoke(ai, convo.LastUsed, convo.LastCost);
+        if (answer.Count == 0) return Fail("failed", error ?? "No answer came back.");
+        return new JsonObject { ["ok"] = true, ["answer"] = string.Join("\n\n", answer), ["model"] = ai.Model };
+    }
+}

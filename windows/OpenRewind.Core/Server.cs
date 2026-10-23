@@ -414,18 +414,26 @@ public sealed class Api
 /// The search page, shared with the Mac app: it is read out of Sources/openrewind/WebUI.swift at build time.
 public static class WebUI
 {
-    public static readonly string Html = Load();
+    public static readonly string Html = Load("WebUI.swift", "Search page");
 
-    static string Load()
+    /// The page inside a Swift file's `static let html = #"""…"""#`, as the Mac app serves it.
+    internal static string Load(string resource, string what)
     {
-        using var s = typeof(WebUI).Assembly.GetManifestResourceStream("WebUI.swift");
-        if (s == null) return "<!doctype html><title>OpenRewind</title><p>Search page missing from this build.</p>";
+        var missing = $"<!doctype html><title>OpenRewind</title><p>{what} missing from this build.</p>";
+        using var s = typeof(WebUI).Assembly.GetManifestResourceStream(resource);
+        if (s == null) return missing;
         // Git on Windows may check the file out with CRLF line endings.
         var src = new StreamReader(s).ReadToEnd().Replace("\r\n", "\n");
         int a = src.IndexOf("#\"\"\"", StringComparison.Ordinal), b = src.LastIndexOf("\"\"\"#", StringComparison.Ordinal);
-        if (a < 0 || b <= a) return "<!doctype html><title>OpenRewind</title><p>Search page missing from this build.</p>";
+        if (a < 0 || b <= a) return missing;
         // Swift drops the newline after the opening quotes, and the indentation is zero, so this is the page as served on Mac.
         var html = src[(a + 4)..b].TrimStart('\r', '\n');
         return html.EndsWith('\n') ? html[..^1] : html;
     }
+}
+
+/// The phone page (Phone Access), shared with the Mac app: read out of Sources/openrewind/PhonePage.swift.
+public static class PhonePage
+{
+    public static readonly string Html = WebUI.Load("PhonePage.swift", "Phone page");
 }
