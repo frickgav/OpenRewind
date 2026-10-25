@@ -31,6 +31,17 @@ sealed class OverlayForm : Form
     double? dragStartV;
     int scrollAccum;
     int resultsScroll;
+    /// Where the bottom dock starts. Under it, the thin scrubber grows into the full bar.
+    float dockTop;
+    bool dockHover;
+    /// Folds the full bar back a moment after the pointer leaves, so passing over the edge does not make it jump.
+    readonly System.Windows.Forms.Timer dockLeave = new() { Interval = 500 };
+    bool DockExpanded => dockHover || dragStartV != null || selectFromV != null || model.SelectingRange || HoldFullBar;
+    /// Where a selecting drag (Select a Stretch, or Shift-drag) started, and the bar's left edge then.
+    double? selectFromV;
+    double selectV0;
+    /// Set by the tour while it points at the bar.
+    public bool HoldFullBar { get; set; }
 
     static readonly Color Mic = Color.FromArgb(255, 159, 10), Sys = Color.FromArgb(48, 209, 88), Accent = Color.FromArgb(10, 132, 255);
     /// Shows the "new version" banner; set by the tray app.
@@ -109,6 +120,7 @@ sealed class OverlayForm : Form
             model.RunSearch();
         };
         clock.Tick += (_, _) => Invalidate();
+        dockLeave.Tick += (_, _) => { dockLeave.Stop(); dockHover = false; hoverX = null; Invalidate(); };
         model.Changed += () => { if (Visible) Invalidate(); };
         HandleCreated += (_, _) => Native.SetWindowDisplayAffinity(Handle, Native.WDA_EXCLUDEFROMCAPTURE);
     }
@@ -154,7 +166,11 @@ sealed class OverlayForm : Form
         model.ClearMarks();
         model.ClearSelection();
         selecting = false;
+        dockLeave.Stop();
+        dockHover = false;
         Hide();
+        // Close the videos it read, so no decrypted copy stays in the temp folder while it is hidden.
+        Task.Run(FrameImages.ReleaseAll);
         if (restoreFocus && previousWindow != IntPtr.Zero) Native.SetForegroundWindow(previousWindow);
         previousWindow = IntPtr.Zero;
     }
@@ -225,36 +241,52 @@ sealed class OverlayForm : Form
         if (backdrop != null) g.DrawImage(backdrop, ClientRectangle);
         using (var dim = new SolidBrush(dark ? Color.FromArgb(205, 14, 14, 16) : Color.FromArgb(200, 246, 246, 248))) g.FillRectangle(dim, ClientRectangle);
 
-        float padX = 28 * k, top = 22 * k, bottom = 16 * k, gap = 14 * k;
-        // The chat sits on the right; the timeline takes the rest.
-        float w = ClientSize.Width - 2 * padX - (ChatOpen ? chatPanel!.Width : 0);
-        float y = top;
-        DrawTopBar(g, new RectangleF(padX, y, w, 44 * k));
-        y += 44 * k + gap;
+        // Like Rewind: the old screen fills the whole display, slim glass bars float at the top,
+        // and a thin scrubber runs along the bottom that grows into the full bar under the pointer.
+        float chatW = ChatOpen ? chatPanel!.Width : 0;
+        shot = new RectangleF(0, 0, ClientSize.Width - chatW, ClientSize.Height);
+        DrawScreenshot(g, shot);
+
+        float padX = 16 * k, gap = 10 * k;
+        float w = ClientSize.Width - 2 * padX - chatW;
+        float y = 14 * k;
+        DrawTopBar(g, new RectangleF(padX, y, w, 42 * k));
+        y += 42 * k + gap;
         if (StaleMinutes() is int mins)
         {
             DrawStaleBanner(g, padX, y, w, mins);
             y += 34 * k + gap;
         }
         if (Updater is { ShowBanner: true } u && u.Available is ReleaseInfo release)
-        {
             DrawUpdateBanner(g, padX, y, w, u, release);
-            y += 34 * k + gap;
-        }
-        float hintsH = 18 * k, barH = 102 * k, controlsH = 36 * k;
-        float shotH = ClientSize.Height - bottom - hintsH - gap - barH - gap - controlsH - gap - y;
-        shot = new RectangleF(padX, y, w, Math.Max(40 * k, shotH));
-        DrawScreenshot(g, shot);
-        y = shot.Bottom + gap;
-        DrawControls(g, new RectangleF(padX, y, w, controlsH));
-        y += controlsH + gap;
-        bar = new RectangleF(padX, y, w, barH);
+
+        // Bottom dock, from the screen edge up: the scrubber, the controls row, the spoken words.
+        bool full = DockExpanded;
+        float barH = full ? 102 * k : 34 * k, controlsH = 36 * k;
+        bar = full ? new RectangleF(padX + 4 * k, ClientSize.Height - 10 * k - barH, w - 8 * k, barH)
+                   : new RectangleF(0, ClientSize.Height - 2 * k - barH, ClientSize.Width - chatW, barH);
+        var controls = new RectangleF(padX + 4 * k, bar.Y - gap - controlsH, w - 8 * k, controlsH);
+        float captionBottom = controls.Y - gap;
+        dockTop = (model.Caption != null ? captionBottom - 70 * k : controls.Y) - 26 * k;
+        // Frosted fade behind the dock: clear at the top, glass at the screen edge.
+        var fade = new RectangleF(0, dockTop, ClientSize.Width - chatW, ClientSize.Height - dockTop);
+        using (var lg = new LinearGradientBrush(new PointF(0, fade.Y - 1), new PointF(0, fade.Bottom), Color.Transparent, Draw.WithAlpha(CardColor, full ? 0.9 : 0.75)))
+            g.FillRectangle(lg, fade);
+        DrawCaption(g, captionBottom);
+        DrawSelectionBar(g, dockTop - 6 * k);
+        DrawControls(g, controls);
         DrawBar(g, bar);
-        y += barH + gap;
-        DrawHints(g, padX, y + hintsH / 2);
         if (model.Notice is string notice) DrawNotice(g, notice);
         if (model.ShowResults) DrawResults(g);
         if (model.ShowHelp) DrawHelp(g);
+    }
+
+    /// Frosted panel behind a floating control, so it reads over any screenshot.
+    void Glass(Graphics g, RectangleF r, float radius)
+    {
+        Draw.Fill(g, new RectangleF(r.X, r.Y + 2 * k, r.Width, r.Height), radius, Draw.Black(dark ? 0.3 : 0.1));
+        Draw.Fill(g, r, radius, Draw.WithAlpha(CardColor, 0.88));
+        Draw.Stroke(g, r, radius, Ink(0.12));
     }
 
     /// Small message under the top bar, for a moment.
@@ -271,25 +303,71 @@ sealed class OverlayForm : Form
 
     // MARK: top bar
 
+    /// Search and its filters (Apps, Meetings) on the left; the time, Ask AI, share, help and close on the right.
+    /// Each group floats on frosted glass over the screenshot.
     void DrawTopBar(Graphics g, RectangleF r)
     {
-        // Search on the left, the playhead time in the middle, help and close on the right.
-        float pillW = Math.Min(460 * k, r.Width * 0.36f);
-        searchPill = new RectangleF(r.X, r.Y + 3 * k, pillW, r.Height - 6 * k);
+        // Right group first, so search knows how much room is left.
+        const string askLabel = "✦  Ask AI";
+        float btn = 30 * k, inner = 6 * k;
+        float askW = Chat != null ? Draw.Measure(g, askLabel, Semibold(12.5f)).Width + 28 * k : 0;
+        float rightW = inner + (askW > 0 ? askW + 6 * k : 0) + 5 * btn + 4 * 6 * k + inner;
+        var rightGroup = new RectangleF(r.Right - rightW, r.Y, rightW, r.Height);
+        Glass(g, rightGroup, r.Height / 2);
+        float by = r.Y + (r.Height - btn) / 2, bx = rightGroup.Right - inner - btn;
+        RoundButton(g, new RectangleF(bx, by, btn, btn), "✕", () => HideOverlay());
+        RoundButton(g, new RectangleF(bx - btn - 6 * k, by, btn, btn), "?", () => { model.ShowHelp = !model.ShowHelp; Invalidate(); });
+        var share = new RectangleF(bx - 2 * (btn + 6 * k), by, btn, btn);
+        RoundButton(g, share, "", () => ShowFrameMenu(new Point((int)share.X, (int)(share.Bottom + 4 * k))));
+        DrawShareIcon(g, share.X + share.Width / 2, share.Y + share.Height / 2);
+        var trash = new RectangleF(share.X - btn - 6 * k, by, btn, btn);
+        RoundButton(g, trash, "", () => ShowDeleteMenu(new Point((int)trash.X, (int)(trash.Bottom + 4 * k))));
+        DrawTrashIcon(g, trash.X + trash.Width / 2, trash.Y + trash.Height / 2);
+        var star = new RectangleF(trash.X - btn - 6 * k, by, btn, btn);
+        RoundButton(g, star, "", () => model.ToggleStar());
+        var starred = model.CurrentStar != null;
+        Draw.TextCentered(g, starred ? "★" : "☆", Semibold(13), starred ? Yellow : TextColor, star.X + star.Width / 2, star.Y + star.Height / 2);
+        var restore = new RectangleF(star.X - btn - 6 * k, by, btn, btn);
+        RoundButton(g, restore, "", RestoreWorkspace);
+        DrawWorkspaceIcon(g, restore.X + restore.Width / 2, restore.Y + restore.Height / 2);
+        if (Chat != null) AskAiButton(g, restore.X - 6 * k, by);
+
+        // The time and how long ago, in its own pill left of the buttons.
+        var time = model.Playhead.ToLocalTime().ToString("T", CultureInfo.CurrentCulture);
+        var rel = Relative(model.Playhead);
+        Font tf = Semibold(15), rf = F(11);
+        var ts = Draw.Measure(g, time, tf);
+        var rs = Draw.Measure(g, rel, rf);
+        float timeW = 16 * k + ts.Width + 8 * k + rs.Width + 16 * k;
+        var timePill = new RectangleF(rightGroup.X - 10 * k - timeW, r.Y, timeW, r.Height);
+        float mid = r.Y + r.Height / 2;
+        Glass(g, timePill, r.Height / 2);
+        Draw.Text(g, time, tf, TextColor, timePill.X + 16 * k, mid - ts.Height / 2);
+        Draw.Text(g, rel, rf, Ink(0.6), timePill.X + 16 * k + ts.Width + 8 * k, mid - rs.Height / 2);
+
+        // Left group: search, Keyword/Meaning, Apps, Meetings, Starred.
+        float pillH = r.Height - 2 * inner;
+        float modeW = SearchModeWidth(g), appW = AppFilterWidth(g), meetW = MeetingsWidth(g), starredW = StarredFilterWidth(g);
+        float chips = (modeW > 0 ? modeW + 8 * k : 0) + appW + 8 * k + meetW + 8 * k + starredW;
+        float room = timePill.X - 16 * k - r.X - 2 * inner - 8 * k - chips;
+        float pillW = Math.Clamp(room, 160 * k, 320 * k);
+        var leftGroup = new RectangleF(r.X, r.Y, inner + pillW + 8 * k + chips + inner, r.Height);
+        Glass(g, leftGroup, r.Height / 2);
+        searchPill = new RectangleF(r.X + inner, r.Y + inner, pillW, pillH);
         bool focused = search.Focused;
         Draw.Fill(g, searchPill, searchPill.Height / 2, PillColor(focused));
         Draw.Stroke(g, searchPill, searchPill.Height / 2, Ink(focused ? 0.35 : 0.12));
         // Magnifier.
         using (var pen = new Pen(Ink(0.6), 1.6f * k))
         {
-            float cx = searchPill.X + 20 * k, cy = searchPill.Y + searchPill.Height / 2 - 1 * k, rr = 5.5f * k;
+            float cx = searchPill.X + 18 * k, cy = searchPill.Y + searchPill.Height / 2 - 1 * k, rr = 5f * k;
             g.DrawEllipse(pen, cx - rr, cy - rr, rr * 2, rr * 2);
             g.DrawLine(pen, cx + rr * 0.7f, cy + rr * 0.7f, cx + rr * 1.5f, cy + rr * 1.5f);
         }
         hot.Add((searchPill, FocusSearch));
 
         // Right side of the pill: "/" hint, or match count and arrows.
-        float right = searchPill.Right - 14 * k, mid = searchPill.Y + searchPill.Height / 2;
+        float right = searchPill.Right - 12 * k;
         if (model.Query.Length == 0 && search.Text.Length == 0)
         {
             if (!focused) right -= Draw.Keycap(g, Ink(1), "/", F(10), right - 18 * k, mid, k);
@@ -307,7 +385,7 @@ sealed class OverlayForm : Form
                 right -= sz.Width + 6 * k;
                 Draw.Text(g, count, F(12), Ink(0.6), right, mid - sz.Height / 2);
             }
-            else if (model.Hits.Count == 0 && !model.ShowResults && model.Query.Length > 0)
+            else if (model.Hits.Count == 0 && !model.ShowResults && model.Query.Length > 0 && !model.Searching)
             {
                 var sz = Draw.Measure(g, "No matches", F(12));
                 right -= sz.Width + 6 * k;
@@ -315,32 +393,21 @@ sealed class OverlayForm : Form
             }
         }
         // The real text box sits inside the pill.
-        var font = F(15);
+        var font = F(14);
         if (search.Font.Size != font.Size) search.Font = font;
         search.BackColor = PillColor(focused);
-        var box = new Rectangle((int)(searchPill.X + 36 * k), (int)(mid - search.PreferredHeight / 2f), (int)Math.Max(40 * k, right - searchPill.X - 44 * k), search.PreferredHeight);
+        var placeholder = model.SearchingByMeaning ? "Describe what you saw or heard" : "Search what you saw or heard";
+        if (search.PlaceholderText != placeholder) search.PlaceholderText = placeholder;
+        var box = new Rectangle((int)(searchPill.X + 32 * k), (int)(mid - search.PreferredHeight / 2f), (int)Math.Max(40 * k, right - searchPill.X - 40 * k), search.PreferredHeight);
         if (search.Bounds != box) search.Bounds = box;
 
-        DrawAppFilter(g, new RectangleF(searchPill.Right + 10 * k, searchPill.Y, 0, searchPill.Height));
-
-        // Center: time and how long ago.
-        var local = model.Playhead.ToLocalTime();
-        var time = local.ToString("T", CultureInfo.CurrentCulture);
-        var tf = Semibold(28);
-        var ts = Draw.Measure(g, time, tf);
-        Draw.Text(g, time, tf, TextColor, r.X + r.Width / 2 - ts.Width / 2, r.Y - 4 * k);
-        var rel = Relative(model.Playhead);
-        var rs = Draw.Measure(g, rel, F(12));
-        Draw.Text(g, rel, F(12), Ink(0.6), r.X + r.Width / 2 - rs.Width / 2, r.Y + ts.Height - 6 * k);
-
-        // Right: help and close.
-        float bx = r.Right - 30 * k;
-        RoundButton(g, new RectangleF(bx, r.Y + 7 * k, 30 * k, 30 * k), "✕", () => HideOverlay());
-        RoundButton(g, new RectangleF(bx - 40 * k, r.Y + 7 * k, 30 * k, 30 * k), "?", () => { model.ShowHelp = !model.ShowHelp; Invalidate(); });
-        var share = new RectangleF(bx - 80 * k, r.Y + 7 * k, 30 * k, 30 * k);
-        RoundButton(g, share, "", () => ShowFrameMenu(new Point((int)share.X, (int)(share.Bottom + 4 * k))));
-        DrawShareIcon(g, share.X + share.Width / 2, share.Y + share.Height / 2);
-        if (Chat != null) AskAiButton(g, bx - 90 * k, r.Y + 7 * k);
+        float x = searchPill.Right + 8 * k;
+        if (modeW > 0) { DrawSearchMode(g, new RectangleF(x, searchPill.Y, modeW, pillH)); x += modeW + 8 * k; }
+        DrawAppFilter(g, new RectangleF(x, searchPill.Y, appW, pillH));
+        x += appW + 8 * k;
+        DrawMeetings(g, new RectangleF(x, searchPill.Y, meetW, pillH));
+        x += meetW + 8 * k;
+        DrawStarredFilter(g, new RectangleF(x, searchPill.Y, starredW, pillH));
     }
 
     /// "✦ Ask AI" pill left of help; `right` is its right edge.
@@ -366,34 +433,142 @@ sealed class OverlayForm : Form
         Invalidate();
     }
 
-    /// Pill next to search: "All apps", or the app the timeline is filtered to. Click to choose.
+    static readonly string[] ModeLabels = { "Keyword", "Meaning" };
+
+    /// Width of the Keyword | Meaning switch; 0 while Search by Meaning is off.
+    float SearchModeWidth(Graphics g) =>
+        model.MeaningAvailable ? ModeLabels.Sum(l => Draw.Measure(g, l, Semibold(12)).Width + 24 * k) + 6 * k : 0;
+
+    /// "Keyword | Meaning" switch next to search, shown while Search by Meaning is on.
+    void DrawSearchMode(Graphics g, RectangleF r)
+    {
+        var f = Semibold(12);
+        float pad = 12 * k, inset = 3 * k;
+        Draw.Fill(g, r, r.Height / 2, PillColor(false));
+        Draw.Stroke(g, r, r.Height / 2, Ink(0.12));
+        float x = r.X + inset;
+        for (int i = 0; i < ModeLabels.Length; i++)
+        {
+            var w = Draw.Measure(g, ModeLabels[i], f).Width + 2 * pad;
+            var seg = new RectangleF(x, r.Y + inset, w, r.Height - 2 * inset);
+            bool on = (i == 1) == model.ByMeaning;
+            if (on) Draw.Fill(g, seg, seg.Height / 2, Draw.WithAlpha(Accent, dark ? 0.45 : 0.25));
+            var sz = Draw.Measure(g, ModeLabels[i], f);
+            Draw.Text(g, ModeLabels[i], f, on ? TextColor : Ink(0.6), seg.X + pad, seg.Y + (seg.Height - sz.Height) / 2);
+            bool meaning = i == 1;
+            hot.Add((seg, () => { model.SetByMeaning(meaning); FocusSearch(); }));
+            x += w;
+        }
+    }
+
+    float StarredFilterWidth(Graphics g) =>
+        10 * k + Draw.Measure(g, "★", Semibold(13)).Width + 6 * k + Draw.Measure(g, "Starred", Semibold(13)).Width + 10 * k;
+
+    /// Starred chip: only starred moments in the list.
+    void DrawStarredFilter(Graphics g, RectangleF r)
+    {
+        bool on = model.StarredOnly;
+        var f = Semibold(13);
+        var sz = Draw.Measure(g, "Starred", f);
+        var ss = Draw.Measure(g, "★", f);
+        Chip(g, r, on);
+        float mid = r.Y + r.Height / 2;
+        Draw.Text(g, on ? "★" : "☆", f, on ? Yellow : Ink(0.6), r.X + 10 * k, mid - ss.Height / 2);
+        Draw.Text(g, "Starred", f, TextColor, r.X + 10 * k + ss.Width + 6 * k, mid - sz.Height / 2);
+        hot.Add((r, () => model.SetStarredOnly(!model.StarredOnly)));
+    }
+
+    /// A filter chip under search, like Rewind's Apps / Meetings / Starred.
+    void Chip(Graphics g, RectangleF r, bool on)
+    {
+        bool hover = r.Contains(PointToClient(Cursor.Position));
+        Draw.Fill(g, r, 8 * k, on ? Draw.WithAlpha(Accent, dark ? 0.35 : 0.2) : Ink(hover ? 0.16 : 0.1));
+        Draw.Stroke(g, r, 8 * k, Ink(on ? 0.25 : 0.12));
+    }
+
+    float AppFilterWidth(Graphics g)
+    {
+        var app = model.AppFilterName;
+        float textW = Math.Min(140 * k, Draw.Measure(g, app ?? "Apps", Semibold(13)).Width);
+        return 10 * k + (app != null ? 18 * k + 6 * k : 16 * k + 6 * k) + textW + 6 * k + Draw.Measure(g, "▾", F(11)).Width
+               + (app != null ? 22 * k : 0) + 10 * k;
+    }
+
+    /// Apps chip: "Apps", or the app the timeline is filtered to. Click to choose, or to hide an app (H).
     void DrawAppFilter(Graphics g, RectangleF r)
     {
         var app = model.AppFilterName;
-        var label = app ?? "All apps";
+        var label = app ?? "Apps";
         var f = Semibold(13);
         var sz = Draw.Measure(g, label, f);
-        float icon = 18 * k, pad = 14 * k, mid = r.Y + r.Height / 2;
-        var arrowW = Draw.Measure(g, "▾", F(11)).Width;
-        // Leave the middle of the bar free for the clock.
-        float maxW = ClientSize.Width / 2f - 130 * k - r.X;
-        r.Width = Math.Min(maxW, pad + (app != null ? icon + 8 * k : 0) + sz.Width + 6 * k + arrowW + (app != null ? 26 * k : 0) + pad);
-        if (r.Width < 80 * k) return;
-        bool hover = r.Contains(PointToClient(Cursor.Position));
-        Draw.Fill(g, r, r.Height / 2, app != null ? Draw.WithAlpha(Accent, dark ? 0.35 : 0.2) : PillColor(hover));
-        Draw.Stroke(g, r, r.Height / 2, Ink(app != null ? 0.25 : 0.12));
+        float mid = r.Y + r.Height / 2;
+        Chip(g, r, app != null);
         hot.Add((r, () => ShowAppMenu(r)));
-        float x = r.X + pad;
+        float x = r.X + 10 * k;
         if (app != null)
         {
+            float icon = 18 * k;
             if (AppIcons.Get(app) is Image img) g.DrawImage(img, x, mid - icon / 2, icon, icon);
             else Draw.Fill(g, new RectangleF(x + 3 * k, mid - 6 * k, 12 * k, 12 * k), 3 * k, TimelineModel.AppColor(app));
-            x += icon + 8 * k;
+            x += icon + 6 * k;
         }
-        float textRight = r.Right - pad - arrowW - 6 * k - (app != null ? 26 * k : 0);
+        else
+        {
+            // Four small squares, like an app grid.
+            using var b = new SolidBrush(Ink(0.6));
+            float c = 5.5f * k, sp = 1.5f * k, top = mid - c - sp / 2;
+            foreach (var (dx, dy) in new[] { (0f, 0f), (1f, 0f), (0f, 1f), (1f, 1f) })
+                g.FillRectangle(b, x + dx * (c + sp), top + dy * (c + sp), c, c);
+            x += 16 * k + 6 * k;
+        }
+        var arrowW = Draw.Measure(g, "▾", F(11)).Width;
+        float textRight = r.Right - 10 * k - arrowW - 6 * k - (app != null ? 22 * k : 0);
         Draw.Text(g, label, f, TextColor, x, mid - sz.Height / 2, textRight - x);
         Draw.Text(g, "▾", F(11), Ink(0.6), textRight + 6 * k, mid - Draw.Measure(g, "▾", F(11)).Height / 2);
-        if (app != null) HotIcon(g, "✕", r.Right - 10 * k, mid, () => model.SetAppFilter(null));
+        if (app != null) HotIcon(g, "✕", r.Right - 8 * k, mid, () => model.SetAppFilter(null));
+    }
+
+    float MeetingsWidth(Graphics g) => 10 * k + 16 * k + 6 * k + Draw.Measure(g, "Meetings", Semibold(13)).Width + 10 * k;
+
+    /// Meetings chip: recent meetings, newest first. Picking one goes to when it started.
+    void DrawMeetings(Graphics g, RectangleF r)
+    {
+        float mid = r.Y + r.Height / 2;
+        Chip(g, r, false);
+        // A small calendar.
+        var cal = new RectangleF(r.X + 10 * k, mid - 6.5f * k, 15 * k, 13 * k);
+        Draw.Stroke(g, cal, 2.5f * k, Ink(0.6), 1.3f * k);
+        using (var b = new SolidBrush(Ink(0.6))) g.FillRectangle(b, cal.X, cal.Y, cal.Width, 3.5f * k);
+        var sz = Draw.Measure(g, "Meetings", Semibold(13));
+        Draw.Text(g, "Meetings", Semibold(13), TextColor, r.X + 32 * k, mid - sz.Height / 2);
+        hot.Add((r, () => ShowMeetingsMenu(r)));
+    }
+
+    ContextMenuStrip? meetingsMenu;
+
+    void ShowMeetingsMenu(RectangleF at)
+    {
+        meetingsMenu?.Dispose();
+        meetingsMenu = new ContextMenuStrip { ShowCheckMargin = false, ShowImageMargin = false };
+        List<Meeting> list;
+        try
+        {
+            // Calls in blocked apps or sites stay out of the list, as in the Meetings window.
+            var blocked = Blocklist.Current;
+            list = model.Db.ShownMeetings(40).Where(m => !MeetingDetector.Hides(blocked, m)).Take(15).ToList();
+        }
+        catch (Exception e) { Log.Write($"meetings menu: {e.Message}"); list = new(); }
+        if (list.Count == 0) meetingsMenu.Items.Add(new ToolStripMenuItem("No meetings yet") { Enabled = false });
+        foreach (var m in list)
+        {
+            var name = m.Name;
+            var when = m.Start.ToLocalTime().ToString("ddd MMM d, t", CultureInfo.CurrentCulture);
+            var start = m.Start;
+            var item = new ToolStripMenuItem($"{name}  ·  {when}");
+            item.Click += (_, _) => { model.ShowResults = false; model.OpenAt(start, null); Invalidate(); };
+            meetingsMenu.Items.Add(item);
+        }
+        meetingsMenu.Show(this, new Point((int)at.X, (int)(at.Bottom + 4 * k)));
     }
 
     ContextMenuStrip? appMenu;
@@ -411,6 +586,29 @@ sealed class OverlayForm : Form
             var item = new ToolStripMenuItem(app, AppIcons.Get(app)) { Checked = app == model.AppFilterName };
             item.Click += (_, _) => { model.SetAppFilter(app); Invalidate(); };
             appMenu.Items.Add(item);
+        }
+        if (model.Current is TimelineFrame f && f.AppName.Length > 0)
+        {
+            var name = f.AppName;
+            appMenu.Items.Add(new ToolStripSeparator());
+            var hide = new ToolStripMenuItem($"Hide {name} from timeline (H)");
+            hide.Click += (_, _) => { model.Hide(name); Invalidate(); };
+            appMenu.Items.Add(hide);
+            var block = new ToolStripMenuItem($"Hide {name} and stop recording it");
+            block.Click += (_, _) => { model.Hide(name, stopRecording: true); Invalidate(); };
+            appMenu.Items.Add(block);
+        }
+        if (model.HiddenAppNames.Count > 0)
+        {
+            var hidden = new ToolStripMenuItem("Hidden apps");
+            foreach (var name in model.HiddenAppNames.ToList())
+            {
+                var show = new ToolStripMenuItem($"Show {name} again");
+                show.Click += (_, _) => { model.Unhide(name); Invalidate(); };
+                hidden.DropDownItems.Add(show);
+            }
+            appMenu.Items.Add(new ToolStripSeparator());
+            appMenu.Items.Add(hidden);
         }
         appMenu.Show(this, new Point((int)at.X, (int)(at.Bottom + 4 * k)));
     }
@@ -441,6 +639,16 @@ sealed class OverlayForm : Form
         using (var b = new SolidBrush(Ink(hover ? 0.2 : 0.1))) g.FillEllipse(b, r);
         Draw.TextCentered(g, glyph, Semibold(12), TextColor, r.X + r.Width / 2, r.Y + r.Height / 2);
         hot.Add((r, act));
+    }
+
+    /// Restore Workspace: two windows, one over the other, drawn so no font is needed.
+    void DrawWorkspaceIcon(Graphics g, float cx, float cy)
+    {
+        float w = 8 * k, h = 6 * k;
+        using var pen = new Pen(Color.White, 1.5f * k) { LineJoin = LineJoin.Round };
+        g.DrawRectangle(pen, cx - w / 2 - 2 * k, cy - h / 2 - 2 * k, w, h);
+        using (var b = new SolidBrush(Ink(0.35))) g.FillRectangle(b, cx - w / 2 + 2 * k, cy - h / 2 + 2 * k, w, h);
+        g.DrawRectangle(pen, cx - w / 2 + 2 * k, cy - h / 2 + 2 * k, w, h);
     }
 
     /// "Open outside": a box with an arrow leaving its top-right corner, drawn so no font is needed.
@@ -481,7 +689,7 @@ sealed class OverlayForm : Form
         }
         bool frame = model.Current != null && model.Image != null && !model.CurrentHidden;
         if (model.HasSelection) Add("Copy Text", "Ctrl+C", model.Copy);
-        if (model.Text is FrameText text && !text.IsEmpty) Add("Copy All Text", "", model.CopyAllText);
+        Add("Copy All Text", "Ctrl+Shift+C", model.CopyAllText, frame);
         Add("Copy Screenshot", model.HasSelection ? "" : "Ctrl+C", () => { model.ClearSelection(); model.Copy(); }, frame);
         Add("Save Screenshot…", "Ctrl+S", () => model.SaveFrame(this), frame);
         menu.Items.Add(new ToolStripSeparator());
@@ -490,6 +698,89 @@ sealed class OverlayForm : Form
         if (model.HasMarks) Add("Clear Clip Marks", "", model.ClearMarks);
         Add("Export Clip…", "Ctrl+E", ExportClip, model.Frames.Count > 0);
         menu.Show(this, at);
+    }
+
+    /// The trash button: delete the shown screenshot, a stretch of time, or every screenshot with the searched words.
+    void ShowDeleteMenu(Point at)
+    {
+        frameMenu?.Dispose();
+        var menu = frameMenu = new ContextMenuStrip();
+        void Add(string text, string keys, Action act, bool enabled = true)
+        {
+            var item = new ToolStripMenuItem(text) { ShortcutKeyDisplayString = keys, Enabled = enabled };
+            item.Click += (_, _) => { act(); Invalidate(); };
+            menu.Items.Add(item);
+        }
+        Add("Delete This Screenshot…", model.MarkedRange == null ? "Del" : "", () => model.DeleteShownScreenshot(ConfirmDelete), model.Current != null);
+        Add("Select a Stretch to Delete…", "Shift+drag", model.StartSelecting, model.Frames.Count > 0);
+        if (model.MarkedRange != null) Add("Delete Selected Stretch…", "Del", () => model.DeleteMarkedRange(ConfirmDelete));
+        if (model.CanDeleteMatching)
+        {
+            menu.Items.Add(new ToolStripSeparator());
+            Add($"Delete Every Screenshot with “{model.Query.Trim()}”…", "", () => model.DeleteMatching(ConfirmDelete));
+        }
+        menu.Show(this, at);
+    }
+
+    /// A trash can, drawn so no font is needed.
+    void DrawTrashIcon(Graphics g, float cx, float cy)
+    {
+        float h = 5.5f * k;
+        using var pen = new Pen(TextColor, 1.5f * k) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        g.DrawLine(pen, cx - h, cy - h * 0.55f, cx + h, cy - h * 0.55f);
+        g.DrawLine(pen, cx - h * 0.35f, cy - h * 0.55f, cx - h * 0.25f, cy - h);
+        g.DrawLine(pen, cx - h * 0.25f, cy - h, cx + h * 0.25f, cy - h);
+        g.DrawLine(pen, cx + h * 0.25f, cy - h, cx + h * 0.35f, cy - h * 0.55f);
+        g.DrawLines(pen, new[] { new PointF(cx - h * 0.75f, cy - h * 0.55f), new PointF(cx - h * 0.6f, cy + h), new PointF(cx + h * 0.6f, cy + h),
+                                  new PointF(cx + h * 0.75f, cy - h * 0.55f) });
+    }
+
+    /// Over the dock while a stretch is selected (or about to be): what is selected, Delete, Export Clip and clear.
+    void DrawSelectionBar(Graphics g, float bottom)
+    {
+        var range = model.MarkedRange;
+        if (range == null && !model.SelectingRange) return;
+        var tf = Semibold(12.5f);
+        string text = range is (DateTime a, DateTime b)
+            ? $"Selected {a.ToLocalTime().ToString("T", CultureInfo.CurrentCulture)} – {b.ToLocalTime().ToString("T", CultureInfo.CurrentCulture)}"
+            : "Drag across the bar below to select what to delete";
+        var ts = Draw.Measure(g, text, tf);
+        const string del = "Delete…", exp = "Export Clip…";
+        float dw = range != null ? Draw.Measure(g, del, tf).Width + 24 * k : 0, ew = range != null ? Draw.Measure(g, exp, tf).Width + 24 * k : 0;
+        float h = 38 * k, btnH = 28 * k, btn = 26 * k;
+        float w = 16 * k + ts.Width + (range != null ? 12 * k + dw + 8 * k + ew : 0) + 10 * k + btn + 6 * k;
+        var r = new RectangleF(ClientSize.Width / 2f - w / 2, bottom - h, w, h);
+        Glass(g, r, h / 2);
+        float mid = r.Y + h / 2, x = r.X + 16 * k;
+        Draw.Text(g, text, tf, TextColor, x, mid - ts.Height / 2);
+        x += ts.Width + 12 * k;
+        if (range != null)
+        {
+            var dr = new RectangleF(x, mid - btnH / 2, dw, btnH);
+            Draw.Fill(g, dr, btnH / 2, Color.FromArgb(255, 69, 58));
+            Draw.TextCentered(g, del, tf, Color.White, dr.X + dr.Width / 2, mid);
+            hot.Add((dr, () => model.DeleteMarkedRange(ConfirmDelete)));
+            x += dw + 8 * k;
+            var er = new RectangleF(x, mid - btnH / 2, ew, btnH);
+            Draw.Fill(g, er, btnH / 2, Ink(0.12));
+            Draw.TextCentered(g, exp, tf, TextColor, er.X + er.Width / 2, mid);
+            hot.Add((er, ExportClip));
+            x += ew + 10 * k;
+        }
+        RoundButton(g, new RectangleF(x, mid - btn / 2, btn, btn), "✕", () => { model.SelectingRange = false; model.ClearMarks(); });
+    }
+
+    /// Asks before a delete on the timeline (TimelineDelete.cs): the index of the delete button chosen, or -1.
+    int ConfirmDelete(string title, string text, string[] buttons)
+    {
+        model.StopAudio();
+        var page = new TaskDialogPage { Caption = "OpenRewind", Heading = title, Text = text, Icon = TaskDialogIcon.Warning };
+        foreach (var b in buttons) page.Buttons.Add(new TaskDialogButton(b));
+        page.Buttons.Add(TaskDialogButton.Cancel);
+        page.DefaultButton = TaskDialogButton.Cancel;
+        var chosen = TaskDialog.ShowDialog(this, page);
+        Activate();
+        return Array.IndexOf(buttons, chosen.Text);
     }
 
     /// Export Clip…: the marked range, or the 5 minutes up to the shown screenshot.
@@ -610,7 +901,7 @@ sealed class OverlayForm : Form
         }
     }
 
-    /// The screenshot, with the spoken words at this moment shown like subtitles.
+    /// The screenshot over the whole display, as if looking at the screen at that moment.
     void DrawScreenshot(Graphics g, RectangleF r)
     {
         if (model.Image is Image img)
@@ -619,17 +910,9 @@ sealed class OverlayForm : Form
             float iw = img.Width * s, ih = img.Height * s;
             var ir = new RectangleF(r.X + (r.Width - iw) / 2, r.Y + (r.Height - ih) / 2, iw, ih);
             imageRect = ir;
-            using (var path = Draw.Round(ir, 12 * k))
-            {
-                var state = g.Save();
-                g.SetClip(path);
-                g.DrawImage(img, ir);
-                DrawHighlights(g, ir);
-                DrawSelection(g, ir);
-                g.Restore(state);
-            }
-            Draw.Stroke(g, ir, 12 * k, Ink(0.12));
-            DrawOpenButton(g, ir);
+            g.DrawImage(img, ir);
+            DrawHighlights(g, ir);
+            DrawSelection(g, ir);
         }
         else
         {
@@ -643,74 +926,86 @@ sealed class OverlayForm : Form
             Draw.TextCentered(g, title, Semibold(16), TextColor, card.X + card.Width / 2, card.Y + 68 * k);
             Draw.TextCentered(g, sub, F(13), Ink(0.6), card.X + card.Width / 2, card.Y + 94 * k);
         }
-        if (model.Caption is string c)
-        {
-            var box = new RectangleF(0, 0, Math.Min(900 * k, r.Width - 80 * k), 0);
-            var sz = g.MeasureString(c, Semibold(17), (int)(box.Width - 32 * k));
-            sz.Height = Math.Min(sz.Height, Semibold(17).GetHeight(g) * 3);
-            var cr = new RectangleF(r.X + r.Width / 2 - (sz.Width + 32 * k) / 2, r.Bottom - 22 * k - sz.Height - 18 * k, sz.Width + 32 * k, sz.Height + 18 * k);
-            Draw.Fill(g, cr, 10 * k, Draw.Black(0.78));
-            Draw.Wrapped(g, c, Semibold(17), Color.White, new RectangleF(cr.X + 16 * k, cr.Y + 9 * k, sz.Width + 2, sz.Height), center: true);
-        }
+    }
+
+    /// The spoken words at this moment, like subtitles, ending at `bottom`.
+    void DrawCaption(Graphics g, float bottom)
+    {
+        if (model.Caption is not string c) return;
+        float cw = ClientSize.Width - (ChatOpen ? chatPanel!.Width : 0);
+        var box = new RectangleF(0, 0, Math.Min(900 * k, cw - 80 * k), 0);
+        var sz = g.MeasureString(c, Semibold(17), (int)(box.Width - 32 * k));
+        sz.Height = Math.Min(sz.Height, Semibold(17).GetHeight(g) * 3);
+        var cr = new RectangleF(cw / 2 - (sz.Width + 32 * k) / 2, bottom - sz.Height - 18 * k, sz.Width + 32 * k, sz.Height + 18 * k);
+        Draw.Fill(g, cr, 10 * k, Draw.Black(0.78));
+        Draw.Wrapped(g, c, Semibold(17), Color.White, new RectangleF(cr.X + 16 * k, cr.Y + 9 * k, sz.Width + 2, sz.Height), center: true);
     }
 
     /// Goes back to what was on screen at this moment: the browser tab, or the app window. Same as O.
-    void DrawOpenButton(Graphics g, RectangleF ir)
+    /// Drawn in the controls row with its right edge at `right`; returns its left edge.
+    float DrawOpenButton(Graphics g, float right, float mid)
     {
-        if (model.CurrentTarget is not OpenTarget t || model.Current is not TimelineFrame f) return;
+        if (model.CurrentTarget is not OpenTarget t || model.Current is not TimelineFrame f) return right;
         var title = t.IsWeb ? "Open this tab in browser" : $"Go to {f.AppName}";
         var detail = t.IsWeb ? WebAddress.Host(t.Url!) : f.WindowName.Length > 0 ? f.WindowName : f.AppName;
         Font tf = Semibold(14), df = F(11);
         float maxText = 260 * k;
         float textW = Math.Min(maxText, Math.Max(Draw.Measure(g, title, tf).Width, Draw.Measure(g, detail, df).Width));
         var keyW = Draw.Measure(g, "O", F(10)).Width + 10 * k;
-        float w = 16 * k + 16 * k + 8 * k + textW + 8 * k + Math.Max(18 * k, keyW) + 16 * k, h = 46 * k;
-        var r = new RectangleF(ir.Right - 18 * k - w, ir.Bottom - 18 * k - h, w, h);
+        float w = 16 * k + 16 * k + 8 * k + textW + 8 * k + Math.Max(18 * k, keyW) + 16 * k, h = 40 * k;
+        var r = new RectangleF(right - w, mid - h / 2, w, h);
         bool hover = r.Contains(PointToClient(Cursor.Position));
         using (var shadow = Draw.Round(new RectangleF(r.X, r.Y + 3 * k, r.Width, r.Height), r.Height / 2))
         using (var sb = new SolidBrush(Draw.Black(0.25))) g.FillPath(sb, shadow);
         Draw.Fill(g, r, r.Height / 2, hover ? ControlPaint.Light(Accent, 0.15f) : Accent);
-        float mid = r.Y + r.Height / 2;
         DrawOpenIcon(g, r.X + 24 * k, mid);
         float tx = r.X + 40 * k;
-        Draw.Text(g, title, tf, Color.White, tx, mid - 18 * k, textW + 2);
-        Draw.Text(g, detail, df, Draw.White(0.8), tx, mid + 2 * k, textW + 2);
+        Draw.Text(g, title, tf, Color.White, tx, mid - 17 * k, textW + 2);
+        Draw.Text(g, detail, df, Draw.White(0.8), tx, mid + 1 * k, textW + 2);
         Draw.Keycap(g, Color.White, "O", F(10), r.Right - 16 * k - Math.Max(18 * k, keyW), mid, k);
         hot.Add((r, OpenCurrent));
+        return r.X;
     }
 
     // MARK: controls row
 
-    /// App on the left, audio in the middle, live + zoom on the right.
+    /// Above the scrubber: the app on the left, audio in the middle; Open, Live/Now and (with the full bar) zoom on the right.
     void DrawControls(Graphics g, RectangleF r)
     {
         float mid = r.Y + r.Height / 2;
         if (model.Current is TimelineFrame f)
         {
-            float x = r.X;
+            var name = f.AppName.Length == 0 ? "Unknown app" : f.AppName;
+            float maxW = r.Width / 3 - 60 * k;
+            float textW = Math.Min(maxW, Math.Max(Draw.Measure(g, name, Semibold(13)).Width, f.WindowName.Length > 0 ? Draw.Measure(g, f.WindowName, F(12)).Width : 0));
+            var pill = new RectangleF(r.X, r.Y - 2 * k, 10 * k + 28 * k + 10 * k + textW + 16 * k, r.Height + 4 * k);
+            Glass(g, pill, pill.Height / 2);
             var icon = AppIcons.Get(f.AppName);
-            var ir = new RectangleF(x, mid - 14 * k, 28 * k, 28 * k);
+            var ir = new RectangleF(pill.X + 10 * k, mid - 12 * k, 24 * k, 24 * k);
             if (icon != null) g.DrawImage(icon, ir);
-            else Draw.Fill(g, ir, 7 * k, Ink(0.14));
-            // Same color as this app's blocks on the bar below.
-            var dot = new RectangleF(ir.Right - 7 * k, ir.Bottom - 7 * k, 9 * k, 9 * k);
+            else Draw.Fill(g, ir, 6 * k, Ink(0.14));
+            // Same color as this app's blocks on the bar.
+            var dot = new RectangleF(ir.Right - 6 * k, ir.Bottom - 6 * k, 8 * k, 8 * k);
             using (var b = new SolidBrush(TimelineModel.AppColor(f.AppName))) g.FillEllipse(b, dot);
             using (var p = new Pen(dark ? Draw.Black(0.6) : Draw.White(0.9), 1.5f * k)) g.DrawEllipse(p, dot);
-            float tx = ir.Right + 10 * k, maxW = r.Width / 3 - 40 * k;
-            var name = f.AppName.Length == 0 ? "Unknown app" : f.AppName;
+            float tx = ir.Right + 10 * k;
             if (f.WindowName.Length > 0)
             {
-                Draw.Text(g, name, Semibold(13), TextColor, tx, mid - 17 * k, maxW);
-                Draw.Text(g, f.WindowName, F(12), Ink(0.6), tx, mid + 1 * k, maxW);
+                Draw.Text(g, name, Semibold(13), TextColor, tx, mid - 17 * k, textW + 2);
+                Draw.Text(g, f.WindowName, F(12), Ink(0.6), tx, mid + 1 * k, textW + 2);
             }
-            else Draw.Text(g, name, Semibold(13), TextColor, tx, mid - 9 * k, maxW);
+            else Draw.Text(g, name, Semibold(13), TextColor, tx, mid - 9 * k, textW + 2);
         }
 
         // Audio buttons, centered.
         var here = model.AudioHere;
         if (here.Count == 0)
         {
-            Draw.TextCentered(g, "No audio at this moment", F(12), Ink(0.42), r.X + r.Width / 2, mid);
+            const string none = "No audio at this moment";
+            var sz = Draw.Measure(g, none, F(12));
+            var pr0 = new RectangleF(r.X + r.Width / 2 - sz.Width / 2 - 12 * k, mid - 14 * k, sz.Width + 24 * k, 28 * k);
+            Glass(g, pr0, pr0.Height / 2);
+            Draw.TextCentered(g, none, F(12), Ink(0.6), r.X + r.Width / 2, mid);
         }
         else
         {
@@ -722,7 +1017,8 @@ sealed class OverlayForm : Form
                 var a = here[i];
                 bool on = model.PlayingChunk == a.Id;
                 var br = new RectangleF(x, mid - 15 * k, widths[i], 30 * k);
-                Draw.Fill(g, br, br.Height / 2, on ? Accent : Ink(0.14));
+                Glass(g, br, br.Height / 2);
+                if (on) Draw.Fill(g, br, br.Height / 2, Accent);
                 Draw.Text(g, on ? "❚❚" : "▶", F(10), on ? Color.White : TextColor, br.X + 13 * k, mid - 7 * k);
                 Draw.Text(g, a.IsInput ? "Microphone" : "System audio", f13, on ? Color.White : TextColor, br.X + 28 * k, mid - 8 * k);
                 // Matches the audio lane color on the bar.
@@ -733,26 +1029,31 @@ sealed class OverlayForm : Form
             }
         }
 
-        // Zoom picker and Live/Now, right-aligned.
-        var steps = new (string Label, double Span)[] { ("5m", 300), ("15m", 900), ("1h", 3600), ("4h", 4 * 3600), ("12h", 12 * 3600) };
-        float segW = 38 * k, pw = segW * steps.Length + 4 * k;
-        var pr = new RectangleF(r.Right - pw, mid - 14 * k, pw, 28 * k);
-        Draw.Fill(g, pr, pr.Height / 2, Ink(0.08));
-        for (int i = 0; i < steps.Length; i++)
+        // Zoom picker (with the full bar only), Live/Now and Open, right-aligned.
+        float right = r.Right;
+        if (DockExpanded)
         {
-            var s = steps[i];
-            bool on = Math.Abs(model.Span - s.Span) < 1;
-            var sr = new RectangleF(pr.X + 2 * k + i * segW, pr.Y + 2 * k, segW, pr.Height - 4 * k);
-            if (on) Draw.Fill(g, sr, sr.Height / 2, Ink(0.22));
-            Draw.TextCentered(g, s.Label, on ? Semibold(12) : F(12), on ? TextColor : Ink(0.6), sr.X + sr.Width / 2, sr.Y + sr.Height / 2);
-            var span = s.Span;
-            hot.Add((sr, () => { model.Span = span; Invalidate(); }));
+            var steps = new (string Label, double Span)[] { ("5m", 300), ("15m", 900), ("1h", 3600), ("4h", 4 * 3600), ("12h", 12 * 3600) };
+            float segW = 38 * k, pw = segW * steps.Length + 4 * k;
+            var pr = new RectangleF(right - pw, mid - 14 * k, pw, 28 * k);
+            Glass(g, pr, pr.Height / 2);
+            for (int i = 0; i < steps.Length; i++)
+            {
+                var st = steps[i];
+                bool on = Math.Abs(model.Span - st.Span) < 1;
+                var sr = new RectangleF(pr.X + 2 * k + i * segW, pr.Y + 2 * k, segW, pr.Height - 4 * k);
+                if (on) Draw.Fill(g, sr, sr.Height / 2, Ink(0.22));
+                Draw.TextCentered(g, st.Label, on ? Semibold(12) : F(12), on ? TextColor : Ink(0.6), sr.X + sr.Width / 2, sr.Y + sr.Height / 2);
+                var span = st.Span;
+                hot.Add((sr, () => { model.Span = span; Invalidate(); }));
+            }
+            right = pr.X - 10 * k;
         }
         var live = model.IsLive;
         var label = live ? "Live" : "Now ⏭";
         var lw = Draw.Measure(g, label, Semibold(12)).Width + (live ? 34 : 24) * k;
-        var lr = new RectangleF(pr.X - 10 * k - lw, mid - 14 * k, lw, 28 * k);
-        Draw.Fill(g, lr, lr.Height / 2, live ? Ink(0.08) : Accent);
+        var lr = new RectangleF(right - lw, mid - 14 * k, lw, 28 * k);
+        Glass(g, lr, lr.Height / 2);
         if (live)
         {
             using var red = new SolidBrush(Color.FromArgb(255, 69, 58));
@@ -761,9 +1062,11 @@ sealed class OverlayForm : Form
         }
         else
         {
+            Draw.Fill(g, lr, lr.Height / 2, Accent);
             Draw.Text(g, label, Semibold(12), Color.White, lr.X + 12 * k, mid - 8 * k);  // on the accent color
             hot.Add((lr, model.JumpToNow));
         }
+        DrawOpenButton(g, lr.X - 10 * k, mid);
     }
 
     // MARK: timeline bar
@@ -787,6 +1090,11 @@ sealed class OverlayForm : Form
         var end = axis.Date(v1);
         float px = X(model.Playhead);
 
+        if (!DockExpanded)
+        {
+            DrawCompactBar(g, r, start, end, X, px);
+            return;
+        }
         Draw.Fill(g, new RectangleF(r.X, r.Y + 20 * k, r.Width, r.Height - 20 * k), 10 * k, Ink(0.06));
         var state = g.Save();
         g.SetClip(new RectangleF(r.X, r.Y, r.Width, r.Height));
@@ -877,6 +1185,8 @@ sealed class OverlayForm : Form
             foreach (var h in model.Hits.Where(h => h.Time >= start && h.Time <= end))
                 g.FillRectangle(yb, X(h.Time) - 1.5f * k, r.Y + 24 * k, 3 * k, 10 * k);
 
+        DrawStars(g, r, start, end, X);
+
         // The clip marked with [ and ]: a tinted band between two flags.
         float? ma = model.ClipStart is DateTime s1 ? X(s1) : null, mb = model.ClipEnd is DateTime e1 ? X(e1) : null;
         if (ma is float a0 && mb is float b0)
@@ -924,6 +1234,56 @@ sealed class OverlayForm : Form
         }
     }
 
+    /// Starred moments: a small yellow star each.
+    void DrawStars(Graphics g, RectangleF r, DateTime start, DateTime end, Func<DateTime, float> X)
+    {
+        using (var sb = new SolidBrush(Yellow))
+        using (var edge = new Pen(Color.FromArgb(90, 0, 0, 0), 0.6f * k))
+            foreach (var st in model.Stars.Where(s => s.Time >= start && s.Time <= end))
+            {
+                float cx = X(st.Time), cy = r.Y + 29 * k, rad = 5.5f * k;
+                var pts = Enumerable.Range(0, 10).Select(i =>
+                {
+                    double ang = i * Math.PI / 5 - Math.PI / 2, rr = i % 2 == 0 ? rad : rad * 0.45;
+                    return new PointF(cx + (float)(Math.Cos(ang) * rr), cy + (float)(Math.Sin(ang) * rr));
+                }).ToArray();
+                g.FillPolygon(sb, pts);
+                g.DrawPolygon(edge, pts);
+            }
+    }
+
+    /// Rewind's thin scrubber: app colors as a faint strip along the bottom edge, search matches and clip marks,
+    /// and a white playhead standing up from the edge.
+    void DrawCompactBar(Graphics g, RectangleF r, DateTime start, DateTime end, Func<DateTime, float> X, float px)
+    {
+        float stripY = r.Bottom - 5 * k;
+        var frames = model.Frames;
+        if (frames.Count > 0)
+        {
+            int last = model.FrameIndex(end);
+            for (int i = Math.Max(0, model.FrameIndex(start)); i <= last; i++)
+            {
+                var f = frames[i];
+                var next = f.End ?? (i + 1 < frames.Count ? frames[i + 1].Time : f.Time.AddSeconds(2));
+                if (next > f.Time.AddSeconds(60)) next = f.Time.AddSeconds(60);
+                float a = X(f.Time), b = X(next);
+                if (b < r.X || a > r.Right) continue;
+                using var br = new SolidBrush(Draw.WithAlpha(TimelineModel.AppColor(f.AppName), 0.55));
+                g.FillRectangle(br, a, stripY, Math.Max(1, b - a), 3 * k);
+            }
+        }
+        using (var yb = new SolidBrush(Yellow))
+            foreach (var h in model.Hits.Where(h => h.Time >= start && h.Time <= end))
+                g.FillRectangle(yb, X(h.Time) - 1 * k, stripY - 6 * k, 2 * k, 9 * k);
+        using (var ab = new SolidBrush(Accent))
+            foreach (var m in new[] { model.ClipStart, model.ClipEnd })
+                if (m is DateTime md) g.FillRectangle(ab, X(md) - 1 * k, stripY - 10 * k, 2 * k, 13 * k);
+        DrawStars(g, r, start, end, X);
+        var head = new RectangleF(px - 2 * k, r.Y + 2 * k, 4 * k, r.Height - 2 * k);
+        Draw.Fill(g, new RectangleF(head.X - 1 * k, head.Y + 1 * k, head.Width + 2 * k, head.Height), 3 * k, Draw.Black(0.25));
+        Draw.Fill(g, head, 2 * k, Color.White);
+    }
+
     /// Small card above the bar: the screenshot, app and time under the pointer.
     void DrawPreview(Graphics g, DateTime date, float hx, RectangleF barRect)
     {
@@ -952,37 +1312,27 @@ sealed class OverlayForm : Form
         }
     }
 
-    // MARK: hints, results, help
-
-    void DrawHints(Graphics g, float x, float mid)
-    {
-        var f = F(11);
-        foreach (var (keys, what) in new[] { (new[] { "←", "→" }, "move"), (new[] { "space" }, "play audio"), (new[] { "/" }, "search"),
-                                              (new[] { "+", "−" }, "zoom"), (new[] { "O" }, "open"), (new[] { "[", "]" }, "mark clip"),
-                                              (new[] { "?" }, "all keys"), (new[] { "esc" }, "close") })
-        {
-            foreach (var key in keys) x += Draw.Keycap(g, Ink(1), key, F(10), x, mid, k) + 4 * k;
-            var sz = Draw.Measure(g, what, f);
-            Draw.Text(g, what, f, Ink(0.42), x, mid - sz.Height / 2);
-            x += sz.Width + 14 * k;
-        }
-    }
+    // MARK: results, help
 
     void DrawResults(Graphics g)
     {
         float w = Math.Min(640 * k, shot.Width), rowH = 52 * k, headH = 30 * k;
         var hits = model.Hits;
         float listH = hits.Count == 0 ? 52 * k : Math.Min(440 * k, headH + hits.Count * rowH + 12 * k);
-        var box = new RectangleF(searchPill.X, shot.Y + 2 * k, w, listH);
+        var box = new RectangleF(searchPill.X, searchPill.Bottom + 14 * k, w, listH);
         Draw.Fill(g, box, 12 * k, CardColor);
         Draw.Stroke(g, box, 12 * k, Ink(0.12));
         hot.Add((box, () => { }));  // clicks on the list do not fall through
         if (hits.Count == 0)
         {
-            Draw.Text(g, $"No matches for “{model.Query}”", F(14), Ink(0.6), box.X + 16 * k, box.Y + 16 * k);
+            var empty = model.Searching ? "Searching by meaning…"
+                : model.StarredOnly ? (model.Query.Trim().Length == 0 ? $"No starred moments yet. Press S here, or {HotkeyShortcut.Star.Label} anywhere, to star one." : $"No starred moments match “{model.Query}”")
+                : $"No matches for “{model.Query}”";
+            Draw.Text(g, empty, F(14), Ink(0.6), box.X + 16 * k, box.Y + 16 * k);
             return;
         }
-        Draw.Text(g, $"{hits.Count} moment{(hits.Count == 1 ? "" : "s")}", F(11), Ink(0.42), box.X + 14 * k, box.Y + 9 * k);
+        var head = $"{hits.Count} {(model.StarredOnly ? "starred " : "")}moment{(hits.Count == 1 ? "" : "s")}" + (model.SearchingByMeaning && !model.StarredOnly ? " · closest in meaning first" : "");
+        Draw.Text(g, head, F(11), Ink(0.42), box.X + 14 * k, box.Y + 9 * k);
         float hx = box.Right - 14 * k;
         foreach (var part in new[] { "go", "⏎", "choose", "↓", "↑" })
         {
@@ -995,15 +1345,16 @@ sealed class OverlayForm : Form
         if (model.SelectedHit < resultsScroll) resultsScroll = model.SelectedHit;
         if (model.SelectedHit >= resultsScroll + visible) resultsScroll = model.SelectedHit - visible + 1;
         resultsScroll = Math.Clamp(resultsScroll, 0, Math.Max(0, hits.Count - visible));
-        var words = model.Query.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        // A meaning match need not contain the typed words, so none are marked.
+        var words = model.SearchingByMeaning ? Array.Empty<string>() : model.Query.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
         for (int i = resultsScroll; i < Math.Min(hits.Count, resultsScroll + visible); i++)
         {
             var h = hits[i];
             var rr = new RectangleF(box.X + 6 * k, box.Y + headH + (i - resultsScroll) * rowH, box.Width - 12 * k, rowH - 2 * k);
             if (i == model.SelectedHit) Draw.Fill(g, rr, 8 * k, Draw.WithAlpha(Accent, 0.35));
-            var icon = h.IsAudio ? null : AppIcons.Get(h.Title);
+            var icon = h.IsAudio || h.IsStar ? null : AppIcons.Get(h.Title);
             if (icon != null) g.DrawImage(icon, rr.X + 10 * k, rr.Y + 8 * k, 18 * k, 18 * k);
-            else Draw.Text(g, h.IsAudio ? "∿" : "▭", Semibold(14), h.IsAudio ? Sys : Ink(0.6), rr.X + 11 * k, rr.Y + 5 * k);
+            else Draw.Text(g, h.IsStar ? "★" : h.IsAudio ? "∿" : "▭", Semibold(14), h.IsStar ? Yellow : h.IsAudio ? Sys : Ink(0.6), rr.X + 11 * k, rr.Y + 5 * k);
             var when = h.Time.ToLocalTime().ToString("MMM d, T", CultureInfo.CurrentCulture);
             var ws = Draw.Measure(g, when, F(11));
             Draw.Text(g, when, F(11), Ink(0.42), rr.Right - 10 * k - ws.Width, rr.Y + 7 * k);
@@ -1050,13 +1401,19 @@ sealed class OverlayForm : Form
         ("", new[] { new[] { "scroll" } }, "Scroll the wheel or touchpad"),
         ("", new[] { new[] { "N" } }, "Go to now"),
         ("OPEN", new[] { new[] { "O" } }, "Open the tab or window from this moment"),
+        ("", new[] { new[] { "Shift", "O" } }, "Restore the workspace: reopen what was open then"),
+        ("STAR", new[] { new[] { "S" } }, "Star this moment / remove its star"),
         ("FILTER", new[] { new[] { "A" } }, "Only this app / all apps again"),
+        ("", new[] { new[] { "H" } }, "Hide this app from the timeline"),
         ("AUDIO", new[] { new[] { "space" } }, "Play or pause audio from here"),
         ("COPY", new[] { new[] { "Ctrl", "C" } }, "Copy the selected text, or the screenshot"),
         ("", new[] { new[] { "drag" } }, "Select text on the screenshot"),
+        ("", new[] { new[] { "Ctrl", "Shift", "C" } }, "Copy all the text on the screenshot"),
         ("", new[] { new[] { "Ctrl", "S" } }, "Save the screenshot as a PNG"),
-        ("CLIP", new[] { new[] { "[" }, new[] { "]" } }, "Mark where a clip starts / ends"),
+        ("CLIP", new[] { new[] { "[" }, new[] { "]" } }, "Mark where a stretch starts / ends"),
+        ("", new[] { new[] { "Shift", "drag" } }, "Select a stretch on the bar"),
         ("", new[] { new[] { "Ctrl", "E" } }, "Export a clip as MP4 or GIF"),
+        ("DELETE", new[] { new[] { "Del" } }, "Delete this screenshot, or the selected stretch"),
         ("SEARCH", new[] { new[] { "/" }, new[] { "Ctrl", "F" } }, "Search screen text and speech"),
         ("", new[] { new[] { "Ctrl", "G" }, new[] { "Shift", "Ctrl", "G" } }, "Older / newer match"),
         ("VIEW", new[] { new[] { "+" }, new[] { "−" } }, "Zoom the bar in / out"),
@@ -1090,7 +1447,7 @@ sealed class OverlayForm : Form
             Draw.Text(g, what, F(13), Ink(0.85), card.X + 300 * k, mid - 9 * k);
             y += rowH;
         }
-        Draw.Text(g, "Drag or click the bar to move. Hover it to preview. Right-click the screenshot for more.", F(12), Ink(0.6), card.X + 24 * k, y + 6 * k);
+        Draw.Text(g, "Ctrl+Shift + scroll anywhere opens the timeline. Hover the bottom for the full bar. Right-click the screenshot for more.", F(12), Ink(0.6), card.X + 24 * k, y + 6 * k);
     }
 
     // MARK: input
@@ -1117,6 +1474,25 @@ sealed class OverlayForm : Form
     void LeaveSearch() { ActiveControl = null; Focus(); Invalidate(); }
 
     /// Go back to this moment: the browser tab, or the app window.
+    /// Shift+O and the top bar button: open again what was open at the shown moment, after asking.
+    void RestoreWorkspace()
+    {
+        var at = model.Current?.Time ?? model.Playhead;
+        if (model.Db.WorkspaceAt(at) is not WorkspaceSnapshot snap)
+        {
+            model.ShowNotice("No workspace was saved around this moment");
+            return;
+        }
+        var items = Workspace.Restorable(snap.Items, Blocklist.Current, File.Exists);
+        if (items.Count == 0) { model.ShowNotice("Nothing from this moment can be opened again"); return; }
+        using var dialog = new RestoreWorkspaceForm(snap, items);
+        if (dialog.ShowDialog(this) != DialogResult.OK || dialog.Picked.Count == 0) return;
+        var picked = dialog.Picked;
+        HideOverlay(restoreFocus: false);
+        var n = WorkspaceRestore.Open(picked);
+        Log.Write($"restore workspace: opened {n} of {picked.Count}");
+    }
+
     void OpenCurrent()
     {
         if (model.CurrentTarget is not OpenTarget t || model.Current is not TimelineFrame f)
@@ -1161,6 +1537,7 @@ sealed class OverlayForm : Form
                 default: return base.ProcessCmdKey(ref msg, keyData);  // let the text box have it
             }
         }
+        if (ctrl && shift && key == Keys.C) { model.CopyAllText(); return true; }
         if (ctrl && key == Keys.C) { model.Copy(); return true; }
         if (ctrl && key == Keys.S) { model.SaveFrame(this); return true; }
         if (ctrl && key == Keys.E) { ExportClip(); return true; }
@@ -1172,6 +1549,7 @@ sealed class OverlayForm : Form
                 if (model.ShowHelp) model.ShowHelp = false;
                 else if (model.ShowResults) model.ShowResults = false;
                 else if (ChatOpen) chatPanel!.Close();
+                else if (model.SelectingRange) model.SelectingRange = false;
                 else if (model.HasSelection) model.ClearSelection();
                 else if (model.HasMarks) model.ClearMarks();
                 else { HideOverlay(); return true; }
@@ -1183,10 +1561,14 @@ sealed class OverlayForm : Form
             case Keys.Down: model.Jump(model.Playhead.AddSeconds(600)); break;
             case Keys.Space: model.ToggleAudio(); break;
             case Keys.N: case Keys.End: model.JumpToNow(); break;
+            case Keys.O when !ctrl && shift: RestoreWorkspace(); break;
             case Keys.O when !ctrl: OpenCurrent(); break;
             case Keys.A when !ctrl: ToggleAppFilter(); break;
+            case Keys.S when !ctrl: model.ToggleStar(); break;
+            case Keys.H when !ctrl: model.HideCurrentApp(); Invalidate(); break;
             case Keys.OemOpenBrackets when !ctrl: model.MarkStart(); break;
             case Keys.OemCloseBrackets when !ctrl: model.MarkEnd(); break;
+            case Keys.Delete: case Keys.Back: model.DeletePressed(ConfirmDelete); break;
             case Keys.Oemplus: case Keys.Add: model.Span = Math.Max(60, model.Span / 2); Invalidate(); break;
             case Keys.OemMinus: case Keys.Subtract: model.Span = Math.Min(12 * 3600, model.Span * 2); Invalidate(); break;
             default: return base.ProcessCmdKey(ref msg, keyData);
@@ -1199,21 +1581,27 @@ sealed class OverlayForm : Form
         // Over the chat, the wheel scrolls the chat (it arrives here when the chat box has the keyboard).
         if (ChatOpen && chatPanel!.Bounds.Contains(e.Location)) return;
         if (model.ShowResults && model.Hits.Count > 0) { model.MoveSelection(e.Delta > 0 ? -1 : 1); return; }
-        // Wheel up = back in time. Mouse wheels send 120 per notch (one step); touchpads send many small deltas.
-        if (Math.Abs(e.Delta) >= 120 && e.Delta % 120 == 0) { model.Step(-e.Delta / 120); return; }
-        scrollAccum += e.Delta;
+        ScrollTime(e.Delta);
+    }
+
+    /// Wheel up = back in time. Mouse wheels send 120 per notch (one step); touchpads send many small deltas.
+    /// Also called with the turn that opened the timeline (Ctrl+Shift + scroll, see ScrollOpener).
+    public void ScrollTime(int delta)
+    {
+        if (Math.Abs(delta) >= 120 && delta % 120 == 0) { model.Step(-delta / 120); return; }
+        scrollAccum += delta;
         int steps = scrollAccum / 40;
         if (steps != 0) { scrollAccum -= steps * 40; model.Step(-steps); }
     }
 
-    bool InBar(Point p) => bar.Contains(p) && p.Y > bar.Y + 16 * k;
+    bool InBar(Point p) => bar.Contains(p) && (!DockExpanded || p.Y > bar.Y + 16 * k);
 
     /// A point on the screen as fractions of the shown screenshot.
     PointF InImage(Point p) => new((p.X - imageRect.X) / imageRect.Width, (p.Y - imageRect.Y) / imageRect.Height);
 
     /// True over the bare screenshot: not over a button on it or a card above it.
     bool OnScreenshot(Point p) =>
-        !model.ShowHelp && !model.ShowResults && imageRect.Contains(p) && !hot.Any(h => h.Rect.Contains(p) && h.Rect.Width < ClientSize.Width / 2);
+        !model.ShowHelp && !model.ShowResults && imageRect.Contains(p) && p.Y < dockTop && !hot.Any(h => h.Rect.Contains(p) && h.Rect.Width < ClientSize.Width / 2);
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
@@ -1233,9 +1621,19 @@ sealed class OverlayForm : Form
         }
         if (!model.ShowHelp && !(model.ShowResults && hot.Any(h => h.Rect.Contains(e.Location) && h.Rect.Y < bar.Y)) && InBar(e.Location))
         {
-            // A click jumps to where you clicked; a drag then moves from there.
             var axis = model.Axis;
             var v = V0(axis) + (e.X - bar.X) / bar.Width * model.Span;
+            if (model.SelectingRange || (ModifierKeys & Keys.Shift) != 0)
+            {
+                // Selecting: the bar stays put and the marks follow the pointer.
+                selectV0 = V0(axis);
+                selectFromV = v;
+                model.StopAudio();
+                model.SelectRange(axis.Date(v), axis.Date(v));
+                Capture = true;
+                return;
+            }
+            // A click jumps to where you clicked; a drag then moves from there.
             dragStartV = v;
             dragStartX = e.X;
             model.Jump(axis.Date(v));
@@ -1254,6 +1652,14 @@ sealed class OverlayForm : Form
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (selectFromV is double from && e.Button == MouseButtons.Left)
+        {
+            var axis = model.Axis;
+            var v = selectV0 + Math.Clamp((e.X - bar.X) / bar.Width, 0, 1) * model.Span;
+            DateTime a = axis.Date(Math.Min(from, v)), b = axis.Date(Math.Max(from, v));
+            model.SelectRange(a, b > model.LoadedAt ? model.LoadedAt : b);
+            return;
+        }
         if (dragStartV is double sv && e.Button == MouseButtons.Left)
         {
             model.Jump(model.Axis.Date(sv - (e.X - dragStartX) / bar.Width * model.Span));
@@ -1265,7 +1671,8 @@ sealed class OverlayForm : Form
             model.Select(anchor, text.NearestWord(InImage(e.Location)));
             return;
         }
-        float? hx = InBar(e.Location) && !model.ShowHelp ? e.X : null;
+        SetDockHover(e.Y >= dockTop && !model.ShowHelp);
+        float? hx = InBar(e.Location) && !model.ShowHelp && DockExpanded ? e.X : null;
         if (hx != hoverX) { hoverX = hx; Invalidate(); }
         Cursor = hot.Any(h => h.Rect.Contains(e.Location) && h.Rect.Width < ClientSize.Width / 2) || hx != null ? Cursors.Hand
                : OnScreenshot(e.Location) && model.Text?.WordAt(InImage(e.Location)) >= 0 ? Cursors.IBeam
@@ -1276,6 +1683,7 @@ sealed class OverlayForm : Form
     {
         base.OnMouseUp(e);
         dragStartV = null;
+        if (selectFromV != null) { selectFromV = null; model.SelectingRange = false; }
         selecting = false;
         Capture = false;
         Invalidate();
@@ -1285,6 +1693,18 @@ sealed class OverlayForm : Form
     {
         base.OnMouseLeave(e);
         if (hoverX != null) { hoverX = null; Invalidate(); }
+        SetDockHover(false);
+    }
+
+    /// The pointer came near the bottom (full bar now) or left it (thin scrubber again, after a moment).
+    void SetDockHover(bool inside)
+    {
+        if (inside)
+        {
+            dockLeave.Stop();
+            if (!dockHover) { dockHover = true; Invalidate(); }
+        }
+        else if (dockHover && !dockLeave.Enabled) dockLeave.Start();
     }
 }
 

@@ -20,8 +20,9 @@ static class Program
       OpenRewind delete <15m|1h|today|all|older:week>
                                   Delete recordings in that range
       OpenRewind doctor           Check what works on this PC
+      OpenRewind video-check      Check that this PC can write and read the videos of Compress Older Recordings
       OpenRewind mcp              MCP server for AI apps, over stdin/stdout (also --mcp).
-                                  Turn on Settings → Allow AI Apps to Read My History first
+                                  Turn on Settings → AI → Allow AI apps to read my history first
 
     Options:
       --port N        API port (default 3031)
@@ -33,6 +34,8 @@ static class Program
       --whisper-model PATH   ggml Whisper model (default: auto-detect)
       --whisper-bin PATH     whisper-cli.exe (default: auto-detect)
       --language L    Whisper language code, or auto (default auto)
+      --model ID      Transcription model for this run: whisper-auto, whisper-base, whisper-small,
+                      whisper-large-v3-turbo or parakeet-v3 (default: the one picked in Settings)
       --home DIR      Data folder (default %USERPROFILE%\.openrewind, or %OPENREWIND_HOME%)
 
     Env:
@@ -69,14 +72,45 @@ static class Program
         ApplicationConfiguration.Initialize();
         LoadIcons();
         var config = Config.Load(args);
+        // Settings → Transcription Model, unless --model picks one for this run.
+        config.TranscriptionModel ??= Settings.Load(config.Home).TranscriptionModel;
         if (command == "app")
         {
             Log.OpenFile(config.Home);
             Log.Write($"OpenRewind {Updater.Current} starting ({Environment.ProcessPath})");
         }
 
+        // Encrypt Recordings: load the data key before the database, which may be encrypted with it.
+        // Also while a switch off is still decrypting (EncryptionDone false): some files are still encrypted.
+        var startSettings = Settings.Load(config.Home);
+        var encrypt = startSettings.EncryptRecordings;
+        var key = DataKeyStore.Load(config.Home);
+        // A switch off with nothing encrypted left: it is done, carry on without a key.
+        if (key == null && !encrypt && !startSettings.EncryptionDone && !Database.IsEncryptedFile(config.DbPath)
+            && RecordingFile.FirstEncrypted(config.DataDir) == null)
+        {
+            startSettings.EncryptionDone = true;
+            startSettings.Save();
+        }
+        if (key == null && (encrypt || !startSettings.EncryptionDone || Database.IsEncryptedFile(config.DbPath)))
+        {
+            if (command == "app") key = Encryption.AskForRecoveryKey(config);
+            if (key == null)
+            {
+                Log.Write("your recordings are encrypted and the key is not on this Windows account; open OpenRewind to enter the recovery key");
+                return 1;
+            }
+        }
+        RecordingFile.Key = key;
+        RecordingFile.EncryptNew = encrypt && key != null;
+        RecordingFile.KeyLoader = () => DataKeyStore.Load(config.Home);
+        // Decrypted copies (audio for whisper-cli, videos being shown) left behind by a crash or kill.
+        if (command is "app" or "record" or "serve") RecordingFile.CleanTempCopies();
+        // Encrypt Recordings switched: close a video before its file is replaced (Windows can't replace an open file).
+        RecordingFile.BeforeConvert = p => { if (p.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)) FrameImages.Release(p); };
+
         Database db;
-        try { db = new Database(config.DbPath); }
+        try { db = new Database(config.DbPath, key, createEncrypted: RecordingFile.EncryptNew); }
         catch (Exception e)
         {
             Log.Write($"cannot open database at {config.DbPath}: {e.Message}");
@@ -85,6 +119,10 @@ static class Program
             return 1;
         }
         var engine = new Engine(config, db);
+        // The block list in Settings, for the terminal commands too (`record`, `once`): without this they would
+        // record with the standard list. The tray app keeps its own copy up to date (TrayApp).
+        var savedBlocklist = Settings.SavedBlocklistIn(config.Home);
+        Blocklist.Current = savedBlocklist.Get();
 
         string? Value(string flag)
         {
@@ -114,15 +152,23 @@ static class Program
                 return 0;
 
             case "record":
+            {
                 _ = Database.BuildSlowIndexesInBackground(config.DbPath);
+                // No tray app here: changes made in Settings meanwhile reach recording within a second, and the
+                // server reads the list again for each request. Both use the same copy.
+                Blocklist Refresh() => Blocklist.Current = savedBlocklist.Get();
+                using var refresh = new System.Threading.Timer(_ => Refresh(), null, 1000, 1000);
+                engine.ServerBlocklist = Refresh;
                 engine.StartServer();
                 engine.SetScreen(true);
                 if (config.RecordMic || config.RecordSystemAudio) engine.SetAudio(true);
                 Console.CancelKeyPress += (_, _) => engine.Shutdown();
                 Application.Run();
                 return 0;
+            }
 
             case "serve":
+                engine.ServerBlocklist = savedBlocklist.Get;
                 engine.StartServer();
                 Thread.Sleep(Timeout.Infinite);
                 return 0;
@@ -190,6 +236,7 @@ static class Program
             {
                 Console.WriteLine($"data dir:        {config.Home}");
                 Console.WriteLine($"frames stored:   {db.Stats().Count}");
+                Console.WriteLine($"encryption:      {(RecordingFile.EncryptNew ? "on" : "off")}{(startSettings.EncryptionDone ? "" : " (converting)")} (database {(db.IsEncrypted ? "encrypted" : "plain")})");
                 Console.WriteLine($"windows ocr:     {(Ocr.Available ? "ok" : "MISSING (add a language with OCR in Settings → Time & language)")}");
                 Console.WriteLine($"accessibility:   {(config.UseAccessibility ? "on (UI Automation)" : "off")}");
                 Console.WriteLine($"microphone:      {(AudioStream.HasDevice(NAudio.CoreAudioApi.DataFlow.Capture) ? "found" : "none")}");
@@ -198,13 +245,46 @@ static class Program
                 Console.WriteLine($"audio chunks:    {a.Chunks} ({a.Pending} pending), {a.Segments} transcript segments");
                 Console.WriteLine($"whisper-cli:     {Transcriber.FindBinary(config.WhisperBinary, config.Home) ?? $"MISSING (put whisper-cli.exe in {Path.Combine(config.Home, "whisper")})"}");
                 Console.WriteLine($"whisper model:   {Transcriber.FindModel(config.WhisperModel, config.Home) ?? $"MISSING (put ggml-*.bin in {Path.Combine(config.Home, "models")})"}");
+                Console.WriteLine($"video storage:   {VideoCheck()}");
+                var v = db.VideoStats();
+                Console.WriteLine($"videos:          {v.Segments} ({v.Bytes / (1 << 20)} MB, saving {v.Saved / (1 << 20)} MB)");
+                if (v.Segments > 0)
+                {
+                    var (seen, bad) = MfCodec.CheckVideos(db);
+                    Console.WriteLine(bad == 0
+                        ? $"videos play:     ok ({seen} checked)"
+                        : $"videos play:     {bad} of {seen} checked DO NOT OPEN on this PC (a missing video codec?)");
+                }
+                int stuck = db.StuckRewrites();
+                if (stuck > 0) Console.WriteLine($"videos to redo:  {stuck} still hold deleted frames (rewritten in the background; turned back into pictures if that keeps failing)");
+                var picked = SpeechModels.ById(config.TranscriptionModel);
+                var ready = picked.Files.Count == 0 || SpeechModels.IsDownloaded(picked, config.Home);
+                Console.WriteLine($"transcription:   {picked.Name}{(ready ? "" : " (not downloaded: pick it in Settings → Audio → Transcription)")}");
                 return 0;
+            }
+
+            case "video-check":
+            {
+                Console.WriteLine($"video storage: {VideoCheck()}");
+                // Once as stored plainly, once with Encrypt Recordings on.
+                return VideoSelfTest.Run(Console.Out) && VideoSelfTest.Run(Console.Out, encrypted: true) ? 0 : 1;
             }
 
             default:
                 Console.WriteLine(Usage);
                 return 2;
         }
+    }
+
+    /// Which codec Compress Older Recordings would use: encodes and reads back a short test clip.
+    static string VideoCheck()
+    {
+        var codec = new MfCodec();
+        return codec.Usable switch
+        {
+            "h264" => "H.264",
+            _ => $"not available ({codec.ProbeError})",
+        };
     }
 
     /// The logo from the .ico built into the exe, at the tray's size (16 px, or more on scaled screens).

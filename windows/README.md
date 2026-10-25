@@ -25,6 +25,9 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   10 minutes, drag or click the bar, **space** plays the audio at that moment (the picture
   follows along), **+ / −** zoom, **N** jumps to now, **/** or **Ctrl+F** searches,
   **?** lists every key, **Esc** closes.
+- **Star moments**: **Ctrl+Alt+S** from anywhere (or **Star This Moment** in the tray menu) stars
+  what is on screen now; on the timeline **S** or the ☆ button stars the shown moment (again to
+  unstar). The **Starred** button next to search lists them. Deleting recordings deletes their stars.
 - **O** (or the button at the bottom right of the screenshot) goes back to that moment: it
   reopens the browser tab in the same browser (Chrome, Edge, Arc, Brave, Firefox, Vivaldi, Opera),
   or brings the app's window with that title to the front, starting the app if it is closed.
@@ -41,12 +44,16 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   expect first, then the frame it is on and the time left, with Cancel.
   Right-click the screenshot or use the share button at the top for the same, plus **Copy All Text**.
   Clips use only the screenshots already saved and the app filter, and leave out blocked apps and
-  sites; see [Copy and export](../README.md#copy-and-export).
+  sites; see [Copy, export and delete](../README.md#copy-export-and-delete).
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
+- **Journal…** shows one page per day: top apps, sites and windows worked out on this PC, plus an
+  AI recap when you ask for one (see [Journal](../README.md#journal)).
+  **Settings → Write Each Day's Recap Automatically** is off by default, since it spends tokens;
+  when on, it sends yesterday's history to the AI provider it was turned on for, once a day.
 - **Ask AI…** answers questions about your history with your own key, and **Meetings…** lists your
   calls with their transcripts (see [Ask AI](../README.md#ask-ai) and [Meetings](../README.md#meetings)).
-  When a call starts, a popup above the tray asks whether to take notes (**Settings → Ask Before Taking
+  Within seconds of joining a call, a popup above the tray asks whether to take notes (**Settings → Ask Before Taking
   Meeting Notes**, on by default). **Settings → Summarize Meetings with AI** (off by default) sends the
   transcript of each call you take notes for to your AI provider when it ends, for a summary and
   action items.
@@ -68,16 +75,51 @@ on older recordings and on how time is counted). Click an app, site
   or Until I Delete Them (default). Older recordings are deleted at launch and every hour.
 - **Settings → Delete Recordings**: last 15 minutes, last hour, today, all screen,
   all audio, or everything (asks first).
+- **Settings → Compress Older Recordings** keeps screenshots older than an hour as H.264 video
+  (not HEVC, which needs an optional codec to play on many PCs), for about 5 to 10 times less disk space. Off by default,
+  because it is new; it reads "(not available on this PC)" when Windows has no working video
+  encoder (some N editions without the Media Feature Pack). Turning it off stops making videos;
+  ones already made keep playing. Details in the
+  [main README](../README.md#compress-older-recordings).
+- **Settings → Transcription Model**: Whisper (Automatic, the default), Whisper Base, Small or
+  Large v3 Turbo, or NVIDIA Parakeet v3, which needs no other setup: pick it and it downloads
+  (670 MB). **Re-transcribe Recent Audio** runs older clips through the new model; the new text
+  replaces the old for good. Parakeet stays loaded (about 1 GB) while audio recording is on. See
+  [Choosing a transcription model](../README.md#choosing-a-transcription-model).
+- **Settings → Security → Phone Access** (off by default): **Pair a Phone…** shows a QR code; scan it
+  with the phone's camera and search, ask AI and see promises from the phone on the same Wi-Fi.
+  Listens on port 3032 of the PC's private network address only (Windows may ask to allow
+  OpenRewind on private networks), turns off after 1, 4 (default) or 12 hours unused, and lists
+  paired phones with **Revoke**. See [docs/phone-access.md](../docs/phone-access.md).
+- **Settings → Privacy → Hide passwords, API keys and card numbers** (on by default) blurs them in
+  screenshots and saves `[redacted]` in their place.
+- **Settings → AI → Promises** (off by default) finds what you promised in meetings and chats with
+  your AI key; **You Promised…** in the tray menu lists them. **Shift+O** on the timeline reopens the
+  apps and browser tabs that were open then, after asking which. **Ctrl+Shift+C** copies all the text
+  of the shown moment.
 - **Settings → Local Search Server** turns on the API and browser search page at
   http://127.0.0.1:3031. Off by default. Only this PC can connect. The terminal commands
-  `record` and `serve` always start it.
-- **Settings → Allow AI Apps to Read My History (MCP)** lets Claude Desktop, Claude Code, Cursor
-  and other MCP apps search your history with the Ask AI lookups. Off by default. Blocked apps and
-  sites are left out of screen text (a blocked app shows as "(blocked app)" in the activity
+  `record` and `serve` always start it. Blocked apps and sites are left out of it, as in Ask AI
+  (see [API](../README.md#api)).
+- **Settings → Search by Meaning** (off by default) indexes your recordings in the background so
+  the timeline's search box gets a **Keyword | Meaning** switch. Turning it on downloads a model once
+  (about 90 MB, all-MiniLM-L6-v2 from Hugging Face, checked against a fixed SHA-256) into
+  `%USERPROFILE%\.openrewind\models`; it runs on your PC with ONNX Runtime and nothing you record
+  is uploaded. The line under the switch shows the download and indexing progress, with **Try
+  Again** if the download fails. See [Search by Meaning](../README.md#search-by-meaning).
+- **Settings → Allow AI Apps to Read My History (MCP)** lets Claude Desktop, Claude Code, ChatGPT,
+  Cursor and other MCP apps search your history with the Ask AI lookups. Off by default. Blocked
+  apps and sites are left out of screen text (a blocked app shows as "(blocked app)" in the activity
   summary); audio transcripts are not filtered by app.
-  **Settings → Connect AI Apps…** shows what to paste into each app, with the path of your
-  `OpenRewind.exe` filled in and a Copy button. The app starts `OpenRewind.exe mcp` itself, with no
-  tray icon, and reads the database read-only, so OpenRewind does not have to be running. See
+  **Settings → Connect AI Apps…** has one button per app (**Add to Claude**, **Add to Claude Code**,
+  **Add to ChatGPT**, **Add to Cursor**) that adds OpenRewind to its setup with the path of your
+  `OpenRewind.exe`, and **Remove** to take it out again. It finds the Microsoft Store version of
+  Claude Desktop too. **Restart** asks first, closes the app's window, and only ends it if it is
+  still open after 5 seconds; for ChatGPT it restarts only the ChatGPT desktop app, never Codex in
+  a terminal or an editor. Files that aren't saved as UTF-8 (Notepad's old "ANSI") are left alone.
+  Other apps get the lines to paste, with a Copy button. The app starts
+  `OpenRewind.exe mcp` itself, with no tray icon, and reads the database read-only, so OpenRewind
+  does not have to be running. See
   [Use with Claude and other AI apps (MCP)](../README.md#use-with-claude-and-other-ai-apps-mcp).
 - **Settings → Launch at Login** starts it when you sign in.
 - **Updates**: a newer release shows a banner at the top of the timeline (✕ hides it until the
@@ -94,6 +136,28 @@ on older recordings and on how time is counted). Click an app, site
   title changes, and a window whose new address can't be read is hidden too (Add sites… lists the
   sites and pages you visited lately).
   `OPENREWIND_EXCLUDE` adds more app names.
+- **Settings → Encryption & Lock → Encrypt Recordings** (off by default) encrypts screenshots,
+  audio, compressed videos and the database (with the Journal, Meetings and the Search by Meaning
+  index) on disk. A video being shown is decrypted to a temp file only you can read while it is in
+  use; it is deleted after 30 seconds unused, when the timeline closes, the app locks or quits, and
+  after each AI-app request.
+  Exports (clips, Save Screenshot, Save as Markdown) are plain files you choose to make. The key is
+  kept for your Windows account (DPAPI), so recording needs no password. It protects against someone copying the disk, a backup or the folder, and
+  against other Windows accounts; not against programs running as you. Existing recordings are
+  converted in the background (recording waits while the database itself is rewritten). Backups
+  and copies made before you turned it on keep the plain files. **Export Recovery Key…** saves the
+  key; without it, encrypted recordings can't be opened after a Windows account reset or on another
+  PC. AI apps (MCP) keep working: `OpenRewind.exe mcp` reads the key the same way.
+- **Settings → Encryption & Lock → Require Windows Hello to Open Timeline** (off by default) asks
+  for your face, fingerprint or PIN before the timeline, search, Ask AI, Journal, Meetings, Insights,
+  moment links, deleting recordings, and turning AI apps on or Connect AI Apps…. AI apps (MCP) get
+  your history only while OpenRewind is running and unlocked. It locks again when the PC locks or sleeps, or after **Lock Again After**
+  (15 minutes by default) with none of those windows in use, and closes them. Without Windows Hello
+  your Windows password works instead. It does not stop programs running as you (they could edit
+  `settings.json` or run `OpenRewind.exe serve`).
+  See [Encryption and App Lock](../README.md#encryption-and-app-lock).
+- The SQLCipher in this app is the community build in `SQLitePCLRaw.bundle_e_sqlcipher` 2.1.10
+  (SQLCipher 4.5.2, older than the Mac's 4.15.0; same file format). Licenses: `THIRD_PARTY_NOTICES.txt`.
 - **Settings → Show Tutorial** walks through the timeline again; **Run Setup Again…** reopens setup.
 - Log: `%USERPROFILE%\.openrewind\openrewind.log`.
 
@@ -105,8 +169,10 @@ on older recordings and on how time is counted). Click an app, site
 | Text | Accessibility tree, then Apple Vision OCR | UI Automation tree, then Windows OCR (`Windows.Media.Ocr`) |
 | Microphone | AVAudioEngine | WASAPI |
 | System audio | ScreenCaptureKit | WASAPI loopback (no permission needed) |
-| Speech to text | whisper.cpp `whisper-cli` | whisper.cpp `whisper-cli.exe` |
+| Speech to text | whisper.cpp `whisper-cli`, or Parakeet v3 on ONNX Runtime | whisper.cpp `whisper-cli.exe`, or Parakeet v3 on ONNX Runtime |
+| Search by Meaning | macOS sentence embedding (built in) | all-MiniLM-L6-v2 with ONNX Runtime (downloaded once) |
 | Database, API, search page | SQLite + FTS5, port 3031 | the same |
+| Compress Older Recordings | AVAssetWriter / AVAssetImageGenerator | Media Foundation sink writer / source reader |
 | App | Menu bar, ⌥⌘T | Tray, Ctrl+Alt+T |
 
 Windows OCR uses the languages installed for your Windows display language. If
@@ -118,13 +184,16 @@ Microphone → Let desktop apps access your microphone**.
 
 ## Whisper
 
-Speech is turned into text by [whisper.cpp](https://github.com/ggml-org/whisper.cpp),
-on your PC. OpenRewind records audio without it; the clips are transcribed once it is set up:
+The easiest way to get transcripts: **Settings → Transcription Model → NVIDIA Parakeet v3**. It
+downloads by itself and needs nothing else (25 European languages). For Whisper (99 languages),
+speech is turned into text by [whisper.cpp](https://github.com/ggml-org/whisper.cpp), on your PC.
+OpenRewind records audio without it; the clips are transcribed once it is set up:
 
 1. From the [whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases), download
    `whisper-bin-x64.zip` and unzip it into `%USERPROFILE%\.openrewind\whisper`
    (so that `whisper-cli.exe` is in that folder or in `whisper\Release`).
-2. Download a model, for example
+2. Pick a Whisper size in **Settings → Transcription Model** to download it, or download a model
+   yourself, for example
    [`ggml-large-v3-turbo-q5_0.bin`](https://huggingface.co/ggerganov/whisper.cpp/tree/main)
    (good, ~550 MB) or `ggml-base.en.bin` (fast, English only, ~150 MB), into
    `%USERPROFILE%\.openrewind\models`.
@@ -138,11 +207,15 @@ on your PC. OpenRewind records audio without it; the clips are transcribed once 
 
 ```powershell
 .\OpenRewind.exe doctor
+.\OpenRewind.exe video-check     # can this PC make the videos of Compress Older Recordings?
 .\OpenRewind.exe record          # record + API, no tray icon
 .\OpenRewind.exe delete older:week
 .\OpenRewind.exe mcp             # MCP server for AI apps over stdin/stdout (what they start)
 .\OpenRewind.exe --help
 ```
+
+`record`, `once` and `serve` use the block list from Settings, and see changes you make there while
+they run.
 
 ## Build it
 

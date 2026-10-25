@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import SQLite3
+import SQLCipher
 import SwiftUI
 
 enum InsightsRange: String { case day, week }
@@ -406,6 +406,10 @@ final class InsightsWindow: NSObject, NSWindowDelegate {
         m.reload()
         w.makeKeyAndOrderFront(nil)
     }
+
+    var isOpen: Bool { window?.isVisible == true }
+
+    func close() { window?.close() }
 
     func windowWillClose(_ note: Notification) {
         window = nil

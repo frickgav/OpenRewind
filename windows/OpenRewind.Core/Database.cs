@@ -4,8 +4,15 @@ namespace OpenRewind;
 
 /// BrowserUrl is the address of the browser tab in this frame, or "". Blocked: a blocked window or
 /// site was in front (the frame keeps only the app name; Insights leaves it out).
+/// Display names the screen it was taken on. A frame's picture is either the still file at SnapshotPath,
+/// or (after Compress Older Recordings) frame VideoFrame of the video at VideoPath, VideoTime seconds in.
+/// Read it with the app's FrameImages, never from the paths directly.
 public record Frame(long Id, string Timestamp, string AppName, string WindowName, bool Focused,
-                    string SnapshotPath, string Text, string TextSource, long Hash, string BrowserUrl = "", bool Blocked = false);
+                    string SnapshotPath, string Text, string TextSource, long Hash, string BrowserUrl = "", bool Blocked = false,
+                    string Display = "", string VideoPath = "", int VideoFrame = 0, double VideoTime = 0)
+{
+    public FrameSource Source => new(SnapshotPath, VideoPath, VideoFrame, VideoTime);
+}
 
 public record AudioChunk(long Id, string FilePath, string Timestamp, string Device, bool IsInput, string Status);
 
@@ -23,33 +30,101 @@ public class SearchQuery
     public string? EndTime;
     public int Limit = 20;
     public int Offset = 0;
+    /// The local server's scan (Api.VisibleCount, Api.EachVisibleFrame): leave out frames marked blocked and
+    /// these app names (lower case) in SQL, so hidden frames are mostly never read.
+    public bool SkipBlocked;
+    public IReadOnlyList<string> SkipApps = Array.Empty<string>();
+    /// Only frames older than this one (by time, then id): the next page of a scan.
+    public (string Timestamp, long Id)? Before;
+
+    public SearchQuery Copy() => (SearchQuery)MemberwiseClone();
 }
 
 /// Thin SQLite wrapper with the exact schema the Mac app uses:
 /// `frames` + `frames_fts`, `audio_chunks` + `audio_transcriptions` + `audio_fts`.
 /// One connection, one lock: the app is small and writes are rare.
+/// The file is plain SQLite, or SQLCipher-encrypted with the data key (see Vault.cs).
 public sealed partial class Database : IDisposable
 {
-    readonly SqliteConnection conn;
+    SqliteConnection conn;
     readonly object gate = new();
+    readonly string path;
+    /// Take passwords, keys and card numbers out of audio transcripts before they are saved (Settings → Privacy).
+    public static bool RedactSecrets { get; set; } = true;
+    /// The frame columns to read. A read-only open (the MCP server) may see a database the recording app
+    /// has not migrated yet; each missing column then reads as its default (a still, not blocked).
+    readonly string cols = FullCols;
+    /// The blocked mark, or 0 when that column is missing (see `cols`).
+    readonly string blockedCol = "f.blocked";
 
-    public Database(string path)
+    /// `key` opens an encrypted database; `createEncrypted` makes a new one encrypted with it.
+    public Database(string path, byte[]? key = null, bool createEncrypted = false)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-        conn = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadWriteCreate, Pooling = false }.ToString());
-        conn.Open();
+        this.path = Path.GetFullPath(path);
+        Directory.CreateDirectory(Path.GetDirectoryName(this.path)!);
+        RecoverSwap(this.path);
+        var encrypted = IsEncryptedFile(this.path) || (createEncrypted && key != null && !HasData(this.path));
+        conn = Connect(this.path, encrypted ? key ?? throw new DatabaseLockedException() : null);
         Exec("PRAGMA journal_mode=WAL;");
         Exec("PRAGMA busy_timeout=5000;");
         Migrate();
-        FinishHomeMove(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        SecureDeleteSearchText();
+        FinishHomeMove(Path.GetDirectoryName(this.path)!);
+    }
+
+    /// The search indexes keep a deleted row's words until their segments are merged. With FTS5's secure-delete
+    /// option (stored in the index, so this only writes it again) a delete takes them out of the index at once.
+    /// It needs SQLite 3.42, and the SQLCipher this app ships is 3.39: without it FlushDeleted merges the index
+    /// instead (PurgeDeletedSearchText). Mac: the same, where SQLite is new enough.
+    void SecureDeleteSearchText()
+    {
+        secureSearchDelete = true;
+        foreach (var t in SearchIndexes)
+        {
+            try { Exec($"INSERT INTO {t}({t}, rank) VALUES('secure-delete', 1);"); }
+            catch (SqliteException) { secureSearchDelete = false; }
+        }
+    }
+
+    static readonly string[] SearchIndexes = { "frames_fts", "audio_fts" };
+    /// Set when every search index takes deleted words out at once (SecureDeleteSearchText).
+    bool secureSearchDelete;
+
+    /// Without secure-delete, merges all of each search index into one segment, which leaves out the words of
+    /// deleted rows (each delete only adds a "deleted" mark next to them until then). It goes a little at a time
+    /// and lets go of the database in between, so recording and the timeline keep working; on a big index it
+    /// takes a while, so it runs off the UI thread.
+    void PurgeDeletedSearchText()
+    {
+        foreach (var t in SearchIndexes)
+        {
+            try
+            {
+                while (true)
+                {
+                    lock (gate)
+                    {
+                        // FTS5: a merge step that did any work changes total_changes() by 2 or more.
+                        var before = ScalarLong("SELECT total_changes()");
+                        Exec($"INSERT INTO {t}({t}, rank) VALUES('merge', -1000);");
+                        if (ScalarLong("SELECT total_changes()") - before < 2) break;
+                    }
+                }
+            }
+            catch (SqliteException e) { Log.Write($"{t}: could not merge the search index after a delete: {e.Message}"); }
+        }
     }
 
     /// Read-only: no schema changes and no home move, which are the recording app's job (see OpenReadOnly).
-    Database(string path, bool readOnly)
+    /// `key` is the master data key when the database is encrypted.
+    Database(string path, bool readOnly, byte[]? key)
     {
-        conn = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
-        conn.Open();
+        this.path = Path.GetFullPath(path);
+        conn = Connect(this.path, IsEncryptedFile(this.path) ? key ?? throw new DatabaseLockedException() : null, SqliteOpenMode.ReadOnly);
         Exec("PRAGMA busy_timeout=5000;");
+        var have = Strings("SELECT name FROM pragma_table_info('frames')").ToHashSet();
+        cols = FrameCols(have);
+        if (!have.Contains("blocked")) blockedCol = "0";
     }
 
     /// After the data folder moved from ~/.openscreen (see Config), point the stored screenshot
@@ -64,7 +139,7 @@ public sealed partial class Database : IDisposable
         lock (gate)
         {
             using var tx = conn.BeginTransaction();
-            foreach (var (table, col) in new[] { ("frames", "snapshot_path"), ("audio_chunks", "file_path") })
+            foreach (var (table, col) in new[] { ("frames", "snapshot_path"), ("frames", "video_path"), ("video_segments", "path"), ("audio_chunks", "file_path") })
             {
                 using var cmd = Cmd($"UPDATE {table} SET {col} = ? || substr({col}, ?) WHERE substr({col}, 1, ?) = ?",
                                     fresh, old.EnumerateRunes().Count() + 1, old.EnumerateRunes().Count(), old);
@@ -119,6 +194,7 @@ public sealed partial class Database : IDisposable
             failure_reason TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_audio_chunks_status ON audio_chunks(status, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_audio_chunks_ts ON audio_chunks(timestamp);
         CREATE TABLE IF NOT EXISTS audio_transcriptions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             audio_chunk_id INTEGER NOT NULL REFERENCES audio_chunks(id),
@@ -143,9 +219,10 @@ public sealed partial class Database : IDisposable
             VALUES ('delete', old.id, old.transcription, old.device);
         END;
         """);
-        // Added later: older databases do not have this column yet.
+        // Added later: older databases do not have these columns yet. The Mac app adds the same ones.
         if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'browser_url'") == 0)
             Exec("ALTER TABLE frames ADD COLUMN browser_url TEXT NOT NULL DEFAULT ''");
+        MigrateJournal();
         // Time order. Replaced by idx_frames_insights, which starts with the time too (see BuildSlowIndexesInBackground);
         // only a database that does not have that one yet needs this.
         if (ScalarLong("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_frames_insights'") == 0)
@@ -153,7 +230,13 @@ public sealed partial class Database : IDisposable
         // Frames saved while a blocked window or site was in front. Older frames say 0. Mac: the same column.
         if (ScalarLong("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'blocked'") == 0)
             Exec("ALTER TABLE frames ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0");
+        MigrateVideo();
+        MigrateMeaning();
         MigrateMeetings();
+        MigrateStars();
+        MigrateWorkspaces();
+        MigratePromises();
+        MigratePhone();
     }
 
     /// Indexes that take a while on a big database (the whole frames table is read, screen text and
@@ -161,12 +244,13 @@ public sealed partial class Database : IDisposable
     /// off the UI thread, so the app starts at once and reads keep working meanwhile. A failure (full
     /// disk, another process writing) is logged and tried again next launch; Insights still works,
     /// only slower. The Mac app does the same.
-    public static Task BuildSlowIndexesInBackground(string path) => Task.Run(() =>
+    /// With Encrypt Recordings on, the connection opens with the data key (RecordingFile.Key unless `key` is given).
+    public static Task BuildSlowIndexesInBackground(string path, byte[]? key = null) => Task.Run(() =>
     {
         try
         {
-            using var c = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadWrite, Pooling = false }.ToString());
-            c.Open();
+            if (!File.Exists(path)) throw new FileNotFoundException("no database", path);
+            using var c = Open(path, IsEncryptedFile(path) ? key ?? RecordingFile.Key ?? throw new DatabaseLockedException() : null, SqliteOpenMode.ReadWrite);
             void Run(string sql) { using var cmd = c.CreateCommand(); cmd.CommandText = sql; cmd.ExecuteNonQuery(); }
             Run("PRAGMA busy_timeout=30000;");
             using (var has = c.CreateCommand())
@@ -192,17 +276,26 @@ public sealed partial class Database : IDisposable
     {
         lock (gate)
         {
-            using var cmd = Cmd("INSERT INTO frames (timestamp, app_name, window_name, focused, snapshot_path, text, text_source, hash, browser_url, blocked) VALUES (?,?,?,?,?,?,?,?,?,?); SELECT last_insert_rowid();",
-                f.Timestamp, f.AppName, f.WindowName, f.Focused ? 1 : 0, f.SnapshotPath, f.Text, f.TextSource, f.Hash, f.BrowserUrl, f.Blocked ? 1 : 0);
+            using var cmd = Cmd("INSERT INTO frames (timestamp, app_name, window_name, focused, snapshot_path, text, text_source, hash, browser_url, blocked, display) VALUES (?,?,?,?,?,?,?,?,?,?,?); SELECT last_insert_rowid();",
+                f.Timestamp, f.AppName, f.WindowName, f.Focused ? 1 : 0, f.SnapshotPath, f.Text, f.TextSource, f.Hash, f.BrowserUrl, f.Blocked ? 1 : 0, f.Display);
             return (long)cmd.ExecuteScalar()!;
         }
     }
 
-    const string Cols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url";
+    const string FullCols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, f.display, f.video_path, f.video_frame, f.video_time, f.blocked";
 
-    public Frame? FrameById(long id) => Frames($"SELECT {Cols} FROM frames f WHERE f.id = ?", id).FirstOrDefault();
+    /// FullCols with each column a read-only open does not find replaced by its default.
+    static string FrameCols(HashSet<string> have)
+    {
+        string C(string name, string missing) => have.Contains(name) ? "f." + name : missing;
+        return "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, "
+               + $"{C("display", "''")}, {C("video_path", "''")}, {C("video_frame", "0")}, {C("video_time", "0.0")}, {C("blocked", "0")}";
+    }
 
-    public (List<Frame> Rows, int Total) Search(SearchQuery s)
+    public Frame? FrameById(long id) => Frames($"SELECT {cols} FROM frames f WHERE f.id = ?", id).FirstOrDefault();
+
+    /// FROM and WHERE of a search, with their arguments in order.
+    (string From, string Where, List<object> Args) SearchSql(SearchQuery s)
     {
         var where = new List<string>();
         var args = new List<object>();
@@ -216,11 +309,52 @@ public sealed partial class Database : IDisposable
         if (!string.IsNullOrEmpty(s.WindowName)) { where.Add("f.window_name LIKE ?"); args.Add($"%{s.WindowName}%"); }
         if (s.StartTime != null) { where.Add("f.timestamp >= ?"); args.Add(s.StartTime); }
         if (s.EndTime != null) { where.Add("f.timestamp <= ?"); args.Add(s.EndTime); }
-        var whereSql = where.Count == 0 ? "" : "WHERE " + string.Join(" AND ", where);
+        if (s.SkipBlocked) where.Add($"{blockedCol} = 0");
+        if (s.SkipApps.Count > 0)
+        {
+            where.Add($"lower(f.app_name) NOT IN ({string.Join(", ", s.SkipApps.Select(_ => "?"))})");
+            args.AddRange(s.SkipApps);
+        }
+        if (s.Before is { } b) { where.Add("(f.timestamp, f.id) < (?, ?)"); args.Add(b.Timestamp); args.Add(b.Id); }
+        return (from, where.Count == 0 ? "" : "WHERE " + string.Join(" AND ", where), args);
+    }
+
+    public (List<Frame> Rows, int Total) Search(SearchQuery s)
+    {
+        var (from, whereSql, args) = SearchSql(s);
         var total = (int)ScalarLong($"SELECT COUNT(*) FROM {from} {whereSql}", args.ToArray());
-        var rows = Frames($"SELECT {Cols} FROM {from} {whereSql} ORDER BY f.timestamp DESC LIMIT ? OFFSET ?",
+        var rows = Frames($"SELECT {cols} FROM {from} {whereSql} ORDER BY f.timestamp DESC LIMIT ? OFFSET ?",
                           args.Concat(new object[] { s.Limit, s.Offset }).ToArray());
         return (rows, total);
+    }
+
+    /// How many frames match, by app and (when asked) by window title and address: all the block list
+    /// looks at in a stored frame besides the blocked mark, so the server can count only what it shows.
+    /// Each group is a frame with just those fields set.
+    public List<(Frame Frame, int Count)> SearchGroups(SearchQuery s, bool byTitle, bool byUrl)
+    {
+        var (from, whereSql, args) = SearchSql(s);
+        return Rows($"SELECT f.app_name, {(byTitle ? "f.window_name" : "''")}, {(byUrl ? "f.browser_url" : "''")}, COUNT(*) FROM {from} {whereSql} GROUP BY 1, 2, 3",
+                    r => (new Frame(0, "", r.GetString(0), r.GetString(1), true, "", "", "", 0, r.GetString(2)), (int)r.GetInt64(3)), args.ToArray());
+    }
+
+    /// Up to `s.Limit` matches older than `s.Before`, newest first, without their text or picture: id, time,
+    /// app, window, address and the blocked mark (what the block list needs). `s.Offset` is not used.
+    public List<Frame> SearchKeys(SearchQuery s)
+    {
+        var (from, whereSql, args) = SearchSql(s);
+        args.Add(s.Limit);
+        return Rows($"SELECT f.id, f.timestamp, f.app_name, f.window_name, f.browser_url, {blockedCol} FROM {from} {whereSql} ORDER BY f.timestamp DESC, f.id DESC LIMIT ?",
+                    r => new Frame(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), true, "", "", "", 0, r.GetString(4), Blocked: r.GetInt64(5) != 0),
+                    args.ToArray());
+    }
+
+    /// Whole frames by id; ids that are gone are left out.
+    public Dictionary<long, Frame> FramesByIds(IReadOnlyCollection<long> ids)
+    {
+        if (ids.Count == 0) return new();
+        return Frames($"SELECT {cols} FROM frames f WHERE f.id IN ({string.Join(", ", ids.Select(_ => "?"))})", ids.Cast<object>().ToArray())
+            .GroupBy(f => f.Id).ToDictionary(g => g.Key, g => g.First());
     }
 
     public List<(string App, int Frames)> Apps(string? since)
@@ -255,7 +389,7 @@ public sealed partial class Database : IDisposable
     public (int Count, string? Last) Stats()
     {
         var n = (int)ScalarLong("SELECT COUNT(*) FROM frames");
-        var last = Frames($"SELECT {Cols} FROM frames f ORDER BY id DESC LIMIT 1").FirstOrDefault()?.Timestamp;
+        var last = Frames($"SELECT {cols} FROM frames f ORDER BY id DESC LIMIT 1").FirstOrDefault()?.Timestamp;
         return (n, last);
     }
 
@@ -279,9 +413,11 @@ public sealed partial class Database : IDisposable
         }
     }
 
-    /// Oldest pending chunk that has not failed too often.
+    /// Oldest pending chunk that has not failed too often. Clips from the last 15 minutes go first,
+    /// so a long Re-transcribe never holds up what was just recorded.
     public AudioChunk? NextPendingChunk(int maxAttempts = 3) =>
-        Chunks("WHERE status = 'pending' AND attempts < ? ORDER BY timestamp ASC LIMIT 1", maxAttempts).FirstOrDefault();
+        Chunks("WHERE status = 'pending' AND attempts < ? ORDER BY timestamp >= ? DESC, timestamp ASC LIMIT 1",
+               maxAttempts, Time.Iso(DateTime.UtcNow.AddMinutes(-15))).FirstOrDefault();
 
     public AudioChunk? ChunkById(long id) => Chunks("WHERE id = ?", id).FirstOrDefault();
 
@@ -301,17 +437,34 @@ public sealed partial class Database : IDisposable
         cmd.ExecuteNonQuery();
     }
 
-    /// Insert all segments of one chunk and mark it transcribed, in one transaction.
-    public void SaveTranscripts(AudioChunk chunk, IReadOnlyList<Segment> segments)
+    /// Insert all segments of one chunk and mark it transcribed, in one transaction. Lines an earlier
+    /// run left for the same chunk (Re-transcribe) are replaced. `engine` names the model that wrote them.
+    /// Returns false (and saves nothing) when the clip was deleted while it was being transcribed.
+    public bool SaveTranscripts(AudioChunk chunk, IReadOnlyList<Segment> segments, string engine = "whisper.cpp")
     {
         lock (gate)
         {
             using var tx = conn.BeginTransaction();
+            using (var exists = Cmd("SELECT COUNT(*) FROM audio_chunks WHERE id = ?", chunk.Id))
+            {
+                exists.Transaction = tx;
+                if (System.Convert.ToInt64(exists.ExecuteScalar()) == 0)
+                {
+                    // Deleted (Delete Recordings, or kept-for-days cleanup) after it was picked up: do not bring its words back.
+                    tx.Rollback();
+                    return false;
+                }
+            }
+            using (var old = Cmd("DELETE FROM audio_transcriptions WHERE audio_chunk_id = ?", chunk.Id))
+            {
+                old.Transaction = tx;
+                old.ExecuteNonQuery();
+            }
             var start = Time.ParseIso(chunk.Timestamp) ?? DateTime.UtcNow;
             foreach (var s in segments)
             {
-                using var cmd = Cmd("INSERT INTO audio_transcriptions (audio_chunk_id, timestamp, start_time, end_time, transcription, device, is_input) VALUES (?,?,?,?,?,?,?)",
-                    chunk.Id, Time.Iso(start.AddSeconds(s.Start)), s.Start, s.End, s.Text, chunk.Device, chunk.IsInput ? 1 : 0);
+                using var cmd = Cmd("INSERT INTO audio_transcriptions (audio_chunk_id, timestamp, start_time, end_time, transcription, device, is_input, engine) VALUES (?,?,?,?,?,?,?,?)",
+                    chunk.Id, Time.Iso(start.AddSeconds(s.Start)), s.Start, s.End, RedactSecrets ? Secrets.Redact(s.Text) : s.Text, chunk.Device, chunk.IsInput ? 1 : 0, engine);
                 cmd.Transaction = tx;
                 cmd.ExecuteNonQuery();
             }
@@ -322,6 +475,7 @@ public sealed partial class Database : IDisposable
                 mark.ExecuteNonQuery();
             }
             tx.Commit();
+            return true;
         }
     }
 
@@ -351,6 +505,51 @@ public sealed partial class Database : IDisposable
                 rows.Add(new Transcript(r.GetInt64(0), r.GetInt64(1), r.GetString(2), r.GetDouble(3), r.GetDouble(4),
                                         r.GetString(5), r.GetString(6), r.GetInt64(7) != 0, r.GetString(8)));
             return (rows, total);
+        }
+    }
+
+    /// Audio clips recorded since `from` that Re-transcribe would run again, and their total length in seconds
+    /// (clips are 30 s or shorter, so this counts 30 s each).
+    public (int Clips, double Seconds) RetranscribeCount(DateTime from, double clipSeconds)
+    {
+        var n = (int)ScalarLong($"SELECT COUNT(*) FROM audio_chunks WHERE timestamp >= ? AND status IN ({RedoStatuses})", Time.Iso(from));
+        return (n, n * clipSeconds);
+    }
+
+    /// Clips Re-transcribe runs again: ones with words, and ones that failed. Clips found silent stay
+    /// silent (a new model rarely finds speech where the old one found none, and a "pending" silent clip
+    /// would look like speech to Meetings and Insights until it is done).
+    const string RedoStatuses = "'transcribed', 'failed'";
+
+    /// Re-transcribe: queue the clips recorded since `from` again. Their old lines stay searchable
+    /// until the new ones replace them for good (SaveTranscripts). Meetings in that time keep the notes
+    /// they have: the new lines do not make new notes (nor send the transcript to an AI provider again).
+    /// Returns how many clips were queued.
+    public int RequeueAudio(DateTime from)
+    {
+        lock (gate)
+        {
+            using var tx = conn.BeginTransaction();
+            void InTx(string sql, params object[] args)
+            {
+                using var c = Cmd(sql, args);
+                c.Transaction = tx;
+                c.ExecuteNonQuery();
+            }
+            var since = Time.Iso(from);
+            InTx("UPDATE meetings SET redone = 1 WHERE end_time >= ?", since);
+            // Search by Meaning indexes each clip once, in id order: forget the vectors made from the old text
+            // and move its audio cursor back, so the requeued clips are indexed again once they are redone.
+            var first = $"(SELECT MIN(id) FROM audio_chunks WHERE timestamp >= ? AND status IN ({RedoStatuses}))";
+            InTx($"DELETE FROM meaning_moments WHERE kind = 'audio' AND first_id >= {first}", since);
+            InTx($"UPDATE meaning_state SET value = CAST({first} - 1 AS TEXT) WHERE key = '{ChunkCursor}' AND CAST(value AS INTEGER) >= {first}",
+                 since, since);
+            using var cmd = Cmd("UPDATE audio_chunks SET status = 'pending', attempts = 0, failure_reason = NULL " +
+                                $"WHERE timestamp >= ? AND status IN ({RedoStatuses})", Time.Iso(from));
+            cmd.Transaction = tx;
+            var n = cmd.ExecuteNonQuery();
+            tx.Commit();
+            return n;
         }
     }
 
@@ -420,7 +619,24 @@ public sealed partial class Database : IDisposable
                 var out_ = new List<Frame>();
                 while (r.Read())
                     out_.Add(new Frame(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetInt64(4) != 0,
-                                       r.GetString(5), r.GetString(6), r.GetString(7), r.GetInt64(8), r.GetString(9)));
+                                       r.GetString(5), r.GetString(6), r.GetString(7), r.GetInt64(8), r.GetString(9), Blocked: r.GetInt64(14) != 0,
+                                       Display: r.GetString(10), VideoPath: r.GetString(11), VideoFrame: (int)r.GetInt64(12), VideoTime: r.GetDouble(13)));
+                return out_;
+            }
+            catch (SqliteException e) { Log.Write($"sql error: {e.Message}"); return new(); }
+        }
+    }
+
+    List<T> Rows<T>(string sql, Func<SqliteDataReader, T> read, params object[] args)
+    {
+        lock (gate)
+        {
+            try
+            {
+                using var cmd = Cmd(sql, args);
+                using var r = cmd.ExecuteReader();
+                var out_ = new List<T>();
+                while (r.Read()) out_.Add(read(r));
                 return out_;
             }
             catch (SqliteException e) { Log.Write($"sql error: {e.Message}"); return new(); }

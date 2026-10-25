@@ -3,7 +3,12 @@ namespace OpenRewind;
 /// Url is the browser tab's address in this frame, or "".
 /// End is set only while the timeline shows one app: when the next screenshot (of any app) was taken.
 /// Blocked: saved while a blocked window or site was in front; never copied or exported.
-public record TimelineFrame(long Id, DateTime Time, string AppName, string WindowName, string Path, string Url = "", DateTime? End = null, bool Blocked = false);
+/// The picture is the still at Path, or a frame of the video at VideoPath (see Frame); load it with FrameImages.
+public record TimelineFrame(long Id, DateTime Time, string AppName, string WindowName, string Path, string Url = "", DateTime? End = null, bool Blocked = false,
+                            string VideoPath = "", int VideoFrame = 0, double VideoTime = 0)
+{
+    public FrameSource Source => new(Path, VideoPath, VideoFrame, VideoTime);
+}
 
 public record TimelineAudio(long Id, DateTime Start, double Duration, string Device, bool IsInput, string Path)
 {
@@ -19,12 +24,13 @@ public sealed partial class Database
     {
         lock (gate)
         {
-            using var cmd = Cmd("SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url, blocked FROM frames WHERE timestamp >= ? ORDER BY timestamp ASC", Time.Iso(since));
+            using var cmd = Cmd("SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url, blocked, video_path, video_frame, video_time FROM frames WHERE timestamp >= ? ORDER BY timestamp ASC", Time.Iso(since));
             using var r = cmd.ExecuteReader();
             var out_ = new List<TimelineFrame>();
             while (r.Read())
                 if (Time.ParseIso(r.GetString(1)) is DateTime t)
-                    out_.Add(new TimelineFrame(r.GetInt64(0), t, r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5), Blocked: r.GetInt64(6) != 0));
+                    out_.Add(new TimelineFrame(r.GetInt64(0), t, r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5), Blocked: r.GetInt64(6) != 0,
+                                               VideoPath: r.GetString(7), VideoFrame: (int)r.GetInt64(8), VideoTime: r.GetDouble(9)));
             return out_;
         }
     }
@@ -38,15 +44,16 @@ public sealed partial class Database
             var out_ = new List<TimelineFrame>();
             foreach (var (sql, args) in new[]
             {
-                ("SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url, blocked FROM frames WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC", new object[] { Time.Iso(from), Time.Iso(to) }),
-                ("SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url, blocked FROM frames WHERE timestamp > ? ORDER BY timestamp ASC LIMIT 1", new object[] { Time.Iso(to) }),
+                ("SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url, blocked, video_path, video_frame, video_time FROM frames WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC", new object[] { Time.Iso(from), Time.Iso(to) }),
+                ("SELECT id, timestamp, app_name, window_name, snapshot_path, browser_url, blocked, video_path, video_frame, video_time FROM frames WHERE timestamp > ? ORDER BY timestamp ASC LIMIT 1", new object[] { Time.Iso(to) }),
             })
             {
                 using var cmd = Cmd(sql, args);
                 using var r = cmd.ExecuteReader();
                 while (r.Read())
                     if (Time.ParseIso(r.GetString(1)) is DateTime t)
-                        out_.Add(new TimelineFrame(r.GetInt64(0), t, r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5), Blocked: r.GetInt64(6) != 0));
+                        out_.Add(new TimelineFrame(r.GetInt64(0), t, r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5), Blocked: r.GetInt64(6) != 0,
+                                               VideoPath: r.GetString(7), VideoFrame: (int)r.GetInt64(8), VideoTime: r.GetDouble(9)));
             }
             return out_;
         }
@@ -64,9 +71,11 @@ public sealed partial class Database
             {
                 if (Time.ParseIso(r.GetString(1)) is not DateTime t) continue;
                 var path = r.GetString(4);
-                // 16 kHz mono 16-bit WAV: 32,000 bytes per second after the 44-byte header.
-                long size = 0;
-                try { size = new FileInfo(path).Length; } catch { }
+                // 16 kHz mono 16-bit WAV: 32,000 bytes per second after the 44-byte header. The size
+                // on disk is enough: an encrypted file is 38 bytes longer, about 1 ms of sound, and
+                // not opening each file keeps this fast on a long history.
+                long size;
+                try { size = new FileInfo(path).Length; } catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { size = 0; }
                 if (size <= 44) continue;
                 out_.Add(new TimelineAudio(r.GetInt64(0), t, (size - 44) / 32_000.0, r.GetString(2), r.GetInt64(3) != 0, path));
             }

@@ -2,9 +2,9 @@ name: Windows app
 
 on:
   push:
-    paths: ["windows/**", "Sources/openrewind/WebUI.swift", "scripts/build-windows.ps1", "scripts/launch-check-windows.ps1", "scripts/mcp-check-windows.ps1", ".github/workflows/windows.yml"]
+    paths: ["windows/**", "Sources/openrewind/WebUI.swift", "scripts/build-windows.ps1", "THIRD_PARTY_NOTICES.txt", "scripts/launch-check-windows.ps1", "scripts/mcp-check-windows.ps1", ".github/workflows/windows.yml"]
   pull_request:
-    paths: ["windows/**", "Sources/openrewind/WebUI.swift", "scripts/build-windows.ps1", "scripts/launch-check-windows.ps1", "scripts/mcp-check-windows.ps1", ".github/workflows/windows.yml"]
+    paths: ["windows/**", "Sources/openrewind/WebUI.swift", "scripts/build-windows.ps1", "THIRD_PARTY_NOTICES.txt", "scripts/launch-check-windows.ps1", "scripts/mcp-check-windows.ps1", ".github/workflows/windows.yml"]
   workflow_dispatch:
 
 permissions:
@@ -31,6 +31,17 @@ jobs:
         if: matrix.arch == 'x64'
         shell: pwsh
         run: scripts/launch-check-windows.ps1 -ExePath dist/win-x64/OpenRewind.exe
+      # Write and read back a short test video the way Compress Older Recordings does (Media Foundation).
+      - name: Video check
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          $env:OPENREWIND_HOME = Join-Path $env:RUNNER_TEMP "openrewind-video-check"
+          $out = Join-Path $env:RUNNER_TEMP "video-check.txt"
+          $p = Start-Process dist/win-x64/OpenRewind.exe -ArgumentList "video-check" -Wait -PassThru -NoNewWindow `
+            -RedirectStandardOutput $out -RedirectStandardError "$out.err"
+          Get-Content $out, "$out.err" -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "video check failed (exit $($p.ExitCode))" }
       # Start it as an AI app does (OpenRewind.exe mcp, pipes for stdin/stdout) and talk MCP to it.
       - name: MCP check
         if: matrix.arch == 'x64'

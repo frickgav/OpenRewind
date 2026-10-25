@@ -34,15 +34,94 @@ public static class KeepForInfo
 public sealed partial class Database
 {
     /// Delete frames with `from <= timestamp < to`. null = open end. Returns frames deleted.
+    /// A video left with no frames is deleted; one that still has frames outside the range is marked
+    /// for the compactor to write again without the deleted ones (see VideoCompactor.RunOnce).
+    /// The rows and the marks change in one transaction, so a crash can't leave deleted pictures in a
+    /// video nobody will rewrite; files are deleted only after it commits.
     public int DeleteFrames(DateTime? from, DateTime? to)
     {
         var (where, args) = Range("timestamp", from, to);
-        var paths = Strings($"SELECT snapshot_path FROM frames {where}", args);
-        if (paths.Count == 0) return 0;
-        ForgetMeetingWindows(from, to);
-        Run($"DELETE FROM frames {where}", args);  // FTS rows go with it (trigger frames_ad)
-        RemoveFiles(paths);
-        return paths.Count;
+        return DeleteFrames(where, args, from, to);
+    }
+
+    /// One screenshot (Delete on the timeline): its row, text, picture and Search by Meaning moment, and what
+    /// was made from its moment (the time until the next screenshot): stars, meeting titles, the day's recap.
+    public int DeleteFrame(long id)
+    {
+        var ts = Strings("SELECT timestamp FROM frames WHERE id = ?", id).FirstOrDefault();
+        if (ts == null || Time.ParseIso(ts) is not DateTime t) return 0;
+        var next = Time.ParseIso(Strings("SELECT MIN(timestamp) FROM frames WHERE timestamp > ?", ts).FirstOrDefault() ?? "");
+        var now = DateTime.UtcNow;
+        return DeleteFrames("WHERE id = ?", new object[] { id }, t, next ?? (now > t.AddSeconds(1) ? now : t.AddSeconds(1)));
+    }
+
+    /// Screenshots with `from <= timestamp < to`, in every app.
+    public int CountFrames(DateTime from, DateTime to) =>
+        (int)ScalarLong("SELECT COUNT(*) FROM frames WHERE timestamp >= ? AND timestamp < ?", Time.Iso(from), Time.Iso(to));
+
+    /// Ids of every screenshot whose text, app or window title has all of `words` (as keyword search finds
+    /// them), in every app, hidden and blocked ones included. Oldest first.
+    public List<long> FrameIdsMatching(string words)
+    {
+        if (FtsQuery(words) is not string match) return new();
+        return Rows("SELECT f.id FROM frames_fts JOIN frames f ON f.id = frames_fts.rowid WHERE frames_fts MATCH ? ORDER BY f.timestamp",
+                    r => r.GetInt64(0), match);
+    }
+
+    /// The deleted rows are gone from the file itself, not only from search: SQLite overwrites what it frees
+    /// (secure_delete, see Vault.Open), the search index drops their words (SecureDeleteSearchText, or a merge
+    /// here when this SQLite can't), and this empties the write-ahead log, which still holds the old pages until
+    /// a checkpoint. Can take a while on a big database: call it off the UI thread. Mac: the same.
+    public void FlushDeleted()
+    {
+        if (!secureSearchDelete) PurgeDeletedSearchText();
+        try { Exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch (Exception e) { Log.Write($"checkpoint after delete failed: {e.Message}"); }
+    }
+
+    /// `where` picks the frames; `from`/`to` is the time they cover, for what is kept by time.
+    int DeleteFrames(string where, object[] args, DateTime? from, DateTime? to)
+    {
+        var and = where.Length == 0 ? "WHERE" : where + " AND";
+        List<string> stills, emptied = new();
+        bool partial = false;
+        int n;
+        lock (gate)
+        {
+            // Stars of this time go with its recordings, even when no frame is left in it.
+            DeleteStarsWith(from, to);
+            DeleteWorkspacesWith(from, to);
+            DeletePromisesWith(from, to);
+            // Meeting titles taken from these frames go first (outside the transaction: their own statement).
+            if (ScalarLong($"SELECT COUNT(*) FROM frames {where}", args) > 0) ForgetMeetingWindows(from, to);
+            using var tx = conn.BeginTransaction();
+            n = (int)TxScalar(tx, $"SELECT COUNT(*) FROM frames {where}", args);
+            if (n == 0) { tx.Rollback(); return 0; }
+            stills = TxStrings(tx, $"SELECT snapshot_path FROM frames {where}", args);
+            var videos = TxStrings(tx, $"SELECT DISTINCT video_path FROM frames {and} video_path != ''", args);
+            TxRun(tx, $"DELETE FROM frames {where}", args);  // FTS rows go with it (trigger frames_ad)
+            // Search by Meaning moments of these frames, in this transaction: none can outlive its frames.
+            ForgetScreenMoments(tx, from, to);
+            foreach (var v in videos)
+            {
+                if (TxScalar(tx, "SELECT COUNT(*) FROM frames WHERE video_path = ? AND video_path != ''", v) == 0)
+                {
+                    TxRun(tx, "DELETE FROM video_segments WHERE path = ?", v);
+                    emptied.Add(v);
+                }
+                else
+                {
+                    TxRun(tx, "UPDATE video_segments SET needs_rewrite = 1 WHERE path = ?", v);
+                    partial = true;
+                }
+            }
+            tx.Commit();
+        }
+        if (emptied.Count > 0) ReleasingVideos?.Invoke(emptied);
+        RemoveFiles(stills.Concat(emptied).ToList());
+        if (partial) VideosNeedRewrite?.Invoke();
+        // A recap is made from its day's recordings, so it goes with them.
+        DeleteRecapsWith(from, to);
+        return n;
     }
 
     /// Delete audio chunks with `from <= timestamp < to`, their transcripts and WAV files, and the
@@ -50,12 +129,15 @@ public sealed partial class Database
     public int DeleteAudio(DateTime? from, DateTime? to)
     {
         DeleteMeetings(from, to);
+        DeletePromisesWith(from, to, meetingsOnly: true);
         var (where, args) = Range("timestamp", from, to);
         var paths = Strings($"SELECT file_path FROM audio_chunks {where}", args);
         if (paths.Count == 0) return 0;
+        ForgetAudioMoments(where, args);
         Run($"DELETE FROM audio_transcriptions WHERE audio_chunk_id IN (SELECT id FROM audio_chunks {where})", args);
         Run($"DELETE FROM audio_chunks {where}", args);
         RemoveFiles(paths);
+        DeleteRecapsWith(from, to);
         return paths.Count;
     }
 
@@ -79,7 +161,7 @@ public sealed partial class Database
         var dirs = new HashSet<string>();
         foreach (var p in paths.Where(p => p.Length > 0))
         {
-            try { File.Delete(p); } catch { }
+            RecordingFile.Delete(p);
             if (Path.GetDirectoryName(p) is string d) dirs.Add(d);
         }
         foreach (var d in dirs)

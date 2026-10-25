@@ -3,13 +3,15 @@ using NAudio.CoreAudioApi;
 namespace OpenRewind;
 
 /// Owns everything that records. Screen and audio can each be turned on and off on their own.
-/// The Whisper worker runs for the whole life of the process; the API server only while it is switched on.
+/// The transcriber runs for the whole life of the process; the API server only while it is switched on.
 sealed class Engine
 {
     public readonly Config Config;
     public readonly Database Db;
     public readonly Recorder Recorder;
     public Transcriber? Transcriber { get; private set; }
+    /// Search by Meaning; it indexes only while MeaningController has turned it on.
+    public readonly MeaningService Meaning;
     Server? server;
     CancellationTokenSource? screenCts, txCts;
     AudioStream? mic, system;
@@ -26,9 +28,17 @@ sealed class Engine
         Config = config;
         Db = db;
         Recorder = new Recorder(config, db);
+        // Close a video before a delete removes it (Windows cannot delete an open file).
+        db.ReleasingVideos += paths => { foreach (var v in paths) FrameImages.Release(v); };
+        Meaning = new MeaningService(db);
     }
 
     public bool ServerOn => server != null;
+    /// While true the local server answers searches with "locked" (App Lock, see AppLock).
+    public Func<bool>? ServerLocked;
+    /// What the local server leaves out; null means Blocklist.Current, which the tray app keeps up to date.
+    /// `record` and `serve` in a terminal have no tray app, so they read settings.json for each request (Program.cs).
+    public Func<Blocklist>? ServerBlocklist;
 
     public void StartServer()
     {
@@ -40,7 +50,7 @@ sealed class Engine
             ["accessibility_permission"] = Config.UseAccessibility,
             ["ocr_available"] = Ocr.Available,
             ["platform"] = "windows",
-        });
+        }, f => FrameImages.Jpeg(f.Source), () => Meaning, ServerBlocklist) { Locked = () => ServerLocked?.Invoke() == true };
         var s = new Server(Config.Port, api.Handle);
         s.Start();
         server = s;
@@ -54,13 +64,42 @@ sealed class Engine
         Log.Write("local search server off");
     }
 
+    /// Why there is no transcriber ("whisper-cli not found", …), for the menu.
+    public string? TranscriberProblem { get; private set; }
+    Task? txTask;
+
     public void StartTranscriber()
     {
-        if (txCts != null || Transcriber.Create(Config, Db) is not Transcriber tx) return;
-        Transcriber = tx;
-        txCts = new CancellationTokenSource();
-        var ct = txCts.Token;
-        Task.Run(() => tx.Run(ct));
+        lock (gate)
+        {
+            if (txCts != null) return;
+            var tx = Transcriber.Create(Config, Db, out var problem);
+            TranscriberProblem = problem;
+            if (tx == null) return;
+            Transcriber = tx;
+            txCts = new CancellationTokenSource();
+            var ct = txCts.Token;
+            // A model being swapped out finishes the clip it is on first, so two never run at once.
+            var before = txTask;
+            txTask = Task.Run(async () =>
+            {
+                if (before != null) try { await before.ConfigureAwait(false); } catch { }
+                await tx.Run(ct).ConfigureAwait(false);
+            });
+        }
+    }
+
+    /// Settings → Transcription Model changed: new audio goes to the new model.
+    public void RestartTranscriber(string? modelId)
+    {
+        lock (gate)
+        {
+            Config.TranscriptionModel = modelId;
+            txCts?.Cancel();
+            txCts = null;
+            Transcriber = null;
+        }
+        StartTranscriber();
     }
 
     public void SetScreen(bool on)
@@ -181,6 +220,7 @@ sealed class Engine
         SetScreen(false);
         SetAudio(false);
         txCts?.Cancel();
+        Meaning.Stop();
         server?.Dispose();
     }
 }

@@ -95,6 +95,42 @@ enum Redaction {
         return ctx.makeImage()
     }
 
+    /// Pixelate secrets in `image`: `boxes` are fractions of the picture (top-left origin, from OCR),
+    /// `fields` are password fields in global screen points (top-left origin) on the display at `bounds`.
+    /// Returns nil if that fails, so the caller can drop the frame rather than store it unblurred.
+    static func blurSecrets(_ image: CGImage, boxes: [CGRect], fields: [CGRect], bounds: CGRect?) -> CGImage? {
+        let w = image.width, h = image.height
+        let full = CGRect(x: 0, y: 0, width: w, height: h)
+        // Into bitmap coordinates (pixels, bottom-left origin).
+        var rects = boxes.map { b in
+            CGRect(x: b.minX * CGFloat(w), y: (1 - b.maxY) * CGFloat(h), width: b.width * CGFloat(w), height: b.height * CGFloat(h))
+        }
+        if let bounds, bounds.width > 0, bounds.height > 0 {
+            let sx = CGFloat(w) / bounds.width, sy = CGFloat(h) / bounds.height
+            rects += fields.map { r in
+                CGRect(x: (r.minX - bounds.minX) * sx, y: CGFloat(h) - (r.maxY - bounds.minY) * sy, width: r.width * sx, height: r.height * sy)
+            }
+        }
+        guard !rects.isEmpty else { return image }
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        ctx.draw(image, in: full)
+        ctx.interpolationQuality = .none
+        for raw in rects {
+            let r = raw.insetBy(dx: -max(3, raw.height / 4), dy: -max(2, raw.height / 6)).integral.intersection(full)
+            guard r.width >= 1, r.height >= 1, let part = image.cropping(to: CGRect(x: r.minX, y: CGFloat(h) - r.maxY, width: r.width, height: r.height)) else { continue }
+            // One block per line height across, one down: no letter survives.
+            let bw = max(1, Int(r.width / max(6, r.height)))
+            guard let tiny = CGContext(data: nil, width: bw, height: 1, bitsPerComponent: 8, bytesPerRow: 0,
+                                       space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+            tiny.interpolationQuality = .high
+            tiny.draw(part, in: CGRect(x: 0, y: 0, width: bw, height: 1))
+            guard let small = tiny.makeImage() else { return nil }
+            ctx.draw(small, in: r)
+        }
+        return ctx.makeImage()
+    }
+
     /// Core Text, so this is safe off the main thread.
     private static func draw(_ s: String, size: CGFloat, weight: NSFont.Weight, alpha: CGFloat, centerX: CGFloat, baselineY: CGFloat, in ctx: CGContext) {
         let attrs: [NSAttributedString.Key: Any] = [

@@ -1,9 +1,10 @@
 import AppKit
-import SQLite3
+import SQLCipher
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// A call OpenRewind found: a meeting app or site in front while there was sound. Stored in the
+/// A call OpenRewind found: a call window in front, or a meeting app or site in front while there
+/// was sound. Stored in the
 /// `meetings` table, the same on Windows (Meetings.cs).
 /// Status: "live" (may still grow), "ended", "summarized" or "failed" (the AI summary did not work).
 struct Meeting: Identifiable, Equatable {
@@ -140,13 +141,72 @@ enum MeetingApps {
                 return "Google Meet"
             }
             if ["teams.microsoft.com", "teams.live.com", "teams.cloud.microsoft"].contains(host) { return teamsView(w) ? nil : "Microsoft Teams" }
-            if (host == "zoom.us" || host.hasSuffix(".zoom.us")) && (path.hasPrefix("/wc/") || path.hasPrefix("/j/")) { return "Zoom" }
+            // A meeting in the web client (/wc/123/join, /j/123), not its home or chat (/wc/home).
+            if (host == "zoom.us" || host.hasSuffix(".zoom.us"))
+                && (path.hasPrefix("/j/") || (path.hasPrefix("/wc/") && (path.contains(where: \.isNumber) || path.contains("join")))) {
+                return "Zoom"
+            }
             if host == "webex.com" || host.hasSuffix(".webex.com") { return "Webex" }
             if host == "app.slack.com" && path.contains("/huddle") { return "Slack huddle" }
         }
         // Browsers that do not give their address: Meet's tab title is "Meet - abc-defg-hij".
-        if w.hasPrefix("meet - ") || w.hasPrefix("meet – ") { return "Google Meet" }
+        if meetTitle(w) != nil { return "Google Meet" }
         return nil
+    }
+
+    /// "Meet - abc-defg-hij", "Meet – Weekly sync", also after a browser profile name ("Personal:
+    /// Meet - Weekly sync" in Dia and Arc). Meet's start page is "Google Meet". Capture group 1 is
+    /// the title without the profile.
+    private static let meetRegex = try! NSRegularExpression(pattern: #"^(?:[^:|\-–—]{1,40}:\s+)?(meet\s+[-–—]\s+\S.*)$"#,
+                                                            options: [.caseInsensitive])
+
+    /// The Meet tab title without a browser profile in front, or nil when it is not one.
+    private static func meetTitle(_ title: String) -> String? {
+        let ns = title as NSString
+        guard let m = meetRegex.firstMatch(in: title, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        return ns.substring(with: m.range(at: 1))
+    }
+
+    /// Like match, but only for a window that is clearly a call by itself: a Meet meeting, Zoom's
+    /// meeting window or web client, a Teams call or meeting window, a Webex meeting, a FaceTime call
+    /// or a Slack huddle. These start a meeting (and the "Take notes?" popup) without waiting for
+    /// sound. Other meeting-app windows (Zoom with no title, a Teams window named after its meeting)
+    /// count only while other people can be heard. Windows: MeetingApps.Call in Meetings.cs.
+    static func call(app: String, window: String, url: String) -> String? {
+        guard let label = match(app: app, window: window, url: url) else { return nil }
+        let w = window.replacingOccurrences(of: "\u{200B}", with: "").trimmingCharacters(in: .whitespaces).lowercased()
+        var host = "", path = ""
+        if let u = URL(string: url), let scheme = u.scheme?.lowercased(), scheme == "https" || scheme == "http", let h = u.host?.lowercased() {
+            host = h
+            path = u.path.lowercased()
+        }
+        let web = host == "zoom.us" || host == "webex.com" || host.hasSuffix(".zoom.us") || host.hasSuffix(".webex.com")
+        let yes: Bool
+        switch label {
+        case "Google Meet", "Slack huddle": yes = true
+        // The web client, or the app's meeting window ("Zoom Meeting", "Zoom Webinar").
+        case "Zoom": yes = web || w.hasPrefix("zoom meeting") || w.hasPrefix("zoom webinar")
+        case "Microsoft Teams": yes = teamsCall(w) || path.contains("meetup-join") || (host == "teams.live.com" && path.hasPrefix("/meet/"))
+        case "Webex":
+            yes = web ? path.hasPrefix("/meet/") || path.contains("/join") || path.contains("meeting") || path.hasPrefix("/wbxmjs/")
+                      : !w.isEmpty && !webexHome.contains(w)
+        // The main window is just "FaceTime"; a call's window is named after the people in it.
+        case "FaceTime": yes = !w.isEmpty && w != "facetime"
+        default: yes = false
+        }
+        return yes ? label : nil
+    }
+
+    private static let webexHome: Set<String> = [
+        "webex", "webex meetings", "cisco webex meetings", "cisco webex", "home", "settings", "messaging", "meetings", "calling",
+        "contacts", "teams", "vidcast", "whiteboards", "preferences",
+    ]
+
+    /// Teams' call and meeting windows: "Meeting with Sam Lee | Microsoft Teams", "Call with Sam Lee | …",
+    /// "Meeting compact view | …".
+    private static func teamsCall(_ w: String) -> Bool {
+        let first = (w.components(separatedBy: " | ").first ?? "").trimmingCharacters(in: .whitespaces)
+        return first.hasPrefix("meeting") || first.hasPrefix("call with") || first.hasPrefix("calling ") || first.hasSuffix("(meeting)")
     }
 
     /// Zoom's home, chat and settings windows: not a call.
@@ -168,7 +228,7 @@ enum MeetingApps {
 
     private static let suffixes: Set<String> = [
         "microsoft teams", "zoom", "zoom meeting", "webex", "slack", "google chrome", "chrome", "mozilla firefox", "firefox",
-        "microsoft edge", "edge", "brave", "opera", "vivaldi", "arc", "safari", "personal", "work",
+        "microsoft edge", "edge", "brave", "opera", "vivaldi", "arc", "dia", "safari", "personal", "work",
     ]
 
     /// "Weekly sync | Microsoft Teams" → "Weekly sync"; browser names at the end go too.
@@ -181,6 +241,8 @@ enum MeetingApps {
             guard suffixes.contains(tail) else { break }
             t = t[..<cut.lowerBound].trimmingCharacters(in: .whitespaces)
         }
+        // "Personal: Meet - Weekly sync": the browser profile is not part of the name.
+        if let meet = meetTitle(t) { t = meet }
         // Titles that only name the app say nothing.
         return ["zoom", "zoom meeting", "zoom workplace", "microsoft teams", "webex", "facetime", "meet"].contains(t.lowercased()) ? "" : t
     }
@@ -216,8 +278,10 @@ struct MeetingSpan: Equatable {
     var titles = ""
 }
 
-/// Finds meetings in what is already recorded. A meeting starts when a meeting app or site is in
-/// front while there is system audio (other people). It goes on while the app is in front; sound
+/// Finds meetings in what is already recorded. A meeting starts when a call window or page is in
+/// front (MeetingApps.call: a Meet meeting, Zoom's meeting window, …), or when another window of a
+/// meeting app or site is in front while there is system audio (other people) for at least a
+/// minute. It goes on while the app is in front; sound
 /// without it keeps it going only for a while after the app was last in front: 30 minutes for the
 /// microphone (the user talking while sharing another window), 15 for other sound (a video). It
 /// ends after 3 minutes with none of these, and calls in the same app less than 10 minutes apart
@@ -242,6 +306,8 @@ enum MeetingDetector {
         var app: String
         var title: String
         var url: String
+        /// A call window or page, which starts a meeting without waiting for sound.
+        var call: Bool
     }
 
     /// `frames` oldest first. Frames the block list hides never count as a meeting app.
@@ -253,7 +319,8 @@ enum MeetingDetector {
             let next = i + 1 < frames.count ? frames[i + 1].time : now
             var end = min(next, f.time.addingTimeInterval(frameSpan))
             if end < f.time { end = f.time }
-            seen.append(Seen(start: f.time, end: end, label: label, app: f.app, title: MeetingApps.cleanTitle(f.window), url: webAddress(f.url)))
+            seen.append(Seen(start: f.time, end: end, label: label, app: f.app, title: MeetingApps.cleanTitle(f.window), url: webAddress(f.url),
+                             call: MeetingApps.call(app: f.app, window: f.window, url: f.url) != nil))
         }
         guard !seen.isEmpty else { return [] }
         // Seen is oldest first, and each one ends before the next starts, so both are sorted.
@@ -281,11 +348,18 @@ enum MeetingDetector {
             }
         }
 
-        // A stretch is a meeting from the first moment the app was in front while others could be
-        // heard. The microphone alone (a chat window open while the room is noisy) never starts one.
+        // A stretch is a meeting from the first moment a call window was in front, or the app was in
+        // front while others could be heard. The microphone alone (a chat window open while the room
+        // is noisy) never starts one, and a stretch without a call window must last a minute.
         var spans: [MeetingSpan] = []
         for st in stretches {
             var start: Date?
+            var call = false
+            var c = countUpTo(seenStarts, st.s, strict: true)
+            while c < seen.count && seen[c].start <= st.e {
+                if seen[c].call { start = seen[c].start; call = true; break }
+                c += 1
+            }
             var i = countUpTo(seenStarts, st.s, strict: true)
             while i < seen.count && seen[i].start <= st.e {
                 let s = seen[i]
@@ -301,7 +375,7 @@ enum MeetingDetector {
                 }
                 if let t = heard, start.map({ t < $0 }) ?? true { start = t }
             }
-            guard let begin = start, st.e.timeIntervalSince(begin) >= minLength else { continue }
+            guard let begin = start, call || st.e.timeIntervalSince(begin) >= minLength else { continue }
             var inside: [Seen] = []
             var k = countUpTo(seenEnds, begin)
             while k < seen.count && seen[k].start <= st.e { inside.append(seen[k]); k += 1 }
@@ -602,7 +676,7 @@ enum MeetingNotes {
     }
 }
 
-/// Runs every minute: finds meetings in the last few hours and stores them. Windows: MeetingTracker in Meetings.cs.
+/// Finds meetings in the last few hours and stores them (Update, every minute; Spot, every 10 seconds). Windows: MeetingTracker in Meetings.cs.
 enum MeetingTracker {
     /// How far back each run looks (further for a meeting still going on).
     static let lookback: TimeInterval = 3 * 3600
@@ -651,13 +725,40 @@ enum MeetingTracker {
             // Looked at all of it again and it is not a call after all (the sound was noise): drop it.
             // Otherwise (the computer slept, the app was closed for a day, part of it was deleted)
             // it is over: keep it as it was last seen.
+            // A call the user said Take Notes for stays, whatever the recordings say now.
             let covered = m.start >= from
             let recorded = frames.contains { $0.time >= m.start && $0.time <= m.end } || audio.contains { $0.start <= m.end && $0.end >= m.start }
-            if covered && recorded { db.deleteMeeting(m.id); continue }
+            if covered && recorded && m.choice != MeetingChoice.take { db.deleteMeeting(m.id); continue }
             db.setMeetingStatus(m.id, MeetingStatus.ended)
             if let e = db.meeting(id: m.id) { ended.append(e) }
         }
         return ended
+    }
+
+    /// How often the quick check (spot) runs between full runs, so the popup shows within seconds.
+    static let spotEvery: TimeInterval = 10
+    /// How often the full run (update) runs.
+    static let updateEvery: TimeInterval = 60
+    /// How far back the quick check looks for a call window or page.
+    static let spotLookback: TimeInterval = 2 * 60
+
+    /// The quick check: when a call window or page (MeetingApps.call) was in front in the last two
+    /// minutes and no meeting is stored for that call yet, stores one now, live, starting when the
+    /// call was first seen, so it can be asked about right away instead of after the next full run.
+    /// Returns the new meeting, or nil.
+    static func spot(db: Database, blocked: Blocklist, now: Date = Date()) -> Meeting? {
+        gate.lock(); defer { gate.unlock() }
+        var from = now.addingTimeInterval(-spotLookback)
+        if let cut = db.meetingsDeletedThrough(), cut > from { from = min(cut, now) }
+        let frames = db.meetingFrames(from: from, to: now)
+        // Without sound, only call windows make a meeting.
+        guard var s = MeetingDetector.detect(frames: frames, audio: [], blocked: blocked, now: now).last else { return nil }
+        // Already stored (the full run found it, or this call was asked about before a short break).
+        let stored = db.meetings(overlapping: s.start.addingTimeInterval(-MeetingDetector.mergeGap), to: now)
+        if stored.contains(where: { ($0.start <= s.end && $0.end >= s.start) || $0.app == s.app }) { return nil }
+        s.live = true
+        guard let id = db.insertMeeting(s, status: MeetingStatus.live) else { return nil }
+        return db.meeting(id: id)
     }
 
     /// Meetings whose notes were made before all of their audio was transcribed: more speech has
@@ -931,7 +1032,7 @@ extension Database {
 
 // MARK: - watching and summarizing
 
-/// Finds meetings once a minute (MeetingTracker) and, when the user turned on
+/// Finds meetings (MeetingTracker: a quick check every 10 seconds, a full run every minute) and, when the user turned on
 /// "Summarize Meetings with AI", asks their provider for notes after each one ends.
 /// Windows: MeetingWatcher in MeetingsForm.cs.
 final class MeetingCenter: ObservableObject {
@@ -945,6 +1046,8 @@ final class MeetingCenter: ObservableObject {
     private var timer: Timer?
     private var running = false
     @Published private(set) var summarizing = Set<Int64>()
+    /// Called on the main thread for each meeting that just ended (promise reminders read it).
+    var onEnded: ((Meeting) -> Void)?
 
     /// Send each meeting's transcript to the AI provider when it ends. Off unless the user turns it on:
     /// it spends their tokens and sends what was said. Turning it on records the provider agreed to.
@@ -998,23 +1101,36 @@ final class MeetingCenter: ObservableObject {
         self.transcribing = transcribing
     }
 
+    /// Every 10 seconds a quick look for a call window just brought to the front (so the popup shows
+    /// within seconds), and every minute the full run.
     func start() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.tick() }
-        let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in self?.tick() }
+        let t = Timer(timeInterval: MeetingTracker.spotEvery, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(t, forMode: .common)
         timer = t
     }
+
+    private var lastUpdate = Date.distantPast
 
     private func tick() {
         guard !running else { return }
         running = true
         let db = self.db, chunk = chunkSeconds, blocked = BlocklistStore.shared.current, whisper = transcribing()
         let lookLate = Self.autoSummarize
+        let now = Date()
+        let full = now.timeIntervalSince(lastUpdate) >= MeetingTracker.updateEvery || now < lastUpdate
+        if full { lastUpdate = now }
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let now = Date()
-            let ended = MeetingTracker.update(db: db, blocked: blocked, now: now, chunkSeconds: chunk, transcribing: whisper)
-            for m in ended { log("meeting ended: \(m.app), \(AITime.label(m.start))–\(MeetingTranscript.clock(m.end))") }
-            let late = lookLate ? MeetingTracker.late(db: db, now: now) : []
+            var ended: [Meeting] = [], late: [Meeting] = []
+            if full {
+                ended = MeetingTracker.update(db: db, blocked: blocked, now: now, chunkSeconds: chunk, transcribing: whisper)
+                for m in ended { log("meeting ended: " + RecordingFile.forLog("\(m.app), \(AITime.label(m.start))–\(MeetingTranscript.clock(m.end))")) }
+                if lookLate { late = MeetingTracker.late(db: db, now: now) }
+            } else if let spotted = MeetingTracker.spot(db: db, blocked: blocked, now: now) {
+                log("meeting started: \(RecordingFile.forLog(spotted.app)), call window in front")
+            } else {
+                DispatchQueue.main.async { self?.running = false }
+                return
+            }
             let recent = db.meetings(overlapping: now.addingTimeInterval(-86_400), to: now)
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -1030,6 +1146,7 @@ final class MeetingCenter: ObservableObject {
                 NotificationCenter.default.post(name: Self.changed, object: nil)
                 for m in ended {
                     if let fresh = db.meeting(id: m.id), self.autoSummarizes(fresh) { self.summarize(fresh) { _ in } }
+                    if let fresh = db.meeting(id: m.id) { self.onEnded?(fresh) }
                 }
                 // Transcripts that came in after the notes were made: make them again, once.
                 for m in late where !self.summarizing.contains(m.id) && self.autoSummarizes(m) {
@@ -1074,7 +1191,7 @@ final class MeetingCenter: ObservableObject {
                                          y: screen.maxY - (size.height + 12) * CGFloat(prompts.count + 1)))
         }
         prompts[m.id] = panel
-        log("meeting detected: \(m.app), asking about notes")
+        log("meeting detected: \(RecordingFile.forLog(m.app)), asking about notes")
         panel.orderFrontRegardless()
     }
 
@@ -1087,7 +1204,7 @@ final class MeetingCenter: ObservableObject {
             c[m.app] = take ? MeetingPrompt.always : MeetingPrompt.never
             Self.choices = c
         }
-        log("meeting \(m.id): \(take ? "take notes" : "not this time")\(remember ? ", remembered for \(m.app)" : "")")
+        log("meeting \(m.id): \(take ? "take notes" : "not this time")\(remember ? ", remembered for \(RecordingFile.forLog(m.app))" : "")")
         NotificationCenter.default.post(name: Self.changed, object: nil)
         // Answered after the call ended: summarize now, as it would have been when it ended.
         if take, let fresh = db.meeting(id: m.id), fresh.status == MeetingStatus.ended, autoSummarizes(fresh) {
@@ -1226,7 +1343,7 @@ struct MeetingsView: View {
         VStack(spacing: 14) {
             Image(systemName: "person.2.wave.2").font(.system(size: 30)).foregroundColor(SetupTheme.accent)
             Text("No meetings yet").font(.system(size: 18, weight: .semibold))
-            Text("When a Zoom, Teams, Google Meet, Webex, FaceTime or Slack huddle call starts, OpenRewind asks whether to take notes. Calls you take notes for show up here with their transcript.\n\nTurn on Settings → Summarize Meetings with AI to also get a summary and action items after each one, using your own AI key.")
+            Text("When a Zoom, Teams, Google Meet, Webex, FaceTime or Slack huddle call starts, OpenRewind asks whether to take notes. Calls you take notes for show up here with their transcript.\n\nIn Settings → Meetings, choose Summarize it with AI to also get a summary and action items after each one, using your own AI key.")
                 .font(.system(size: 13)).foregroundColor(SetupTheme.dim).multilineTextAlignment(.center)
                 .frame(maxWidth: 440).fixedSize(horizontal: false, vertical: true)
         }
@@ -1368,7 +1485,7 @@ struct MeetingsView: View {
         panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
         panel.canCreateDirectories = true
         let text = model.markdown(m)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard Dialogs.run(panel) == .OK, let url = panel.url else { return }
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
             model.note = "Saved to \(url.path)."

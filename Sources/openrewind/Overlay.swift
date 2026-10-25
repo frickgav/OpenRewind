@@ -4,6 +4,8 @@ import SwiftUI
 
 /// Borderless panel that can still take keyboard focus.
 final class OverlayPanel: NSPanel {
+    /// Over everything, the menu bar and Dock included. Dialogs.swift steps it down while a dialog is up.
+    static let topLevel = NSWindow.Level.screenSaver
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 }
@@ -40,9 +42,13 @@ final class OverlayController {
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main!
         model.reload()
+        model.loadMeetings()
         Updater.shared.checkIfStale()
 
         let p = panel ?? makePanel()
+        // Opened while a Save dialog or alert is up: stay under it (Dialogs raises it again when it closes).
+        let dialogUp = Dialogs.isShowing
+        p.level = dialogUp ? .floating : OverlayPanel.topLevel
         p.appearance = OverlayLook.current.appearance
         p.setFrame(screen.frame, display: true)
         panel = p
@@ -61,6 +67,9 @@ final class OverlayController {
         p.makeFirstResponder(nil)
         DispatchQueue.main.async { p.makeFirstResponder(nil) }
         installMonitor()
+        model.isShown = true
+        // Keep the keyboard on the dialog that is waiting for an answer.
+        if dialogUp { NSApp.modalWindow?.makeKeyAndOrderFront(nil) }
     }
 
     /// Open the timeline at a moment (links in the AI chat).
@@ -83,6 +92,7 @@ final class OverlayController {
 
     /// `restoreFocus: false` when another app is about to come to the front (Open tab).
     func hide(restoreFocus: Bool = true) {
+        model.isShown = false
         model.stopAudio()
         model.exportClip = nil
         // Marks and a text selection belong to this visit: next time the bar opens on now, where they can't be
@@ -91,6 +101,8 @@ final class OverlayController {
         _ = model.clearTextSelection()
         model.tutorialStep = nil
         if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
+        // Close the videos it read, so no decrypted copy stays in the temp folder while it is hidden.
+        DispatchQueue.global(qos: .utility).async { FrameImages.shared.releaseAll() }
         guard let p = panel else { return }
         NSAnimationContext.runAnimationGroup({ $0.duration = 0.12; p.animator().alphaValue = 0 }) {
             p.orderOut(nil)
@@ -101,7 +113,7 @@ final class OverlayController {
     private func makePanel() -> OverlayPanel {
         let p = OverlayPanel(contentRect: .zero, styleMask: [.borderless],
                              backing: .buffered, defer: false)
-        p.level = .screenSaver
+        p.level = OverlayPanel.topLevel
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         p.isOpaque = false
         p.backgroundColor = .clear
@@ -116,7 +128,24 @@ final class OverlayController {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .scrollWheel]) { [weak self] e in
             guard let self, self.isVisible else { return e }
+            // A Save dialog or alert over the timeline (or any other window) gets its own keys and scrolling:
+            // Return, Esc, arrows and typing a file name must not move the timeline under it.
+            if NSApp.modalWindow != nil { return e }
+            if let w = e.window, w !== self.panel { return e }
             return self.handle(e) ? nil : e
+        }
+    }
+
+    /// Scroll up / left = back in time. Trackpads send many small deltas, wheels send whole lines.
+    func scroll(_ e: NSEvent) {
+        let d = e.scrollingDeltaY + e.scrollingDeltaX
+        if e.hasPreciseScrollingDeltas {
+            scrollAccum += d
+            let stepSize: CGFloat = 14
+            let steps = Int(scrollAccum / stepSize)
+            if steps != 0 { scrollAccum -= CGFloat(steps) * stepSize; model.step(-steps) }
+        } else if d != 0 {
+            model.step(d > 0 ? -1 : 1)
         }
     }
 
@@ -125,16 +154,7 @@ final class OverlayController {
         if e.type == .scrollWheel {
             // Over the Ask AI chat, scrolling moves the chat, not the timeline.
             if model.showAI, let w = e.window, e.locationInWindow.x > w.frame.width - 452 { return false }
-            // Scroll up / left = back in time. Trackpads send many small deltas, wheels send whole lines.
-            let d = e.scrollingDeltaY + e.scrollingDeltaX
-            if e.hasPreciseScrollingDeltas {
-                scrollAccum += d
-                let stepSize: CGFloat = 14
-                let steps = Int(scrollAccum / stepSize)
-                if steps != 0 { scrollAccum -= CGFloat(steps) * stepSize; model.step(-steps) }
-            } else if d != 0 {
-                model.step(d > 0 ? -1 : 1)
-            }
+            scroll(e)
             return true
         }
         let shift = e.modifierFlags.contains(.shift)
@@ -159,6 +179,7 @@ final class OverlayController {
             default: return false  // let the text field have it
             }
         }
+        if cmd && shift && e.keyCode == UInt16(kVK_ANSI_C) { model.copyAllText(); return true }
         if cmd && e.keyCode == UInt16(kVK_ANSI_C) { model.copy(); return true }
         if cmd && e.keyCode == UInt16(kVK_ANSI_S) { model.saveFrame(); return true }
         if cmd && e.keyCode == UInt16(kVK_ANSI_E) { model.openExport(); return true }
@@ -169,6 +190,7 @@ final class OverlayController {
             if model.showHelp { model.showHelp = false }
             else if model.showResults { model.showResults = false }
             else if model.showAI { model.showAI = false }
+            else if model.selectingRange { model.selectingRange = false }
             else if model.clearTextSelection() {}
             else if model.hasMarks { model.clearMarks() }
             else { hide() }
@@ -178,15 +200,48 @@ final class OverlayController {
         case kVK_DownArrow: model.jump(to: model.playhead.addingTimeInterval(600))
         case kVK_Space: model.toggleAudio()
         case kVK_ANSI_N, kVK_End: model.jumpToNow()
+        case kVK_ANSI_O where !cmd && shift: model.restoreWorkspace()
         case kVK_ANSI_O where !cmd: model.openCurrent()
         case kVK_ANSI_A where !cmd: model.toggleAppFilter()
+        case kVK_ANSI_S where !cmd: model.toggleStar()
+        case kVK_ANSI_H where !cmd: model.hideCurrentApp()
         case kVK_ANSI_LeftBracket where !cmd: model.markStart()
         case kVK_ANSI_RightBracket where !cmd: model.markEnd()
+        case kVK_Delete where !cmd, kVK_ForwardDelete where !cmd: model.deletePressed()
         case kVK_ANSI_Equal, kVK_ANSI_KeypadPlus: model.span = max(60, model.span / 2)
         case kVK_ANSI_Minus, kVK_ANSI_KeypadMinus: model.span = min(12 * 3600, model.span * 2)
         default: return false
         }
         return true
+    }
+}
+
+/// ⌘⇧ + scroll anywhere opens the timeline and moves through time, like Rewind.
+/// Watching scroll events in other apps needs no extra permission (only key events do).
+final class ScrollOpener {
+    static let key = "scrollOpensTimeline"
+    /// On unless turned off in Settings.
+    static var isOn: Bool { UserDefaults.standard.object(forKey: key) as? Bool ?? true }
+
+    private var monitor: Any?
+    private let open: (NSEvent) -> Void
+
+    init(open: @escaping (NSEvent) -> Void) { self.open = open }
+
+    /// Starts or stops watching to match the setting.
+    func update() {
+        if Self.isOn, monitor == nil {
+            monitor = NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel) { [weak self] e in
+                let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                guard mods.contains(.command), mods.contains(.shift),
+                      !mods.contains(.option), !mods.contains(.control),
+                      e.scrollingDeltaY != 0 || e.scrollingDeltaX != 0 else { return }
+                self?.open(e)
+            }
+        } else if !Self.isOn, let m = monitor {
+            NSEvent.removeMonitor(m)
+            monitor = nil
+        }
     }
 }
 

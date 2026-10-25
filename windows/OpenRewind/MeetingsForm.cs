@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 
 namespace OpenRewind;
 
-/// Finds meetings once a minute (MeetingTracker) and, when the user turned on
+/// Finds meetings (MeetingTracker: a quick check every 10 seconds, a full run every minute) and, when the user turned on
 /// "Summarize Meetings with AI", asks their provider for notes after each one ends.
 /// The Mac app does the same in MeetingCenter (Meetings.swift).
 sealed class MeetingWatcher : IDisposable
@@ -21,13 +21,19 @@ sealed class MeetingWatcher : IDisposable
 
     /// Raised on the UI thread when meetings were added, changed or summarized.
     public static event Action? Changed;
+    /// Called on the UI thread for each meeting that just ended (promise reminders read it).
+    public Action<Meeting>? Ended { get; set; }
 
     public MeetingWatcher(Database db, Settings settings, double chunkSeconds, Func<bool> transcribing, Action<Action> ui)
     {
         this.db = db; this.settings = settings; this.chunkSeconds = chunkSeconds; this.transcribing = transcribing; this.ui = ui;
     }
 
-    public void Start() => timer = new System.Threading.Timer(_ => Tick(), null, TimeSpan.FromSeconds(20), TimeSpan.FromMinutes(1));
+    /// Every 10 seconds a quick look for a call window just brought to the front (so the popup shows
+    /// within seconds), and every minute the full run.
+    public void Start() => timer = new System.Threading.Timer(_ => Tick(), null, MeetingTracker.SpotEvery, MeetingTracker.SpotEvery);
+
+    DateTime lastUpdate = DateTime.MinValue;
 
     void Tick()
     {
@@ -35,9 +41,18 @@ sealed class MeetingWatcher : IDisposable
         try
         {
             var now = DateTime.UtcNow;
-            var ended = MeetingTracker.Update(db, Blocklist.Current, now, chunkSeconds, transcribing());
-            foreach (var m in ended) Log.Write($"meeting ended: {m.App}, {m.Start.ToLocalTime():t}–{m.End.ToLocalTime():t}");
-            var late = settings.SummarizeMeetings ? MeetingTracker.Late(db, now) : new();
+            var ended = new List<Meeting>();
+            var late = new List<Meeting>();
+            if (now - lastUpdate >= MeetingTracker.UpdateEvery || now < lastUpdate)
+            {
+                lastUpdate = now;
+                ended = MeetingTracker.Update(db, Blocklist.Current, now, chunkSeconds, transcribing());
+                foreach (var m in ended) Log.Write("meeting ended: " + RecordingFile.ForLog($"{m.App}, {m.Start.ToLocalTime():t}–{m.End.ToLocalTime():t}"));
+                if (settings.SummarizeMeetings) late = MeetingTracker.Late(db, now);
+            }
+            else if (MeetingTracker.Spot(db, Blocklist.Current, now) is Meeting spotted)
+                Log.Write($"meeting started: {RecordingFile.ForLog(spotted.App)}, call window in front");
+            else return;
             var recent = db.MeetingsBetween(now - TimeSpan.FromDays(1), now);
             ui(() =>
             {
@@ -49,7 +64,10 @@ sealed class MeetingWatcher : IDisposable
                     if (MeetingPrompt.Closes(db.MeetingById(id), now)) { prompts.Remove(id); form.Close(); }
                 Changed?.Invoke();
                 foreach (var m in ended)
+                {
                     if (db.MeetingById(m.Id) is Meeting fresh && AutoSummarizes(fresh)) _ = Summarize(fresh);
+                    if (db.MeetingById(m.Id) is Meeting done) Ended?.Invoke(done);
+                }
                 // Transcripts that came in after the notes were made: make them again, once.
                 foreach (var m in late)
                     if (!summarizing.Contains(m.Id) && AutoSummarizes(m))
@@ -75,7 +93,7 @@ sealed class MeetingWatcher : IDisposable
             ? ai.Kind.Title() : null;
         var form = new MeetingPromptForm(m, summarizer, (take, remember) => Answer(m, take, remember));
         prompts[m.Id] = form;
-        Log.Write($"meeting detected: {m.App}, asking about notes");
+        Log.Write($"meeting detected: {RecordingFile.ForLog(m.App)}, asking about notes");
         form.ShowNear(prompts.Count - 1);
     }
 
@@ -89,7 +107,7 @@ sealed class MeetingWatcher : IDisposable
             settings.MeetingChoices[m.App] = take ? MeetingPrompt.Always : MeetingPrompt.Never;
             settings.Save();
         }
-        Log.Write($"meeting {m.Id}: {(take ? "take notes" : "not this time")}{(remember ? $", remembered for {m.App}" : "")}");
+        Log.Write($"meeting {m.Id}: {(take ? "take notes" : "not this time")}{(remember ? $", remembered for {RecordingFile.ForLog(m.App)}" : "")}");
         Changed?.Invoke();
         // Answered after the call ended: summarize now, as it would have been when it ended.
         if (take && db.MeetingById(m.Id) is Meeting fresh && !fresh.IsLive && fresh.Status == MeetingStatus.Ended && AutoSummarizes(fresh))
@@ -257,6 +275,10 @@ sealed class MeetingsForm : Form
         open.Activate();
     }
 
+    /// App Lock: close it when the app locks, and count it as history in use.
+    public static void Release() { if (open is { IsDisposed: false }) open.Close(); }
+    public static bool IsShown => open is { IsDisposed: false, Visible: true };
+
     MeetingsForm(Database db, Settings settings, MeetingWatcher watcher, Action<DateTime> openMoment, Action openSettings)
     {
         this.db = db; this.settings = settings; this.watcher = watcher; this.openMoment = openMoment; this.openSettings = openSettings;
@@ -316,7 +338,7 @@ sealed class MeetingsForm : Form
         {
             Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Ui.Dim, Font = Ui.F(14 * k),
             Text = "No meetings yet.\n\nWhen a Zoom, Teams, Google Meet, Webex or Slack huddle call starts, OpenRewind asks whether to take "
-                 + "notes. Calls you take notes for show up here with their transcript.\n\nTurn on Settings → Summarize Meetings with AI to "
+                 + "notes. Calls you take notes for show up here with their transcript.\n\nIn Settings → Meetings, choose Summarize it with AI to "
                  + "also get a summary and action items after each one, using your own AI key.",
         });
 

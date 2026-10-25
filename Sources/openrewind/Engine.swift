@@ -2,11 +2,13 @@ import AVFoundation
 import Foundation
 
 /// Owns everything that records. Screen and audio can each be turned on and off on their own.
-/// The Whisper worker runs for the whole life of the process; the API server only while it is switched on.
+/// The transcriber runs for the whole life of the process; the API server only while it is switched on.
 final class Engine {
-    let config: Config
+    private(set) var config: Config
     let db: Database
     let recorder: Recorder
+    /// Search by Meaning; it indexes only while the menu bar app has turned it on.
+    let meaning: MeaningService
     private(set) var transcriber: Transcriber?
     private var server: Server?
     private var screenTask: Task<Void, Never>?
@@ -25,13 +27,23 @@ final class Engine {
         self.config = config
         self.db = db
         self.recorder = Recorder(config: config, db: db)
+        // Videos about to be deleted (all their frames are gone): close them first.
+        db.releasingVideos = { paths in paths.forEach(FrameImages.shared.release) }
+        self.meaning = MeaningService(db: db)
     }
 
     var serverOn: Bool { server != nil }
+    /// True while the app is locked; the local server then serves no history (see AppLock).
+    var serverLocked: () -> Bool = { false }
+    /// What the local server leaves out. `record` and `serve` in a terminal see no Settings changes
+    /// made in the app, so they read the list again for each request (main.swift).
+    var serverBlocklist: () -> Blocklist = { BlocklistStore.shared.current }
 
     func startServer(exitOnFailure: Bool = true) throws {
         guard server == nil else { return }
-        let api = API(db: db, config: config)
+        var api = API(db: db, config: config, meaning: meaning)
+        api.locked = { [weak self] in self?.serverLocked() == true }
+        api.blocklist = serverBlocklist
         let s = Server(port: config.port, exitOnFailure: exitOnFailure, router: api.handle)
         try s.start()
         server = s
@@ -44,10 +56,33 @@ final class Engine {
         log("local search server off")
     }
 
+    /// Why there is no transcriber ("whisper-cli not found", …), for the menu.
+    private(set) var transcriberProblem: String?
+
     func startTranscriber() {
-        guard transcriberTask == nil, let tx = Transcriber(config: config, db: db) else { return }
+        guard transcriberTask == nil else { return }
+        let tx = Transcriber(config: config, db: db)
+        transcriberProblem = tx == nil ? Transcriber.lastProblem : nil
+        guard let tx else { return }
         transcriber = tx
-        transcriberTask = Task.detached { await tx.run() }
+        // A model being swapped out finishes the clip it is on first, so two never run at once.
+        let before = previousTask
+        transcriberTask = Task.detached {
+            await before?.value
+            await tx.run()
+        }
+    }
+
+    private var previousTask: Task<Void, Never>?
+
+    /// Settings → Transcription Model changed: new audio goes to the new model.
+    func restartTranscriber(model: String) {
+        config.transcriptionModel = model
+        transcriberTask?.cancel()
+        previousTask = transcriberTask ?? previousTask
+        transcriberTask = nil
+        transcriber = nil
+        startTranscriber()
     }
 
     func setScreen(_ on: Bool) {
@@ -106,12 +141,14 @@ final class Engine {
                 log(old == nil ? "starting system audio again" : "system audio sent no sound for 60 s, restarting")
                 self.system = nil
                 self.systemRestarting = true
+                // Read here, on the main thread: Settings → Transcription Model changes `config` there.
+                let config = self.config, db = self.db
                 Task.detached {
                     defer { Task { @MainActor in self.systemRestarting = false } }
                     await old?.stop()
                     let fresh = SystemAudioCapture(writer: ChunkWriter(device: "system audio", isInput: false,
-                                                                       seconds: self.config.audioChunkSeconds,
-                                                                       config: self.config, db: self.db))
+                                                                       seconds: config.audioChunkSeconds,
+                                                                       config: config, db: db))
                     do {
                         try await fresh.start()
                         await MainActor.run { self.system = fresh }

@@ -17,14 +17,14 @@ sealed partial class TimelineModel
     {
         ClipStart = Playhead;
         if (ClipEnd is DateTime e && e < Playhead) ClipEnd = null;
-        ShowNotice(ClipEnd == null ? "Clip starts here. Press ] where it ends." : "Clip marked. Ctrl+E exports it.");
+        ShowNotice(ClipEnd == null ? "Starts here. Press ] where it ends." : "Marked. Delete deletes it, Ctrl+E exports it.");
     }
 
     public void MarkEnd()
     {
         ClipEnd = Playhead;
         if (ClipStart is DateTime s && s > Playhead) ClipStart = null;
-        ShowNotice(ClipStart == null ? "Clip ends here. Press [ where it starts." : "Clip marked. Ctrl+E exports it.");
+        ShowNotice(ClipStart == null ? "Ends here. Press [ where it starts." : "Marked. Delete deletes it, Ctrl+E exports it.");
     }
 
     public void ClearMarks() { ClipStart = ClipEnd = null; Notify(); }
@@ -82,7 +82,7 @@ sealed partial class TimelineModel
         Task.Run(() =>
         {
             // Its own copy of the picture: GDI+ images can't be shared across threads.
-            using var bmp = ReadImage(f.Path) as Bitmap;
+            using var bmp = Picture(f);  // still or video frame
             var text = bmp == null ? null : Ocr.Words(bmp);
             ui?.Post(_ =>
             {
@@ -116,12 +116,16 @@ sealed partial class TimelineModel
         ShowNotice("Copied the screenshot");
     }
 
-    /// Copy every word read on the shown screenshot.
+    /// Copy every word on the shown screenshot: what OCR read on the timeline, or the text saved with it
+    /// (from UI Automation or OCR when it was recorded) while that is still reading or not available.
     public void CopyAllText()
     {
-        if (CurrentHidden) { ShowNotice("This moment is from a blocked app or site"); return; }
-        if (Text is not FrameText text || text.IsEmpty) { ShowNotice("No text found on this screenshot yet"); return; }
-        PrivateClipboard.SetText(text.AllText);
+        if (Current is not TimelineFrame f) { ShowNotice("No screenshot at this moment"); return; }
+        if (CurrentHidden || f.Blocked) { ShowNotice("This moment is from a blocked app or site"); return; }
+        var all = Text is FrameText text && !text.IsEmpty ? text.AllText : "";
+        if (all.Length == 0) all = Db.FrameById(f.Id)?.Text ?? "";
+        if (all.Length == 0) { ShowNotice("No text found on this screenshot"); return; }
+        PrivateClipboard.SetText(all);
         ShowNotice("Copied the text on this screenshot");
     }
 

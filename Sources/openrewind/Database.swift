@@ -1,5 +1,5 @@
 import Foundation
-import SQLite3
+import SQLCipher
 
 let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
@@ -17,6 +17,15 @@ struct Frame: Codable {
     var browserUrl = ""
     /// Saved while a blocked window or site was in front (only the app name is kept; Insights leaves it out).
     var blocked = false
+    /// The screen it was taken on.
+    var display = ""
+    /// After Compress Older Recordings the picture is frame `videoFrame` of this video, `videoTime` seconds in,
+    /// and `snapshotPath` is "". Read it with FrameImages, never from the paths directly.
+    var videoPath = ""
+    var videoFrame = 0
+    var videoTime = 0.0
+
+    var source: FrameSource { FrameSource(stillPath: snapshotPath, videoPath: videoPath, videoFrame: videoFrame, videoTime: videoTime) }
 }
 
 struct SearchQuery {
@@ -27,35 +36,85 @@ struct SearchQuery {
     var endTime: String?
     var limit = 20
     var offset = 0
+    /// The local server's scan (API.visibleCount, API.eachVisibleFrame): leave out frames marked blocked and
+    /// these app names (lower case) in SQL, so hidden frames are mostly never read.
+    var skipBlocked = false
+    var skipApps: [String] = []
+    /// Only frames older than this one (by time, then id): the next page of a scan.
+    var before: (timestamp: String, id: Int64)?
 }
 
-enum DBError: Error { case open(String), prepare(String), step(String) }
+enum DBError: Error {
+    case open(String), prepare(String), step(String)
+    /// The database is encrypted and the key is not loaded, or the key does not open it.
+    case locked(String)
+}
 
 /// Thin SQLite wrapper around the `frames` + `frames_fts` tables:
 /// one row per captured frame, FTS5 index over text, app and window.
+/// The file is plain SQLite, or SQLCipher-encrypted with the data key (see Vault.swift).
 final class Database {
     var db: OpaquePointer?
     let lock = NSLock()
+    let path: URL
+    /// Set by `init` and `convert(key:)` (Vault.swift).
+    var isEncrypted = false
+    /// The master key the open connection was opened with (nil for a plain database).
+    var openKey: Data?
+    /// `isConverting` (Vault.swift), read by the menu without waiting on `lock`.
+    let convertState = NSLock()
+    var converting = false
+    /// Held for a whole frame delete and a whole video commit, so neither runs halfway through the other
+    /// (a video must never be committed for frames that are being deleted). See VideoStore.swift.
+    let videoGate = NSLock()
+    /// Videos are about to be deleted: forget cached decoders for them.
+    var releasingVideos: (([String]) -> Void)?
+    /// Frames of a video were deleted while others in it are kept: the compactor should write it again soon.
+    var videosNeedRewrite: (() -> Void)?
+    /// The frame columns to read. A read-only open (the MCP server) may see a database the recording app
+    /// has not migrated yet; each missing column then reads as its default (a still, not blocked).
+    private var cols = Database.fullCols
+    /// The blocked mark, or 0 when that column is missing (see `cols`).
+    private var blockedCol = "f.blocked"
 
-    init(path: URL) throws {
-        if sqlite3_open_v2(path.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) != SQLITE_OK {
-            throw DBError.open(String(cString: sqlite3_errmsg(db)))
-        }
+    /// `key` opens an encrypted database; `createEncrypted` makes a new one encrypted with it.
+    init(path: URL, key: Data? = nil, createEncrypted: Bool = false) throws {
+        self.path = path
+        Database.recoverSwap(path)
+        let encrypted = Database.isEncryptedFile(path) || (createEncrypted && key != nil && !Database.hasData(path))
+        if encrypted && key == nil { throw DBError.locked("the database is encrypted and the key is not on this Mac") }
+        db = try Database.connect(path, key: encrypted ? key : nil)
+        isEncrypted = encrypted
+        openKey = encrypted ? key : nil
         try exec("PRAGMA journal_mode=WAL;")
         try exec("PRAGMA busy_timeout=5000;")
         try migrate()
         try migrateAudio()
+        try migrateMeaning()
+        try migrateJournal()
         try migrateMeetings()
+        try migrateStars()
+        try migrateWorkspaces()
+        try migratePromises()
+        try migratePhone()
+        secureDeleteSearchText()
         finishHomeMove(home: path.deletingLastPathComponent())
     }
 
     /// For the MCP server: reads while the app records, and never changes the database
-    /// (no schema changes and no home move, which are the recording app's job).
-    init(readOnly path: URL) throws {
-        if sqlite3_open_v2(path.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) != SQLITE_OK {
-            throw DBError.open(String(cString: sqlite3_errmsg(db)))
-        }
+    /// (no schema changes and no home move, which are the recording app's job). `key` (the data
+    /// key from the Keychain) opens it when Encrypt Recordings is on; without it that throws `.locked`.
+    init(readOnly path: URL, key: Data?) throws {
+        self.path = path
+        let encrypted = Database.isEncryptedFile(path)
+        if encrypted && key == nil { throw DBError.locked("the database is encrypted and the key is not on this Mac") }
+        db = try Database.connect(path, key: encrypted ? key : nil, readOnly: true)
+        isEncrypted = encrypted
+        openKey = encrypted ? key : nil
         try exec("PRAGMA busy_timeout=5000;")
+        let have = Set(rowsChecked("SELECT name FROM pragma_table_info('frames')", []) { st -> String? in self.col(st, 0) } ?? [])
+        cols = Database.frameCols(have)
+        if !have.contains("blocked") { blockedCol = "0" }
     }
 
     /// After the data folder moved from ~/.openscreen (see `Config.defaultHome`), point the stored
@@ -66,7 +125,7 @@ final class Database {
         let new = home.path + "/"
         do {
             try exec("BEGIN")
-            for (table, col) in [("frames", "snapshot_path"), ("audio_chunks", "file_path")] {
+            for (table, col) in [("frames", "snapshot_path"), ("frames", "video_path"), ("video_segments", "path"), ("audio_chunks", "file_path")] {
                 run("UPDATE \(table) SET \(col) = ? || substr(\(col), ?) WHERE substr(\(col), 1, ?) = ?",
                     [.text(new), .int(Int64(old.unicodeScalars.count + 1)), .int(Int64(old.unicodeScalars.count)), .text(old)])
             }
@@ -80,6 +139,15 @@ final class Database {
     }
 
     deinit { sqlite3_close(db) }
+
+    /// The search indexes keep a deleted row's words until their segments are merged. With FTS5's secure-delete
+    /// option (stored in the index, so this only writes it again) a delete takes them out of the index at once.
+    /// Needs SQLite 3.42; an older one keeps working as before. Windows: the same.
+    private func secureDeleteSearchText() {
+        for t in ["frames_fts", "audio_fts"] {
+            do { try exec("INSERT INTO \(t)(\(t), rank) VALUES('secure-delete', 1);") } catch { log("\(t): no secure delete (\(error))") }
+        }
+    }
 
     func migrate() throws {
         try exec("""
@@ -108,7 +176,7 @@ final class Database {
             VALUES ('delete', old.id, old.text, old.app_name, old.window_name);
         END;
         """)
-        // Added later: older databases do not have this column yet. Windows adds the same column.
+        // Added later: older databases do not have these columns yet. Windows adds the same ones.
         if scalarInt("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'browser_url'", []) == 0 {
             try exec("ALTER TABLE frames ADD COLUMN browser_url TEXT NOT NULL DEFAULT ''")
         }
@@ -121,6 +189,7 @@ final class Database {
         if scalarInt("SELECT COUNT(*) FROM pragma_table_info('frames') WHERE name = 'blocked'", []) == 0 {
             try exec("ALTER TABLE frames ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
         }
+        try migrateVideo()
     }
 
     /// Indexes that take a while on a big database (the whole frames table is read, screen text and
@@ -128,13 +197,20 @@ final class Database {
     /// in the background, so the app starts at once and reads keep working meanwhile. A failure (full
     /// disk, another process writing) is logged and tried again next launch; Insights still works,
     /// only slower. Windows does the same.
+    /// With Encrypt Recordings on, the connection opens with the data key (`RecordingFile.key`).
     static func buildSlowIndexesInBackground(path: URL) {
         DispatchQueue.global(qos: .utility).async {
-            var c: OpaquePointer?
-            defer { sqlite3_close(c) }
-            guard sqlite3_open_v2(path.path, &c, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
-                log("could not build the Insights index (will try again next launch): cannot open the database"); return
+            let c: OpaquePointer
+            do {
+                guard FileManager.default.fileExists(atPath: path.path) else { throw DBError.open("no database") }
+                let encrypted = Database.isEncryptedFile(path)
+                let key = encrypted ? RecordingFile.key : nil
+                if encrypted && key == nil { throw DBError.locked("the data key is not loaded") }
+                c = try Database.connect(path, key: key)
+            } catch {
+                log("could not build the Insights index (will try again next launch): cannot open the database (\(error))"); return
             }
+            defer { sqlite3_close(c) }
             func run(_ sql: String) -> Bool {
                 var err: UnsafeMutablePointer<CChar>?
                 guard sqlite3_exec(c, sql, nil, nil, &err) == SQLITE_OK else {
@@ -166,6 +242,11 @@ final class Database {
 
     func exec(_ sql: String) throws {
         lock.lock(); defer { lock.unlock() }
+        try execLocked(sql)
+    }
+
+    /// `exec` for callers that already hold `lock`.
+    func execLocked(_ sql: String) throws {
         var err: UnsafeMutablePointer<CChar>?
         if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
             let m = err.map { String(cString: $0) } ?? "unknown"
@@ -177,7 +258,7 @@ final class Database {
     @discardableResult
     func insert(_ f: Frame) throws -> Int64 {
         lock.lock(); defer { lock.unlock() }
-        let sql = "INSERT INTO frames (timestamp, app_name, window_name, focused, snapshot_path, text, text_source, hash, browser_url, blocked) VALUES (?,?,?,?,?,?,?,?,?,?)"
+        let sql = "INSERT INTO frames (timestamp, app_name, window_name, focused, snapshot_path, text, text_source, hash, browser_url, blocked, display) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
         var st: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { throw DBError.prepare(errmsg) }
         defer { sqlite3_finalize(st) }
@@ -187,15 +268,17 @@ final class Database {
         sqlite3_bind_int64(st, 8, f.hash)
         bind(st, 9, f.browserUrl)
         sqlite3_bind_int(st, 10, f.blocked ? 1 : 0)
+        bind(st, 11, f.display)
         guard sqlite3_step(st) == SQLITE_DONE else { throw DBError.step(errmsg) }
         return sqlite3_last_insert_rowid(db)
     }
 
     func frame(id: Int64) -> Frame? {
-        query("SELECT \(Self.cols) FROM frames f WHERE f.id = ?", [.int(id)]).first
+        query("SELECT \(cols) FROM frames f WHERE f.id = ?", [.int(id)]).first
     }
 
-    func search(_ s: SearchQuery) -> (rows: [Frame], total: Int) {
+    /// FROM and WHERE of a search, with their arguments in order.
+    private func searchSQL(_ s: SearchQuery) -> (from: String, whereSQL: String, args: [Arg]) {
         var whereParts: [String] = []
         var args: [Arg] = []
         var from = "frames f"
@@ -207,11 +290,54 @@ final class Database {
         if let w = s.windowName, !w.isEmpty { whereParts.append("f.window_name LIKE ?"); args.append(.text("%\(w)%")) }
         if let t = s.startTime { whereParts.append("f.timestamp >= ?"); args.append(.text(t)) }
         if let t = s.endTime { whereParts.append("f.timestamp <= ?"); args.append(.text(t)) }
-        let whereSQL = whereParts.isEmpty ? "" : "WHERE " + whereParts.joined(separator: " AND ")
+        if s.skipBlocked { whereParts.append("\(blockedCol) = 0") }
+        if !s.skipApps.isEmpty {
+            whereParts.append("lower(f.app_name) NOT IN (\(Array(repeating: "?", count: s.skipApps.count).joined(separator: ", ")))")
+            args += s.skipApps.map { Arg.text($0) }
+        }
+        if let b = s.before { whereParts.append("(f.timestamp, f.id) < (?, ?)"); args += [.text(b.timestamp), .int(b.id)] }
+        return (from, whereParts.isEmpty ? "" : "WHERE " + whereParts.joined(separator: " AND "), args)
+    }
+
+    func search(_ s: SearchQuery) -> (rows: [Frame], total: Int) {
+        let (from, whereSQL, args) = searchSQL(s)
         let total = scalarInt("SELECT COUNT(*) FROM \(from) \(whereSQL)", args)
-        let rows = query("SELECT \(Self.cols) FROM \(from) \(whereSQL) ORDER BY f.timestamp DESC LIMIT ? OFFSET ?",
+        let rows = query("SELECT \(cols) FROM \(from) \(whereSQL) ORDER BY f.timestamp DESC LIMIT ? OFFSET ?",
                          args + [.int(Int64(s.limit)), .int(Int64(s.offset))])
         return (rows, total)
+    }
+
+    /// How many frames match, by app and (when asked) by window title and address: all the block list
+    /// looks at in a stored frame besides the blocked mark, so the server can count only what it shows.
+    /// Each group is a frame with just those fields set.
+    func searchGroups(_ s: SearchQuery, byTitle: Bool, byURL: Bool) -> [(frame: Frame, count: Int)] {
+        let (from, whereSQL, args) = searchSQL(s)
+        let sql = "SELECT f.app_name, \(byTitle ? "f.window_name" : "''"), \(byURL ? "f.browser_url" : "''"), COUNT(*) FROM \(from) \(whereSQL) GROUP BY 1, 2, 3"
+        return rowsChecked(sql, args) { st -> (frame: Frame, count: Int)? in
+            (frame: Frame(id: 0, timestamp: "", appName: self.col(st, 0), windowName: self.col(st, 1), focused: true, snapshotPath: "",
+                          text: "", textSource: "", hash: 0, browserUrl: self.col(st, 2)),
+             count: Int(sqlite3_column_int64(st, 3)))
+        } ?? []
+    }
+
+    /// Up to `s.limit` matches older than `s.before`, newest first, without their text or picture: id, time,
+    /// app, window, address and the blocked mark (what the block list needs). `s.offset` is not used.
+    func searchKeys(_ s: SearchQuery) -> [Frame] {
+        let (from, whereSQL, args) = searchSQL(s)
+        let sql = "SELECT f.id, f.timestamp, f.app_name, f.window_name, f.browser_url, \(blockedCol) FROM \(from) \(whereSQL) ORDER BY f.timestamp DESC, f.id DESC LIMIT ?"
+        return rowsChecked(sql, args + [.int(Int64(s.limit))]) { st -> Frame? in
+            Frame(id: sqlite3_column_int64(st, 0), timestamp: self.col(st, 1), appName: self.col(st, 2), windowName: self.col(st, 3),
+                  focused: true, snapshotPath: "", text: "", textSource: "", hash: 0, browserUrl: self.col(st, 4),
+                  blocked: sqlite3_column_int(st, 5) != 0)
+        } ?? []
+    }
+
+    /// Whole frames by id; ids that are gone are left out.
+    func frames(ids: [Int64]) -> [Int64: Frame] {
+        guard !ids.isEmpty else { return [:] }
+        let marks = Array(repeating: "?", count: ids.count).joined(separator: ", ")
+        let rows = query("SELECT \(cols) FROM frames f WHERE f.id IN (\(marks))", ids.map { Arg.int($0) })
+        return Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
     }
 
     func apps(since: String?) -> [(String, Int)] {
@@ -246,15 +372,15 @@ final class Database {
 
     func stats() -> (count: Int, last: String?) {
         let n = scalarInt("SELECT COUNT(*) FROM frames", [])
-        let last = query("SELECT \(Self.cols) FROM frames f ORDER BY id DESC LIMIT 1", []).first?.timestamp
+        let last = query("SELECT \(cols) FROM frames f ORDER BY id DESC LIMIT 1", []).first?.timestamp
         return (n, last)
     }
 
     /// The saved frame closest to `t`, within 10 minutes.
     func frame(near t: Date) -> Frame? {
         let iso = Time.iso.string(from: t)
-        let before = query("SELECT \(Self.cols) FROM frames f WHERE f.timestamp <= ? ORDER BY f.timestamp DESC LIMIT 1", [.text(iso)]).first
-        let after = query("SELECT \(Self.cols) FROM frames f WHERE f.timestamp > ? ORDER BY f.timestamp ASC LIMIT 1", [.text(iso)]).first
+        let before = query("SELECT \(cols) FROM frames f WHERE f.timestamp <= ? ORDER BY f.timestamp DESC LIMIT 1", [.text(iso)]).first
+        let after = query("SELECT \(cols) FROM frames f WHERE f.timestamp > ? ORDER BY f.timestamp ASC LIMIT 1", [.text(iso)]).first
         func gap(_ f: Frame?) -> Double {
             guard let f, let d = Time.iso.date(from: f.timestamp) else { return .greatestFiniteMagnitude }
             return abs(d.timeIntervalSince(t))
@@ -265,7 +391,14 @@ final class Database {
 
     // MARK: - helpers
 
-    private static let cols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url"
+    private static let fullCols = "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, f.display, f.video_path, f.video_frame, f.video_time, f.blocked"
+
+    /// `fullCols` with each column a read-only open does not find replaced by its default.
+    private static func frameCols(_ have: Set<String>) -> String {
+        func c(_ name: String, _ missing: String) -> String { have.contains(name) ? "f.\(name)" : missing }
+        return "f.id, f.timestamp, f.app_name, f.window_name, f.focused, f.snapshot_path, f.text, f.text_source, f.hash, f.browser_url, "
+            + "\(c("display", "''")), \(c("video_path", "''")), \(c("video_frame", "0")), \(c("video_time", "0.0")), \(c("blocked", "0"))"
+    }
 
     /// Turn free text into a safe FTS5 query: every word becomes a quoted prefix term.
     static func ftsQuery(_ raw: String) -> String? {
@@ -276,7 +409,7 @@ final class Database {
         return words.map { "\"\($0)\"*" }.joined(separator: " ")
     }
 
-    enum Arg { case text(String), int(Int64) }
+    enum Arg { case text(String), int(Int64), real(Double), null }
 
     var errmsg: String { String(cString: sqlite3_errmsg(db)) }
 
@@ -289,6 +422,8 @@ final class Database {
             switch a {
             case .text(let s): bind(st, Int32(i + 1), s)
             case .int(let n): sqlite3_bind_int64(st, Int32(i + 1), n)
+            case .real(let d): sqlite3_bind_double(st, Int32(i + 1), d)
+            case .null: sqlite3_bind_null(st, Int32(i + 1))
             }
         }
     }
@@ -308,7 +443,9 @@ final class Database {
             out.append(Frame(id: sqlite3_column_int64(st, 0), timestamp: col(st, 1), appName: col(st, 2),
                              windowName: col(st, 3), focused: sqlite3_column_int(st, 4) != 0,
                              snapshotPath: col(st, 5), text: col(st, 6), textSource: col(st, 7),
-                             hash: sqlite3_column_int64(st, 8), browserUrl: col(st, 9)))
+                             hash: sqlite3_column_int64(st, 8), browserUrl: col(st, 9),
+                             blocked: sqlite3_column_int(st, 14) != 0, display: col(st, 10),
+                             videoPath: col(st, 11), videoFrame: Int(sqlite3_column_int64(st, 12)), videoTime: sqlite3_column_double(st, 13)))
         }
         return out
     }

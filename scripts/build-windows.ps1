@@ -14,7 +14,7 @@ $Out = "dist\win-$Arch"
 $Zip = "dist\OpenRewind-$Version-win-$Arch.zip"
 
 Write-Host "→ testing the shared core"
-dotnet test windows\OpenRewind.Tests --nologo -v q
+dotnet test windows\OpenRewind.Tests --nologo -v q --logger "console;verbosity=normal"
 if ($LASTEXITCODE -ne 0) { throw "tests failed" }
 
 Write-Host "→ publishing ($Arch, self-contained, single file)"
@@ -41,6 +41,8 @@ if ($env:SIGN_CERT) {
 Write-Host "→ zipping $Zip"
 Copy-Item windows\README.md "$Out\README.md"
 Copy-Item LICENSE "$Out\LICENSE.txt"
+# Licenses of SQLCipher, SQLitePCLRaw and the rest that the app includes.
+Copy-Item THIRD_PARTY_NOTICES.txt "$Out\THIRD_PARTY_NOTICES.txt"
 if (Test-Path $Zip) { Remove-Item $Zip }
 Compress-Archive -Path "$Out\*" -DestinationPath $Zip
 Write-Host "✓ $Out\OpenRewind.exe"

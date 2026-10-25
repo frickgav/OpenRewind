@@ -168,6 +168,7 @@ struct ExportClipCard: View {
         guard let plan = info.plan, let size = info.size else { return info.problem ?? "" }
         var s = ClipPlan.summary(plan, format: format, width: size.width, height: size.height)
         if let app = model.appFilter { s += "\nOnly \(app), as the timeline shows it." }
+        else if !model.hiddenApps.isEmpty { s += "\nApps hidden from the timeline are left out." }
         if plan.blocked > 0 {
             s += "\n\(plan.blocked) screenshot\(plan.blocked == 1 ? " is" : "s are") from blocked apps or sites and left out."
         }
@@ -209,9 +210,9 @@ struct ExportClipCard: View {
         panel.allowedContentTypes = [f.type]
         panel.nameFieldStringValue = ClipPlan.fileName(start, ext: f.rawValue)
         panel.directoryURL = FileManager.default.urls(for: f == .gif ? .picturesDirectory : .moviesDirectory, in: .userDomainMask).first
-        // Above the timeline, which floats over everything.
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard Dialogs.run(panel) == .OK, let url = panel.url else { return }
+        // The timeline may have been closed (or locked) while the dialog was up.
+        guard model.isShown, model.exportClip != nil else { return }
         // Something on screen right away, before anything is read.
         let job = ClipExporter()
         exporter = job
@@ -234,7 +235,7 @@ struct ExportClipCard: View {
                     return
                 }
                 totalFrames = plan.frames.count
-                job.export(plan, format: f, size: size, to: url, progress: { doneFrames = $0 }) { finished($0, url: url) }
+                job.export(plan, db: db, format: f, size: size, to: url, progress: { doneFrames = $0 }) { finished($0, url: url) }
             }
         }
     }

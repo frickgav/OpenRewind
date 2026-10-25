@@ -40,6 +40,9 @@ sealed class AiChatForm : Form
     /// The overlay is taking the chat: close this window without the chat in it.
     public static void Release() { if (open is { IsDisposed: false }) open.Close(); }
 
+    /// Open and on screen (App Lock counts it as the history being in use).
+    public static bool IsShown => open is { IsDisposed: false, Visible: true };
+
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         // The chat outlives the window.
@@ -240,7 +243,7 @@ sealed class AiChatPanel : Panel
         send.Text = "Stop";
         input.Enabled = false;
         AddRow(thinking);
-        tools.Screenshots = settings.AiScreenshots ? f => ImageTools.ForAi(f.SnapshotPath) : null;
+        tools.Screenshots = settings.AiScreenshots ? f => ImageTools.ForAi(f.Source) : null;
         try { await convo.Ask(q, new AiClient(ai), tools, AddItem, settings.AiPriceFor(ai.Model), cts.Token); }
         finally
         {
@@ -391,6 +394,10 @@ sealed class AiSettingsForm : Form
         open.Show();
         open.Activate();
     }
+
+    /// The same fields inside the Settings window's AI tab, at their own size.
+    public static AiSettingsForm Embedded(Settings settings) =>
+        new(settings) { TopLevel = false, FormBorderStyle = FormBorderStyle.None, ShowInTaskbar = false };
 
     AiSettingsForm(Settings settings)
     {
@@ -573,6 +580,7 @@ sealed class AiSettingsForm : Form
         MeetingWatcher.RecheckConsent(settings, this);
         _ = RefreshModels(quiet: true);
         AiChatForm.SettingsChanged();
+        JournalForm.Reload();
     }
 
     /// Fills the model list from the provider. Quiet: in the background, saying nothing if it fails.

@@ -1,6 +1,6 @@
 import Foundation
 import CoreGraphics
-import SQLite3
+import SQLCipher
 
 /// What the AI can look up in the local database. A whole day of screen text is far too much to
 /// send, so the model asks for summaries and searches instead, and every answer is capped in size.
@@ -13,6 +13,8 @@ struct AITools {
     /// Reads a frame's screenshot as a small JPEG. Set only while the user has turned on
     /// "Let AI look at screenshots"; nil means view_screenshot is not offered at all.
     var screenshots: ((Frame) -> Data?)?
+    /// Search by Meaning; search_by_meaning is offered only while it is on and its model is loaded.
+    var meaning: MeaningService?
 
     /// One summary covers at most this many days, so a question about a whole year does not load
     /// every frame of it (set for AI apps outside OpenRewind, see MCPServer).
@@ -22,7 +24,17 @@ struct AITools {
     static let blockedAppLabel = "(blocked app)"
 
     /// The tools to send with a request.
-    var offered: [AIToolSpec] { screenshots == nil ? Self.specs : Self.specs + [Self.screenshotSpec] }
+    var offered: [AIToolSpec] {
+        Self.specs + (meaning?.embedder != nil ? [Self.meaningSpec] : []) + (screenshots != nil ? [Self.screenshotSpec] : [])
+    }
+
+    static let meaningSpec = AIToolSpec(name: "search_by_meaning",
+        description: "Search screen text and transcripts by meaning instead of exact words, with a model on the user's computer. Use it when you don't know the words that were on screen or said, e.g. 'the article about sleep and memory' or 'when we talked about hiring'. Returns the closest moments, best first; the last ones may not be related.",
+        parameters: schema(["query": ["type": "string", "description": "What to look for, in plain words."],
+                            "start": timeArg("Only after this time (optional)."),
+                            "end": timeArg("Only before this time (optional)."),
+                            "limit": ["type": "integer", "description": "Results to return, up to 20. Default 10."]],
+                           required: ["query"]))
 
     static let screenshotSpec = AIToolSpec(name: "view_screenshot",
         description: "The screenshot saved closest to a moment, as an image. Use only when the screen text is not enough (charts, pictures, layout, what something looked like). Each image costs far more than text, so look at few.",
@@ -30,10 +42,9 @@ struct AITools {
 
     /// A saved screenshot as a JPEG for the AI: at most 1568 pixels on the long side, which is what
     /// the providers shrink images to anyway.
-    static func jpegForAI(_ path: String) -> Data? {
-        guard let img = ImageTools.load(URL(fileURLWithPath: path)) else { return nil }
-        let scale = min(1, 1568 / CGFloat(max(img.width, img.height)))
-        return ImageTools.jpegData(scale < 1 ? ImageTools.scaled(img, by: scale) : img, quality: 0.75)
+    /// Read through FrameImages, so frames already kept as video work too.
+    static func jpegForAI(_ frame: Frame) -> Data? {
+        FrameImages.shared.jpeg(frame.source, maxSide: 1568, quality: 0.75)
     }
 
     /// The arguments as the model sent them, for the chat window.
@@ -85,6 +96,8 @@ struct AITools {
                    parameters: schema(["start": timeArg("Start time."), "end": timeArg("End time."),
                                        "app": ["type": "string", "description": "Only this app (optional)."]],
                                       required: ["start", "end"])),
+        starredSpec,
+        promisesSpec,
         AIToolSpec(name: "list_meetings",
                    description: "Meetings and calls found on this computer (Zoom, Teams, Google Meet, Webex, FaceTime, Slack huddles) between two times, with their summary, decisions and action items when they have notes. Use first for questions about meetings or calls, like 'what did we decide in my 2pm call'. For exactly what was said, use search_audio over the meeting's time range.",
                    parameters: schema(["start": timeArg("Start time. Default: 7 days ago."),
@@ -101,7 +114,7 @@ struct AITools {
 
     /// Whether web addresses in this lookup's answer may open from Ask AI's reply. Not for meeting
     /// notes: a model wrote them from what other people said on a call.
-    static func suppliesLinks(_ tool: String) -> Bool { tool != "list_meetings" }
+    static func suppliesLinks(_ tool: String) -> Bool { tool != "list_meetings" && tool != "list_promises" }
 
     /// A short line for the chat window: what was looked up.
     static func describe(_ call: AIToolCall) -> String {
@@ -114,8 +127,11 @@ struct AITools {
         case "search_audio":
             let q = (a["query"] as? String) ?? ""
             return (q.isEmpty ? "Read transcripts" : "Searched audio for “\(q)”") + when
+        case "search_by_meaning": return "Searched by meaning for “\((a["query"] as? String) ?? "")”" + when
         case "get_screen_text": return "Read screen text" + when
         case "list_meetings": return "Listed meetings" + (range.isEmpty ? " from the last 7 days" : when)
+        case "list_starred": return "Listed starred moments" + when
+        case "list_promises": return "Listed promises"
         case "view_screenshot": return "Looked at the screenshot from \((a["time"] as? String) ?? "")"
         default: return call.name
         }
@@ -144,8 +160,14 @@ struct AITools {
             out = searchScreen(a)
         case "search_audio":
             out = searchAudio(a)
+        case "search_by_meaning":
+            out = searchByMeaning(a)
         case "list_meetings":
             out = listMeetings(a)
+        case "list_starred":
+            out = listStarred(a)
+        case "list_promises":
+            out = listPromises(a)
         case "get_screen_text":
             guard let start = AITime.parse(a["start"]), let end = AITime.parse(a["end"]) else {
                 return "Error: start and end are required, e.g. '2026-10-18 14:00'."
@@ -162,6 +184,9 @@ struct AITools {
     func hides(app: String, window: String, url: String) -> Bool {
         blocklist.blocksFrame(appName: app, windowName: window, url: url) || Blocklist.hasKeyword(url, blocklist.keywords)
     }
+
+    /// True for an app on the block list. The journal leaves such apps out of its lists entirely.
+    func hidesApp(_ app: String) -> Bool { blocklist.blocksApp(bundleID: nil, name: app) }
 
     static func cap(_ s: String, _ limit: Int = resultLimit) -> String {
         s.count <= limit ? s : String(s.prefix(limit)) + "\n[cut to fit; narrow the time range or search for more]"
@@ -204,6 +229,29 @@ struct AITools {
             "- \(AITime.label(t.timestamp)) \(t.isInput ? "Microphone (the user)" : "System audio") (link: \(AITime.link(t.timestamp))): \(t.text.trimmingCharacters(in: .whitespacesAndNewlines))"
         }
         return "\(total) transcript segments, showing \(rows.count) (oldest first):\n" + lines.joined(separator: "\n")
+    }
+
+    private func searchByMeaning(_ a: [String: Any]) -> String {
+        let q = ((a["query"] as? String) ?? "").trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return "Error: query is required." }
+        guard let meaning, meaning.embedder != nil else { return "Error: Search by Meaning is off. Use search_screen or search_audio." }
+        var mq = MeaningQuery()
+        mq.start = AITime.parse(a["start"]).map { Time.iso.string(from: $0) }
+        mq.end = AITime.parse(a["end"]).map { Time.iso.string(from: $0) }
+        mq.limit = max(1, min(20, AITools.int(a["limit"]) ?? 10))
+        let hits = meaning.search(q, mq, blocked: blocklist)
+        if hits.isEmpty { return "Nothing is indexed for Search by Meaning in that range yet." }
+        let lines = hits.map { h -> String in
+            var line = "- \(AITime.label(h.timestamp)) "
+            if h.isAudio { line += h.appName == "Microphone" ? "Microphone (the user)" : "System audio" } else {
+                line += h.appName
+                if !h.windowName.isEmpty { line += " — “\(h.windowName)”" }
+                if !h.url.isEmpty { line += " <\(h.url)>" }
+            }
+            let text = AITools.squash(h.text)
+            return line + " (link: \(AITime.link(h.timestamp)))\n  " + (text.count > 300 ? String(text.prefix(300)) + "…" : text)
+        }
+        return "\(hits.count) closest moments, best first:\n" + lines.joined(separator: "\n")
     }
 
     private func listMeetings(_ a: [String: Any]) -> String {

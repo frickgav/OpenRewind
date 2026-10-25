@@ -96,8 +96,20 @@ final class ChunkWriter {
 }
 
 enum WAV {
-    /// 16-bit PCM mono WAV.
-    static func write(_ samples: [Float], sampleRate: Int, to url: URL) throws {
+    /// 16-bit PCM mono WAV: a recording, so it is encrypted when Encrypt Recordings is on.
+    /// `recording: false` writes a plain private file (0600) for a tool that needs one (whisper-cli).
+    static func write(_ samples: [Float], sampleRate: Int, to url: URL, recording: Bool = true) throws {
+        let d = encode(samples, sampleRate: sampleRate)
+        if recording {
+            try RecordingFile.write(d, to: url)  // encrypted when Encrypt Recordings is on
+        } else {
+            guard FileManager.default.createFile(atPath: url.path, contents: d, attributes: [.posixPermissions: 0o600]) else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+        }
+    }
+
+    static func encode(_ samples: [Float], sampleRate: Int) -> Data {
         var d = Data()
         func u32(_ v: UInt32) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
         func u16(_ v: UInt16) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
@@ -109,7 +121,40 @@ enum WAV {
         d.append(contentsOf: Array("data".utf8)); u32(bytes)
         d.reserveCapacity(d.count + samples.count * 2)
         for s in samples { u16(UInt16(bitPattern: Int16(max(-1, min(1, s)) * 32767))) }
-        try d.write(to: url, options: .atomic)
+        return d
+    }
+
+    /// The samples of a 16 kHz mono 16-bit WAV (what `write` makes), read in memory; nil for any other kind.
+    static func samples16kMono(_ d: Data) -> [Float]? {
+        let b = [UInt8](d)
+        func u32(_ i: Int) -> Int { i + 4 <= b.count ? Int(b[i]) | Int(b[i + 1]) << 8 | Int(b[i + 2]) << 16 | Int(b[i + 3]) << 24 : -1 }
+        func u16(_ i: Int) -> Int { i + 2 <= b.count ? Int(b[i]) | Int(b[i + 1]) << 8 : -1 }
+        guard b.count >= 12, b[0..<4].elementsEqual("RIFF".utf8), b[8..<12].elementsEqual("WAVE".utf8) else { return nil }
+        var i = 12
+        var format = false
+        while i + 8 <= b.count {
+            let size = u32(i + 4)
+            guard size >= 0 else { return nil }
+            let body = i + 8
+            if b[i..<i + 4].elementsEqual("fmt ".utf8) {
+                // PCM, 1 channel, 16 kHz, 16 bits.
+                guard u16(body) == 1, u16(body + 2) == 1, u32(body + 4) == 16_000, u16(body + 14) == 16 else { return nil }
+                format = true
+            } else if b[i..<i + 4].elementsEqual("data".utf8) {
+                guard format else { return nil }
+                let end = min(b.count, body + size)
+                var out = [Float]()
+                out.reserveCapacity((end - body) / 2)
+                var j = body
+                while j + 2 <= end {
+                    out.append(Float(Int16(bitPattern: UInt16(b[j]) | UInt16(b[j + 1]) << 8)) / 32767)
+                    j += 2
+                }
+                return out
+            }
+            i = body + size + (size & 1)
+        }
+        return nil
     }
 
     /// Decode any audio file macOS can read into 16 kHz mono samples.

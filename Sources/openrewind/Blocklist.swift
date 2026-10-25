@@ -37,6 +37,23 @@ struct Blocklist {
             .map { $0.hasSuffix("/") ? $0 : $0 + "/" }
     }
 
+    /// Everything on the list, one line each and sorted ("app:1password", "word:chase", "site:…",
+    /// "private"). A saved journal recap keeps these, so it can tell when the list has grown since.
+    var entries: [String] {
+        var all = Set(keys.map { "app:" + $0 })
+        for k in keywords {
+            let w = k.trimmingCharacters(in: .whitespaces).lowercased()
+            if !w.isEmpty { all.insert("word:" + w) }
+        }
+        for s in sites { all.insert("site:" + s) }
+        if privateWindows { all.insert("private") }
+        return all.sorted()
+    }
+
+    /// The blocked apps' ids and names in lower case (with OPENREWIND_EXCLUDE): the local server leaves
+    /// these out in SQL before `hides` checks each frame.
+    var appKeys: [String] { keys.sorted() }
+
     /// `path` is the running app's bundle path (NSRunningApplication.bundleURL).
     func blocksApp(bundleID: String?, name: String?, path: String? = nil) -> Bool {
         if let b = bundleID?.lowercased(), !b.isEmpty, keys.contains(b) { return true }
@@ -281,6 +298,15 @@ final class SiteWindows {
         lock.lock(); let s = seen[window]; lock.unlock()
         guard let s else { return false }
         return s.unknown || list.blocksURL(s.url)
+    }
+}
+
+extension Blocklist {
+    /// True for a stored frame saved while a blocked window or site was in front, or one the block list
+    /// covers now (same rule as Ask AI and AI apps): by app, private window, blocked word in the title or
+    /// address, or blocked site. The local search server leaves these out. Windows: Blocklist.HidesFrame.
+    func hides(_ f: Frame) -> Bool {
+        f.blocked || blocksFrame(appName: f.appName, windowName: f.windowName, url: f.browserUrl) || Blocklist.hasKeyword(f.browserUrl, keywords)
     }
 }
 

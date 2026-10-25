@@ -93,7 +93,7 @@ final class Server {
     }
 
     private func respond(_ conn: NWConnection, _ r: HTTPResponse) {
-        let reason = [200: "OK", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed", 500: "Internal Server Error"][r.status] ?? "OK"
+        let reason = [200: "OK", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed", 423: "Locked", 500: "Internal Server Error"][r.status] ?? "OK"
         var head = "HTTP/1.1 \(r.status) \(reason)\r\n"
         head += "Content-Type: \(r.contentType)\r\nContent-Length: \(r.body.count)\r\n"
         head += "Cache-Control: no-store\r\nConnection: close\r\n\r\n"
@@ -104,15 +104,28 @@ final class Server {
 }
 
 /// REST routes for scripts and the browser search page.
+/// Frames of apps, sites and windows on the block list are left out of everything it serves (text,
+/// screenshots, app names), including ones saved before the user blocked them; same rule as Ask AI.
 struct API {
     let db: Database
     let config: Config
+    /// True while the app is locked (AppLock): search, screenshots and audio answer 423 until the user unlocks.
+    var locked: () -> Bool = { false }
+    static let lockedMessage = "OpenRewind is locked. Open the timeline to unlock it, then try again."
+    /// Search by Meaning (mode=meaning on /search); it answers only while it is on.
+    var meaning: MeaningService? = nil
+    /// The block list, asked for once per request. The app's copy changes with Settings; the terminal
+    /// commands read it again each time (see Engine.serverBlocklist).
+    var blocklist: () -> Blocklist = { BlocklistStore.shared.current }
 
     func handle(_ req: HTTPRequest) -> HTTPResponse {
         guard req.method == "GET" else { return .error("method not allowed", status: 405) }
         switch req.path {
         case "/", "/index.html":
             return HTTPResponse(contentType: "text/html; charset=utf-8", body: Data(WebUI.html.utf8))
+        case "/health" where locked():
+            // Locked: no counts, times or folder, only that it is running.
+            return .json(["status": "healthy", "locked": true])
         case "/health":
             let s = db.stats()
             let a = db.audioStats()
@@ -126,15 +139,24 @@ struct API {
                 "screen_permission": Capture.hasScreenPermission,
                 "accessibility_permission": Accessibility.isTrusted,
                 "data_dir": config.home.path,
+                "search_by_meaning": meaning?.embedder != nil,
             ])
+        default:
+            break
+        }
+        if locked() { return .error(API.lockedMessage, status: 423) }
+        let list = blocklist()
+        switch req.path {
         case "/search":
-            return search(req.query)
+            return search(req.query, list)
         case "/apps":
+            // Blocked apps are not listed at all.
             let since = req.query["start_time"].flatMap(Time.parse)
-            return .json(["data": db.apps(since: since).map { ["app_name": $0.0, "frames": $0.1] }])
+            let apps = db.apps(since: since).filter { !list.blocksApp(bundleID: nil, name: $0.0) }
+            return .json(["data": apps.map { ["app_name": $0.0, "frames": $0.1] }])
         default:
             if req.path.hasPrefix("/frames/") {
-                return frameImage(String(req.path.dropFirst("/frames/".count)))
+                return frameImage(String(req.path.dropFirst("/frames/".count)), list)
             }
             if req.path.hasPrefix("/audio/") {
                 return audioFile(String(req.path.dropFirst("/audio/".count)))
@@ -143,10 +165,62 @@ struct API {
         }
     }
 
-    private func search(_ q: [String: String]) -> HTTPResponse {
+    /// The largest `offset` the search accepts.
+    static let maxOffset = 1_000_000
+
+    /// Frames read per database call while paging through a search; the lock is let go between calls.
+    static let scanPage = 1000
+
+    /// Stop reading after this many hidden frames: a block list that covers most of the history ends
+    /// the results early (`truncated` in the answer) rather than reading all of it.
+    static let maxHiddenScan = 20_000
+
+    /// `s` with the parts of the block list that SQL can apply: frames marked blocked and blocked app names.
+    /// `hides` still checks every frame read; this only means most hidden frames are never read.
+    static func skipping(_ s: SearchQuery, _ list: Blocklist) -> SearchQuery {
+        var q = s
+        q.skipBlocked = true
+        q.skipApps = Array(list.appKeys.prefix(500))
+        return q
+    }
+
+    /// How many frames of the search `list` leaves in, exactly. Counted in SQL by app, title and address
+    /// (all `hides` looks at once frames marked blocked are left out), so hidden frames never add to it.
+    static func visibleCount(_ db: Database, _ s: SearchQuery, _ list: Blocklist) -> Int {
+        let byTitle = list.privateWindows || !list.keywords.isEmpty
+        let byURL = !list.keywords.isEmpty || !list.sites.isEmpty
+        return db.searchGroups(skipping(s, list), byTitle: byTitle, byURL: byURL)
+            .reduce(0) { n, g in list.hides(g.frame) ? n : n + g.count }
+    }
+
+    /// Calls `body` with each frame of the search that `list` leaves in, newest first and without its text,
+    /// until `body` returns false. Pages by time, so a frame recorded meanwhile never shifts a page and no
+    /// frame comes twice. True when it stopped early, at `maxHiddenScan` hidden frames.
+    static func eachVisibleFrame(_ db: Database, _ s: SearchQuery, _ list: Blocklist, page: Int, _ body: (Frame) -> Bool) -> Bool {
+        var q = skipping(s, list)
+        q.limit = min(max(page, 1), scanPage)
+        q.before = nil
+        var hidden = 0
+        while true {
+            let rows = db.searchKeys(q)
+            for f in rows {
+                if !list.hides(f) {
+                    if !body(f) { return false }
+                } else {
+                    hidden += 1
+                    if hidden >= maxHiddenScan { return true }
+                }
+            }
+            guard rows.count == q.limit, let last = rows.last else { return false }
+            q.before = (timestamp: last.timestamp, id: last.id)
+        }
+    }
+
+    private func search(_ q: [String: String], _ list: Blocklist) -> HTTPResponse {
         let type = (q["content_type"] ?? "all").lowercased()
         let limit = min(max(Int(q["limit"] ?? "") ?? 20, 1), 100)
-        let offset = max(Int(q["offset"] ?? "") ?? 0, 0)
+        // Clamped so offset + limit can never overflow (an overflow traps and would end the app).
+        let offset = min(max(Int(q["offset"] ?? "") ?? 0, 0), Self.maxOffset)
         let empty: [String: Any] = ["data": [], "pagination": ["limit": limit, "offset": offset, "total": 0]]
         if type == "input" || type == "memory" || type == "parsed" { return .json(empty) }  // not captured by openrewind
 
@@ -162,7 +236,7 @@ struct API {
             guard let t = Time.parse(raw) else { return .error("bad end_time: \(raw)", status: 400) }
             s.endTime = t
         }
-        let maxLen = Int(q["max_content_length"] ?? "")
+        let maxLen = Int(q["max_content_length"] ?? "").map { max($0, 0) }  // prefix(-1) traps
         func clip(_ t: String) -> String {
             guard let maxLen, t.count > maxLen else { return t }
             return String(t.prefix(maxLen)) + "…"
@@ -171,62 +245,144 @@ struct API {
         let wantScreen = type != "audio"
         // Audio has no app/window, so those filters mean "screen only".
         let wantAudio = (type == "audio" || type == "all") && (s.appName ?? "").isEmpty && (s.windowName ?? "").isEmpty
-        // To page through a merged list: take the top (offset + limit) of each source, merge by time, then slice.
+        if q["mode"]?.lowercased() == "meaning" {
+            return searchByMeaning(s, list, screen: wantScreen, audio: wantAudio, offset: offset, limit: limit, clip: clip)
+        }
+        // Screen and audio merged newest first; the page is places offset..<offset+limit of that list.
         let fetch = offset + limit
-        var items: [(ts: String, item: [String: Any])] = []
-        var total = 0
-
-        if wantScreen {
-            var sq = s
-            sq.limit = fetch; sq.offset = 0
-            let (rows, n) = db.search(sq)
-            total += n
-            items += rows.map { f in (f.timestamp, ["type": "OCR", "content": [
-                "frame_id": f.id, "text": clip(f.text), "timestamp": f.timestamp,
-                "app_name": f.appName, "window_name": f.windowName, "focused": f.focused,
-                "file_path": f.snapshotPath, "text_source": f.textSource, "offset_index": 0, "tags": [],
-            ] as [String: Any]]) }
-        }
+        var audio: [Transcript] = [], total = 0, audioTotal = 0
         if wantAudio {
-            let (rows, n) = db.searchAudio(s, fetch: fetch)
-            total += n
-            items += rows.map { t in (t.timestamp, ["type": "Audio", "content": [
-                "chunk_id": t.chunkId, "transcription_id": t.id, "transcription": clip(t.text),
-                "timestamp": t.timestamp, "start_time": t.startTime, "end_time": t.endTime,
-                "device_name": t.device, "device_type": t.isInput ? "Input" : "Output",
-                "file_path": t.filePath, "speaker": NSNull(), "tags": [],
-            ] as [String: Any]]) }
+            let r = db.searchAudio(s, fetch: fetch)
+            audio = r.rows
+            audioTotal = r.total
+            total += audioTotal
         }
-        items.sort { $0.ts > $1.ts }
-        let page = items.dropFirst(offset).prefix(limit).map { $0.item }
-        return .json(["data": Array(page), "pagination": ["limit": limit, "offset": offset, "total": total]])
+        enum Hit { case frame(Frame), audio(Transcript) }
+        var hits: [Hit] = [], placed = 0, nextAudio = 0, shown = 0, truncated = false
+        func place(_ h: Hit) {
+            if placed >= offset { hits.append(h) }
+            placed += 1
+        }
+        /// Audio newer than `time` (all of it when nil), while the page is not full.
+        func placeAudio(newerThan time: String?) {
+            while nextAudio < audio.count, placed < fetch, time.map({ audio[nextAudio].timestamp > $0 }) ?? true {
+                place(.audio(audio[nextAudio]))
+                nextAudio += 1
+            }
+        }
+        if wantScreen {
+            total += API.visibleCount(db, s, list)
+            truncated = API.eachVisibleFrame(db, s, list, page: max(fetch, 200)) { f in
+                placeAudio(newerThan: f.timestamp)
+                guard placed < fetch else { return false }
+                place(.frame(f))
+                shown += 1
+                return placed < fetch
+            }
+            // Cut short: count only the screenshots that can be reached, so a client stops paging.
+            if truncated { total = audioTotal + shown }
+        }
+        placeAudio(newerThan: nil)
+
+        // The scan read no text: read the page's frames in full.
+        let full = db.frames(ids: hits.compactMap { h -> Int64? in
+            if case .frame(let f) = h { return f.id }
+            return nil
+        })
+        let page: [[String: Any]] = hits.compactMap { h -> [String: Any]? in
+            switch h {
+            case .frame(let k):
+                // Gone meanwhile (deleted): left out.
+                guard let f = full[k.id], !list.hides(f) else { return nil }
+                return ["type": "OCR", "content": [
+                    "frame_id": f.id, "text": clip(f.text), "timestamp": f.timestamp,
+                    "app_name": f.appName, "window_name": f.windowName, "focused": f.focused,
+                    "file_path": f.videoPath.isEmpty ? f.snapshotPath : f.videoPath, "text_source": f.textSource,
+                    "offset_index": f.videoFrame, "tags": [],
+                ] as [String: Any]]
+            case .audio(let t):
+                return ["type": "Audio", "content": [
+                    "chunk_id": t.chunkId, "transcription_id": t.id, "transcription": clip(t.text),
+                    "timestamp": t.timestamp, "start_time": t.startTime, "end_time": t.endTime,
+                    "device_name": t.device, "device_type": t.isInput ? "Input" : "Output",
+                    "file_path": t.filePath, "speaker": NSNull(), "tags": [],
+                ] as [String: Any]]
+            }
+        }
+        var pagination: [String: Any] = ["limit": limit, "offset": offset, "total": total]
+        if truncated { pagination["truncated"] = true }
+        return .json(["data": page, "pagination": pagination])
+    }
+
+    /// Inside our own data dir (with the trailing slash, so a sibling folder like data-x/ is not).
+    private func isInDataDir(_ path: String) -> Bool {
+        let dir = config.dataDir.standardizedFileURL.path
+        return path.hasPrefix(dir.hasSuffix("/") ? dir : dir + "/")
+    }
+
+    /// mode=meaning: the moments closest in meaning to q, best first, in the same shape as the word search
+    /// plus a "score". Blocked apps and sites are left out.
+    private func searchByMeaning(_ s: SearchQuery, _ list: Blocklist, screen: Bool, audio: Bool, offset: Int, limit: Int, clip: (String) -> String) -> HTTPResponse {
+        guard let m = meaning, m.embedder != nil else { return .error("Search by Meaning is off", status: 400) }
+        let text = (s.q ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return .json(["data": [], "pagination": ["limit": limit, "offset": offset, "total": 0]]) }
+        func has(_ have: String, _ want: String?) -> Bool { (want ?? "").isEmpty || have.localizedCaseInsensitiveContains(want!) }
+        var mq = MeaningQuery()
+        mq.start = s.startTime; mq.end = s.endTime
+        mq.screen = screen; mq.audio = audio
+        mq.limit = min(200, offset + limit)
+        mq.match = { app, window in has(app, s.appName) && has(window, s.windowName) }
+        let hits = m.search(text, mq, blocked: list)
+        let page: [[String: Any]] = hits.dropFirst(offset).prefix(limit).map { h -> [String: Any] in
+            if h.isAudio {
+                let c = db.chunk(id: h.firstId)
+                var start = 0.0
+                if let c, let cs = Time.iso.date(from: c.timestamp), let hs = Time.iso.date(from: h.timestamp) { start = hs.timeIntervalSince(cs) }
+                return ["type": "Audio", "content": [
+                    "chunk_id": h.firstId, "transcription_id": h.id, "transcription": clip(h.text),
+                    "timestamp": h.timestamp, "start_time": start, "end_time": start,
+                    "device_name": c?.device ?? "", "device_type": c?.isInput == false ? "Output" : "Input",
+                    "file_path": c?.filePath ?? "", "speaker": NSNull(), "tags": [], "score": h.score,
+                ] as [String: Any]]
+            }
+            let f = db.frame(id: h.firstId)
+            return ["type": "OCR", "content": [
+                "frame_id": h.firstId, "text": clip(h.text), "timestamp": h.timestamp,
+                "app_name": h.appName, "window_name": h.windowName, "focused": f?.focused ?? true,
+                "file_path": f.map { $0.videoPath.isEmpty ? $0.snapshotPath : $0.videoPath } ?? "", "text_source": f?.textSource ?? "ocr", "offset_index": 0, "tags": [],
+                "score": h.score,
+            ] as [String: Any]]
+        }
+        return .json(["data": page, "pagination": ["limit": limit, "offset": offset, "total": hits.count]])
     }
 
     private func audioFile(_ idStr: String) -> HTTPResponse {
         guard let id = Int64(idStr), let c = db.chunk(id: id) else { return .error("audio not found", status: 404) }
         let path = URL(fileURLWithPath: c.filePath).standardizedFileURL.path
-        guard path.hasPrefix(config.dataDir.standardizedFileURL.path),
-              let data = FileManager.default.contents(atPath: path) else {
+        guard isInDataDir(path), FileManager.default.fileExists(atPath: path) else {
             return .error("audio file missing", status: 404)
         }
+        guard let data = RecordingFile.data(path) else { return .error("cannot read audio", status: 500) }
         return HTTPResponse(contentType: "audio/wav", body: data)
     }
 
-    private func frameImage(_ idStr: String) -> HTTPResponse {
-        guard let id = Int64(idStr), let f = db.frame(id: id) else { return .error("frame not found", status: 404) }
-        // Only serve files inside our own data dir.
-        let path = URL(fileURLWithPath: f.snapshotPath).standardizedFileURL.path
-        guard path.hasPrefix(config.dataDir.standardizedFileURL.path),
-              let data = FileManager.default.contents(atPath: path) else {
+    private func frameImage(_ idStr: String, _ list: Blocklist) -> HTTPResponse {
+        // A blocked frame answers as if it did not exist.
+        guard let id = Int64(idStr), let f = db.frame(id: id), !list.hides(f) else { return .error("frame not found", status: 404) }
+        // Only serve files inside our own data dir. The picture is a still, or a frame of a video
+        // (Compress Older Recordings).
+        let file = f.videoPath.isEmpty ? f.snapshotPath : f.videoPath
+        let path = URL(fileURLWithPath: file).standardizedFileURL.path
+        guard !file.isEmpty, isInDataDir(path), FileManager.default.fileExists(atPath: path) else {
             return .error("snapshot missing", status: 404)
         }
-        // Chrome and Firefox cannot show HEIC: send JPEG.
-        if path.hasSuffix(".heic") {
-            guard let img = ImageTools.load(URL(fileURLWithPath: path)), let jpg = ImageTools.jpegData(img) else {
-                return .error("cannot decode snapshot", status: 500)
-            }
-            return HTTPResponse(contentType: "image/jpeg", body: jpg)
+        // A JPEG still goes out as it is (decrypted when Encrypt Recordings is on). Chrome and Firefox
+        // cannot show HEIC, and a video frame is no file: send JPEG.
+        if f.videoPath.isEmpty, !path.hasSuffix(".heic") {
+            guard let data = RecordingFile.data(path) else { return .error("cannot read snapshot", status: 500) }
+            return HTTPResponse(contentType: "image/jpeg", body: data)
         }
-        return HTTPResponse(contentType: "image/jpeg", body: data)
+        guard let jpg = FrameImages.shared.jpeg(f.source) else { return .error("cannot decode snapshot", status: 500) }
+        return HTTPResponse(contentType: "image/jpeg", body: jpg)
     }
 }

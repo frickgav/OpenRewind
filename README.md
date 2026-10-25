@@ -77,19 +77,128 @@ OpenRewind is not made by or connected to Rewind AI, Limitless, or Meta.
   `OPENREWIND_EXCLUDE` adds more app names from the terminal.
 - Records **microphone** (AVAudioEngine) and **system audio** (ScreenCaptureKit)
   in 30 s chunks, 16 kHz mono WAV. Silent chunks are dropped.
-- Transcribes each chunk with **local Whisper** (`whisper-cli` from
-  whisper.cpp). Transcripts go into their own FTS5 index and show up in the
-  same search as screen text.
+- Transcribes each chunk on your computer with **local Whisper** (`whisper-cli` from
+  whisper.cpp) or **NVIDIA Parakeet v3**, your pick in **Settings → Transcription Model**
+  (see [Choosing a transcription model](#choosing-a-transcription-model)). Transcripts go into
+  their own FTS5 index and show up in the same search as screen text.
 - **Ask AI** (menu bar or tray → Ask AI…) answers questions like "what did I work on today?"
   with your own key: Anthropic, OpenAI, Gemini, OpenRouter (any model it offers), or any
   OpenAI-compatible server (Ollama, LM Studio). See [Ask AI](#ask-ai).
+- **Search by Meaning** (off until you turn it on) finds moments by what they were about, not
+  only the exact words. It runs on your computer. See [Search by Meaning](#search-by-meaning).
+- **Journal** (menu bar or tray → Journal…): one page per day with your top apps, sites and
+  windows, worked out on your computer, plus an optional AI recap. See [Journal](#journal).
 - **Meetings** (menu bar or tray → Meetings…) lists your Zoom, Teams, Meet, Webex, FaceTime and
-  Slack huddle calls with their transcript, and can summarize them with your AI key. When a call
-  starts, a small popup asks whether to take notes for it. See [Meetings](#meetings).
+  Slack huddle calls with their transcript, and can summarize them with your AI key. Within seconds
+  of joining a call, a small popup asks whether to take notes for it. See [Meetings](#meetings).
 - **Insights** (menu bar or tray → Insights…) shows where your time went today or this week,
   worked out on your computer without AI. See [Insights](#insights).
 - **Claude, Cursor and other AI apps** can search your history too, through MCP, once you turn
   it on. See [Use with Claude and other AI apps (MCP)](#use-with-claude-and-other-ai-apps-mcp).
+- **Hide secrets** (on by default, **Settings → Privacy**): before a screenshot is saved, password
+  fields, API keys and tokens (`sk-…`, `ghp_…`, `xox…-`, AWS and Google keys, JWTs, private key
+  blocks, long random strings) and card numbers (Luhn-checked) are blurred, and their text,
+  window title, address and audio transcripts get `[redacted]` instead. Search, AI and the local
+  server never see them. Older recordings are not changed.
+- **You promised** (off until you turn it on in **Settings → AI**): after meetings you take notes
+  for, and every 3 hours over chat and mail apps on screen, your own AI key picks out what you said
+  you would do, for whom and by when. Due ones show a notification; **You Promised…** in the menu
+  lists them with Done, Snooze, Dismiss and Go to Moment. Ask AI and MCP can read them
+  (`list_promises`). Blocked apps and sites are never sent.
+- **Restore Workspace**: while recording, the open apps, windows, documents (Mac) and the tab each
+  browser window shows are saved about once a minute when they change. On the timeline, **⇧O** /
+  **Shift+O** (or the top bar button) asks which of them to open again from the shown moment.
+  It never closes anything; blocked apps and sites are skipped.
+- **Phone Access** (off until you turn it on in **Settings → Security**): pair your phone with a
+  QR code, then search your screen text and transcripts, ask AI and see your promises from the
+  phone's browser on the same Wi-Fi. End-to-end encrypted with a key only the phone has; see
+  [docs/phone-access.md](docs/phone-access.md).
+
+## Compress Older Recordings
+
+**Settings → Compress Older Recordings** keeps screenshots older than an hour as short videos
+instead of one picture each. Screens change little from one frame to the next, so a video takes
+about 5 to 10 times less disk space. **It is off by default**: it is new and has not been tested on
+many Macs and PCs yet. The storage line in the menu shows what the videos save
+("Using 3.1 GB · video saves 14.2 GB").
+
+- Each video holds up to five minutes of one screen (frames of different sizes go in separate
+  videos). The last hour stays as pictures, so the recent timeline is exactly as before.
+- The Mac uses HEVC (H.265) when it has a hardware HEVC encoder, else H.264; every Mac this app
+  runs on can play both. Windows always uses H.264: playing HEVC on Windows needs the optional
+  HEVC Video Extensions, and a data folder restored on a PC without them would show nothing for
+  its older recordings. The Mac uses AVFoundation, Windows uses Media Foundation, both built into
+  the system; nothing is downloaded and nothing leaves the computer.
+- Captures wider or taller than 4096 x 2304 (ultrawide and 5K screens) are scaled down to fit,
+  since that is the most every H.264 encoder takes. A screenshot that still fails to go into a
+  video three times stays a picture.
+- Crash-safe: a video is written to a temporary file, read back and compared with the pictures,
+  moved into place, and the frames are pointed at it in one database transaction. Only then are
+  the pictures deleted. Quitting or crashing at any point loses nothing; the next run cleans up.
+- The timeline, search highlights, the local API (`GET /frames/{id}` still returns a JPEG), and
+  Ask AI's screenshots all read frames through one loader. It seeks exactly to each frame, keeps
+  the last few videos open (closed after 30 s unused on Windows) and the last 48 frames decoded
+  (at most 256 MB), so scrubbing stays quick. A keyframe every 20 frames means one frame never
+  needs more than 20 decoded to show it.
+- Deleting recordings and **Keep Recordings For** work the same: a video whose frames are all
+  deleted is deleted; one that loses only some of them is written again without them, soon after.
+  The delete and the note that the video must be redone are one database transaction, and every
+  pass also checks for videos holding more pictures than frames point at (a delete by an older
+  copy of the app, say), so deleted pictures can't be left in a video. If a video can't be
+  written again (no encoder any more, a damaged file), the frames it keeps are saved as pictures
+  and the video is deleted. Until that is done the menu and `doctor` say how many videos still
+  hold deleted frames.
+- Video is lossy. Each frame is checked against its screenshot when the video is made, but it is
+  not pixel for pixel the same. Writing a video again after a delete decodes it and encodes it
+  again, which loses a little more; that happens about once per video (**Keep Recordings For**
+  trims whole five-minute videos most of the time).
+- Turning it off stops making new videos. Videos already made keep playing.
+- `openrewind video-check` (Mac) or `OpenRewind.exe video-check` (Windows) checks that this
+  computer can make the videos: it compresses made-up screenshots in a temporary folder, reads
+  every frame back, deletes some and checks the rewrite, compresses a capture wider than 4096
+  pixels, and (on the Mac) turns a video back into pictures. `doctor` shows which codec would be
+  used, how much space the videos save, and whether the videos already made still open (after
+  moving the data folder to another computer, say).
+
+## Search by Meaning
+
+Keyword search finds the words you type. Search by Meaning also finds moments that are *about*
+the same thing in other words: "the flight I was booking" finds the airline page, "when we talked
+about hiring" finds the call where someone said "we need another engineer".
+
+Turn it on in **Settings → Search by Meaning**. OpenRewind then builds an index in the
+background: it goes through your old recordings first and then keeps up with new ones. It works
+slowly while you use the computer, slower still on battery (or in Low Power Mode on a Mac), and
+faster when you are away. The line under the switch shows how far it has got. If the index
+can't be saved (for example, the disk is full), the line says **Paused**. OpenRewind tries again
+after 1 minute, then waits twice as long each time, up to 1 hour. After 5 failed tries in a row
+it skips that one moment. The reason is in `openrewind.log`.
+
+Once it is on, the timeline's search box has a **Keyword | Meaning** switch. Meaning shows the
+closest moments first; click one to go there, as with keyword search. The browser search page and
+Ask AI (`search_by_meaning`) can use it too, and so can AI apps connected through MCP.
+
+How it works:
+
+- A "moment" is a stretch of one window (until the app, window or page changes, up to 10 minutes),
+  or one 30-second audio clip. Repeated text in a stretch is counted once.
+- Each moment gets a sentence vector made **on your computer**. The Mac uses the sentence model
+  that comes with macOS, so nothing is downloaded. Windows downloads one model the first time
+  (all-MiniLM-L6-v2, about 90 MB, from Hugging Face), checks it against a fixed SHA-256, and runs
+  it with ONNX Runtime. Your recordings are never uploaded.
+- The index is stored in the same database. Each moment keeps a copy of its text (up to about
+  1,500 characters of screen text or transcript) with its app, window title and web address
+  (table `meaning_moments`), and its vector (table `meaning_vectors`): up to about 2 KB per moment.
+  So the index holds screen text too, not only numbers, and is deleted with it.
+- Blocked apps, sites and windows are never indexed, and are hidden from results if you block
+  them later. As with Ask AI, audio is not filtered by app. Apps you unblock are only indexed from
+  then on.
+- Deleting recordings (by hand or with Keep Recordings For) deletes their vectors and text too, in
+  the same step as the recordings, so nothing from them stays searchable. Turning
+  Search by Meaning off deletes the whole index; Windows keeps the downloaded model so turning it
+  back on downloads nothing.
+- The Mac model and the Windows model are different, so their scores are not comparable. The Mac
+  uses your system language when macOS has a sentence model for it, otherwise English.
 
 ## Ask AI
 
@@ -110,9 +219,12 @@ send back capped, trimmed text:
 | `activity_summary` | Time per app, window and website, and a timeline of what was in front |
 | `search_screen` | Matching moments from the screen-text search, with a short snippet |
 | `search_audio` | Matching transcript lines (or all of them in a time range) |
+| `search_by_meaning` | The moments closest in meaning to a question, with a short snippet. Only offered while **Search by Meaning** is on |
 | `get_screen_text` | Screen text from a short time range, sampled and trimmed |
 | `view_screenshot` | One screenshot near a moment, as a JPEG. Only offered when you turn on **Let AI look at screenshots** (off by default) |
 | `list_meetings` | Meetings in a time range, with their summary, decisions and action items when they have notes (see [Meetings](#meetings)) |
+| `list_starred` | Moments the user starred (⌥⌘S / Ctrl+Alt+S), with what was on screen; blocked apps and sites are left out |
+| `list_promises` | Things the user promised (what, for whom, due), open ones first. Only offered while **You promised** is on; blocked sources are left out |
 
 Each lookup shows in the chat with the arguments the AI asked for and exactly what was sent
 back. Times in answers link back to that moment in the timeline. Each answer shows the
@@ -127,13 +239,66 @@ elsewhere. With a local model (Ollama, LM Studio) nothing leaves your computer a
 server reached over plain http on another network gets a warning, since your key would travel
 unencrypted.
 
-## Copy and export
+## Journal
+
+Open it from the menu bar or tray (**Journal…**). Each page is one day: ‹ and › go to the day
+before or after, the date picker jumps to any day, and **Today** comes back.
+
+Every page has a part worked out on your computer, with no AI and nothing sent anywhere:
+
+- first and last activity and the total active time (a screenshot counts until the next one, at most 2 minutes)
+- top apps, top websites and top window or document titles
+- when audio was recorded (microphone, system audio or both)
+
+Apps, sites and windows on your block list are never shown: a blocked app is left out of every
+list, and a blocked site or window keeps only its app name. Screenshots saved while a blocked window
+or site was in front are left out of every list too (their time still counts as active). Click a
+time to open that moment in the timeline.
+
+**Recap**: with an AI provider set up in **AI Settings**, **Write Recap** asks your model for a
+short recap: what you worked on, who you talked to, and open loops to follow up. It sends that
+day's history with your key: app and window names, web addresses, transcripts and some screen text.
+
+- It uses the same lookups as Ask AI, and every lookup (including the ones the model asks for) is
+  limited to that day. **What was sent** lists each lookup and exactly what went to the provider.
+- Blocked sites and windows are left out, and a blocked app shows only as "(blocked app)" with its
+  time. **Audio transcripts are not filtered by app**, so a call heard while a blocked app was open
+  is still sent.
+- The page shows the tokens and cost. Times in the recap link to that moment in the timeline.
+- Recaps are saved in the database (`journal_recaps`), so a day is not written (or paid for) again;
+  **Rewrite** replaces it. One written before the day was over says so.
+- Each recap remembers the block list it was written with. If you block something new later, older
+  recaps are hidden (and left out of exports) until you rewrite them, since they may mention it.
+
+**Settings → Write Each Day's Recap Automatically** (also a switch in the Journal window) is off by
+default because it spends tokens. When on, it writes **yesterday's** recap the first time the app is
+running on the next day, with the AI provider it was turned on for; after you switch providers in
+AI Settings it pauses until you turn it on again.
+
+- Days with nothing recorded are skipped. A day the app is not running the day after (say, a long
+  weekend with the computer off) gets no automatic recap; open it and use **Write Recap**.
+- A recap you wrote by hand during the day is replaced by one of the whole day.
+- If it fails (offline at login, a busy provider), it tries again 10 minutes later, at most 3 times
+  for that day.
+
+**Deleting recordings**: deleting a time range by hand (**Delete Recordings → Last Hour**, **Today** …) also
+deletes the recaps of the days it touches, and deleting all recordings deletes every recap. **Keep …
+Recordings For** deletes a day's recap only once nothing of that day (screen or audio) is left, so
+with **Keep For 1 Day** yesterday's recap stays while part of yesterday does.
+
+**Copy as Markdown** and **Save as Markdown…** export the page. In the recap, times become plain
+text, any other link or image becomes its text and address in plain text, and HTML is escaped, so
+opening the file never loads anything.
+
+## Copy, export and delete
 
 Get things out of the timeline, on the Mac and on Windows:
 
 - **Copy text from the past**: drag across words on any screenshot in the timeline to select
   them, then **⌘C** / **Ctrl+C**. The Mac uses Live Text (VisionKit); Windows reads the shown
   screenshot with Windows OCR. Both run on your computer.
+- **Copy All Text** (**⇧⌘C** / **Ctrl+Shift+C**, or right-click the screenshot) copies all the text
+  saved for the shown moment, from the accessibility tree or OCR, even for frames recorded long ago.
 - **Copy Screenshot**: **⌘C** / **Ctrl+C** with no text selected copies the whole screenshot as
   an image. **Save Screenshot…** (**⌘S** / **Ctrl+S**) saves it as a PNG.
 - **Export Clip…** (**⌘E** / **Ctrl+E**) turns a stretch of the timeline into an MP4 video or an
@@ -148,6 +313,26 @@ Get things out of the timeline, on the Mac and on Windows:
   to the file.
 - The share button at the top of the timeline (or a right-click on the screenshot on Windows) has
   all of these, plus **Copy All Text** and **Mark Clip Start / End Here**.
+
+Delete things from the timeline, on the Mac and on Windows (each asks first, and can't be undone):
+
+- The trash button at the top of the timeline has all of these.
+- **Select a stretch**: **⇧-drag** / **Shift-drag** across the bar at the bottom (or pick **Select a
+  Stretch to Delete…** from the trash button, then drag), or press **[** where it starts and **]**
+  where it ends. A bar over the dock shows what is selected, with **Delete…**, **Export Clip…** and
+  ✕. A stretch takes every app's screenshots in it (also ones hidden or filtered out); you choose
+  whether the audio clips that start in it go too.
+- **⌫** / **Delete** deletes the selected stretch, or the shown screenshot when nothing is selected.
+- **Delete Every Screenshot with "…"** (trash button, while keyword search has words in it)
+  deletes every screenshot that has those words, in any app and on any day: for a password or key
+  that was on screen.
+- What was made from them goes too: the screen text and its search index rows, Search by Meaning
+  moments, stars on them, meeting titles taken from them and the journal recap of the day. Videos
+  are written again without them (see Compress Older Recordings).
+- The deleted text is not left in the database file: SQLite overwrites what a delete frees
+  (`secure_delete`), the search index drops the words at once (FTS5 `secure-delete`; Windows' SQLCipher
+  is too old for it, so there the index is merged after a delete, a little at a time), and the
+  write-ahead log is emptied. The same goes for **Delete Recordings** in the menu.
 
 What is left out:
 
@@ -176,16 +361,21 @@ Cancel.
 ## Meetings
 
 OpenRewind finds your calls in what it already records; nothing extra runs during a call.
-A meeting starts when Zoom, Microsoft Teams, Webex, FaceTime or a Slack huddle is the app in front
-(not its chat, calendar or home window), or the browser in front shows Google Meet, Teams, Zoom or
-Webex, and other people can be heard (system audio). It goes on while that app is in front; after you
-switch away, your microphone keeps it going for up to 30 minutes (say, while you share slides) and
-other sound for up to 15. It ends after 3 minutes with none of these, and calls in the same app less
-than 10 minutes apart (a dropped call, a rejoin) become one. Blocked apps and sites never become
-meetings. Without Whisper, audio waiting to be transcribed does not count as sound.
+A meeting starts as soon as a call is on your screen: a Google Meet meeting (not Meet's start page),
+Zoom's meeting window or a Zoom meeting in the browser (not Zoom's home), a Teams call or meeting
+window, a Webex meeting, a FaceTime call or a Slack huddle. Another window of these apps (say, Zoom or
+Teams with no meeting name in its title) counts only once other people can be heard (system audio) for
+a minute. A meeting goes on while its window or page is in front; after you switch away, your
+microphone keeps it going for up to 30 minutes (say, while you share slides) and other sound for up
+to 15. It ends after 3 minutes with none of these, and calls in the same app less than 10 minutes apart
+(a dropped call, a rejoin) become one. Blocked apps, sites and private windows never become meetings.
+Without Whisper, audio waiting to be transcribed does not count as sound.
 
-**Take notes?** A minute or two into a call, a small popup asks "Meeting detected in Zoom. Take
-notes?" in the corner of the screen. It does not take focus from the call.
+**Take notes?** Within about 10 seconds of a call coming to the front, even before anyone speaks, a
+small popup asks "Meeting detected in Google Meet. Take notes?" in the corner of the screen. It does
+not take focus from the call, and it stays while you switch to other windows (until a while after
+the call ends). It asks only once per call. If you say Take Notes, the call is kept with its transcript from the moment
+you joined, even if you spend the call in other windows.
 
 - **Take Notes** keeps the call in Meetings with its transcript and, if summaries are on (below),
   sends it for a summary when it ends.
@@ -262,15 +452,51 @@ just more slowly.
 
 ## Use with Claude and other AI apps (MCP)
 
-Claude Desktop, Claude Code, Cursor and other apps that support the
+Claude Desktop, Claude Code, ChatGPT, Cursor and other apps that support the
 [Model Context Protocol](https://modelcontextprotocol.io) can look things up in your history
 with the same lookups as Ask AI (the table above). Ask them "what was I reading about
 databases yesterday?" and they search OpenRewind on your computer.
 
-It is **off by default**. Turn on **Settings → Allow AI Apps to Read My History (MCP)**, then
-open **Settings → Connect AI Apps…**: it shows the setup for Claude Desktop, Claude Code and
-Cursor with this copy's path filled in, each with a **Copy** button. For Claude Desktop it looks
-like this (Mac path shown; on Windows it is the path of your `OpenRewind.exe`):
+It is **off by default**. Open **Settings → Connect AI Apps…** and click the button for your app:
+
+| Button | What it changes |
+| --- | --- |
+| **Add to Claude** (Claude Desktop) | the `openrewind` entry in `claude_desktop_config.json` (Mac: `~/Library/Application Support/Claude/`; Windows: `%APPDATA%\Claude\`, or `%LOCALAPPDATA%\Packages\Claude_…\LocalCache\Roaming\Claude\` for the Microsoft Store version) |
+| **Add to Claude Code** | runs `claude mcp add --scope user openrewind -- <this app> mcp` when it finds the `claude` command; otherwise writes the same entry in `~/.claude.json` |
+| **Add to ChatGPT** | the `[mcp_servers.openrewind]` table in `~/.codex/config.toml` (Windows: `%USERPROFILE%\.codex\config.toml`; `CODEX_HOME` if you set it), which the ChatGPT desktop app and Codex read |
+| **Add to Cursor** | the `openrewind` entry in `~/.cursor/mcp.json` |
+
+Adding an app also turns on **Allow AI Apps to Read My History (MCP)**. Each row then says
+**Added**, offers **Restart Claude** (or ChatGPT, Cursor) when the app is open, since apps read
+their setup when they start, and **Remove**, which takes out exactly that entry. Restart asks
+first, then quits the app the normal way and opens it again; a reply it is still writing, or a
+message you haven't sent, may be lost. If the entry points at another copy of OpenRewind (you
+moved the app) or has options you added, the row says so and the button reads **Update**. If you
+turned OpenRewind off in the app (`"disabled": true`, or `enabled = false` for ChatGPT), the row
+says **Turned off** and **Turn On** switches it back on.
+
+- Only that one entry changes. Everything else in the file stays as it was. The new version goes
+  to a private temporary file next to it and replaces the file in one step, only if the app
+  didn't change the file in the meantime (otherwise OpenRewind starts over with what the app
+  wrote), so it is never left half-written. Claude Desktop with both a Store and a classic
+  install has two files: both change, or neither.
+- The previous version is kept as one `<file>.openrewind-backup` next to it, readable only by
+  you, and **Remove** deletes it. If the file is a link into a folder you keep in git (dotfiles),
+  the backup is created in that folder: add `*.openrewind-backup` to its `.gitignore`.
+- It is best to quit Claude Desktop before adding: it may write its own settings back when it
+  quits. Claude Code is set up with its own `claude` command when OpenRewind finds it (also when
+  installed with nvm, Volta, asdf, fnm, Bun or Homebrew).
+- A file OpenRewind can't read safely (not valid JSON, not saved as UTF-8, or ChatGPT's file
+  already sets up `openrewind` some other way) is never changed: the row says what's wrong and
+  you can set it up by hand.
+- **ChatGPT**: OpenRewind works in **Work** chats in the ChatGPT desktop app (Mac and Windows) and
+  in Codex, which start local MCP servers from `config.toml`. What OpenRewind returns there goes
+  to OpenAI like anything else in the chat. Regular chats and chatgpt.com in a browser can't reach
+  it: they only connect to MCP servers on the internet.
+
+For other AI apps, the window also shows the lines to paste, with this copy's path filled in and
+a **Copy** button. For most apps they look like this (Mac path shown; on Windows it is the path of
+your `OpenRewind.exe`):
 
 ```json
 {
@@ -283,12 +509,18 @@ like this (Mac path shown; on Windows it is the path of your `OpenRewind.exe`):
 }
 ```
 
-That goes in `~/Library/Application Support/Claude/claude_desktop_config.json` (Windows:
-`%APPDATA%\Claude\claude_desktop_config.json`); Cursor uses the same lines in `~/.cursor/mcp.json`.
-For Claude Code, run once:
+Claude Code by hand, run once:
 
 ```bash
 claude mcp add --scope user openrewind /Applications/OpenRewind.app/Contents/MacOS/OpenRewind mcp
+```
+
+ChatGPT and Codex by hand, in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.openrewind]
+command = '/Applications/OpenRewind.app/Contents/MacOS/OpenRewind'
+args = ['mcp']
 ```
 
 How it works:
@@ -315,6 +547,61 @@ How it works:
   for, and many AI apps (Claude Code, Cursor) can do both. OpenRewind tells the AI to treat it as
   data only, but keep an eye on what it does with your history.
 
+## Choosing a transcription model
+
+**Settings → Transcription Model** picks what turns recorded speech into text. Every choice runs
+on your computer; audio never leaves it.
+
+| Model | Download | Languages | Notes |
+| --- | --- | --- | --- |
+| **Whisper (Automatic)** (default) | none | 99 | Uses the ggml Whisper model already on the computer (see [Whisper](#whisper)). Needs `whisper-cli`. |
+| **Whisper Base** | 148 MB | 99 | Fast, less accurate. Needs `whisper-cli`. |
+| **Whisper Small** | 488 MB | 99 | A good balance. Needs `whisper-cli`. |
+| **Whisper Large v3 Turbo** | 574 MB | 99 | The most accurate Whisper, and the slowest. Needs `whisper-cli`. |
+| **NVIDIA Parakeet v3** | 670 MB | 25 European | Very accurate, with punctuation and capitals, and fast on a CPU. Needs nothing else. |
+
+- Picking a model that is not on the computer yet shows its size and downloads it, with a progress
+  bar. Files come from a fixed commit on Hugging Face and are checked against their SHA-256 before
+  they are used (again the first time they are used after each start of the app). A download that
+  stops, or gets no data for 60 seconds, carries on where it left off with **Try Again**. They are
+  saved in `~/.openrewind/models`: Whisper files where Whisper already looks, under their own names
+  (`ggml-small.openrewind.bin`, so a `ggml-small.bin` you put there yourself is never replaced);
+  Parakeet in `models/parakeet-tdt-0.6b-v3-int8`. Delete a file to free the space.
+- The new model is used for audio recorded from then on. **Re-transcribe Recent Audio** (last hour,
+  day or week) runs older clips through it too. It says how many clips that is and about how long it
+  keeps the processor busy; new recordings still go first. The new text **replaces the old for good**
+  (the old text stays searchable only until each clip is redone). Clips where no speech was found
+  are left as they are, and meeting notes already made are kept: re-transcribing does not make them
+  again or send the transcript to your AI provider again.
+- The menu shows the model in use, when it last finished a clip and how long that took, and how many
+  clips are waiting.
+- Each transcript line records which model wrote it (`audio_transcriptions.engine`:
+  `whisper.cpp:ggml-small`, `parakeet-tdt-0.6b-v3`, …). Search, Ask AI, the timeline and MCP read
+  every line the same way.
+- Parakeet languages: Bulgarian, Croatian, Czech, Danish, Dutch, English, Estonian, Finnish, French,
+  German, Greek, Hungarian, Italian, Latvian, Lithuanian, Maltese, Polish, Portuguese, Romanian,
+  Russian, Slovak, Slovenian, Spanish, Swedish and Ukrainian. It finds the language by itself; the
+  `--language` option only applies to Whisper. For other languages pick a Whisper model: when
+  `--language` is set to one Parakeet does not know, picking Parakeet (or re-transcribing with it)
+  warns first.
+- Parakeet runs on [ONNX Runtime](https://onnxruntime.ai) (MIT), built into the app (its notice is in
+  `THIRD_PARTY_NOTICES.txt`, which ships with both apps). It holds about 1 GB of memory while it is
+  loaded and lets go of it after 5 minutes with no audio to do. **While audio recording is on, a clip
+  arrives every 30 seconds, so it stays loaded the whole time**; turn audio off, or pick Whisper, to
+  get that memory back. Long audio (`ingest-audio` of a talk, or a long `--chunk`) goes through the
+  model in pieces of at most 30 seconds, so memory stays the same however long it is. On a 4-core
+  Linux test machine (the Windows code) a 30 s clip took 3.4–3.6 s, about 9 times faster than real
+  time, and 5 minutes took 25 s.
+- From the terminal, `--model parakeet-v3` (or `whisper-small`, …) picks a model for one run, for
+  example `openrewind ingest-audio talk.wav --model parakeet-v3`.
+
+[NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) is made by NVIDIA
+and licensed [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/). OpenRewind downloads the
+version [converted to ONNX and quantized to int8](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8)
+by the [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) project (Apache-2.0), and uses it as it is.
+Whisper models are [OpenAI's Whisper](https://github.com/openai/whisper) (MIT) in the ggml format of
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT).
+
 ## Mac app
 
 ```bash
@@ -336,13 +623,18 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
 - **O** (or the button at the bottom right of the screenshot) goes back to that moment:
   it reopens the browser tab (Safari, Chrome, Arc, Dia, Edge, Brave, Firefox), the document
   the app had open (Pages, Preview, Xcode…), or brings the app's window with that title to the front.
+- **Star moments**: **⌥⌘S** from anywhere (or **Star This Moment** in the menu) stars what is on
+  screen now; on the timeline **S** or the ☆ button stars the shown moment (again to unstar). Stars
+  show as small yellow stars on the bar, and the **Starred** button next to search lists them
+  (search words then only match starred moments). Only the time is saved; deleting recordings
+  deletes their stars too. Ask AI and AI apps can read them with `list_starred`.
 - **App filter**: the **All apps** button next to the search box (or **A** for the app in the
   shown screenshot) limits the timeline to the moments when one app was in front. Time spent in
   other apps shrinks to breaks on the bar, ← → skip straight between that app's screenshots, and
   search only finds that app's screen text (and speech heard while it was in front).
 - **Copy and export**: drag across text on a screenshot and **⌘C** copies it; with nothing
   selected **⌘C** copies the screenshot, **⌘S** saves it as a PNG, **[** and **]** mark a clip and
-  **⌘E** exports it as MP4 or GIF. See [Copy and export](#copy-and-export).
+  **⌘E** exports it as MP4 or GIF. See [Copy, export and delete](#copy-export-and-delete).
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
 - **Insights…** shows where your time went today or this week (see [Insights](#insights)).
@@ -359,9 +651,19 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
   launch and every hour.
 - **Settings → Delete Recordings**: last 15 minutes, last hour, today, all
   screen, all audio, or everything (asks first).
+- **Settings → Compress Older Recordings** keeps screenshots older than an hour as video, for
+  about 5 to 10 times less disk space. Off by default; see
+  [Compress Older Recordings](#compress-older-recordings).
+- **Settings → Transcription Model**: Whisper (Automatic, the default), Whisper Base, Small or
+  Large v3 Turbo, or NVIDIA Parakeet v3, plus **Re-transcribe Recent Audio**. See
+  [Choosing a transcription model](#choosing-a-transcription-model).
 - **Settings → Local Search Server** turns on the API and browser search page at
   `http://127.0.0.1:3031`. Off by default. Only this Mac can connect. The terminal
-  commands `record` and `serve` always start it.
+  commands `record` and `serve` always start it. Blocked apps and sites are left out of it, as
+  in Ask AI.
+- **Settings → Search by Meaning** (off by default) indexes your recordings in the background
+  so you can search by meaning, with the model that comes with macOS. See
+  [Search by Meaning](#search-by-meaning).
 - **Settings → Launch at Login** starts it with your Mac.
 - The lock screen and screen saver are never recorded.
 - **Settings → Blocked Apps & Sites** picks apps to blur, plus words that hide a window when its
@@ -472,12 +774,16 @@ Then open http://127.0.0.1:3031.
 
 ### Whisper
 
-Needs `whisper-cli` (`brew install whisper-cpp`) and a ggml model.
-OpenRewind looks for a model in this order:
+Needs `whisper-cli` (`brew install whisper-cpp`) and a ggml model. **Settings → Transcription
+Model** downloads one (Whisper Base, Small or Large v3 Turbo), or OpenRewind looks for a model in
+this order:
 
 1. `--whisper-model PATH` or `$OPENREWIND_WHISPER_MODEL`
-2. `~/.openrewind/models/ggml-*.bin`
-3. VoiceInk's models folder (already on this Mac: `ggml-large-v3-turbo-q5_0.bin`)
+2. The Whisper size picked in Settings, once downloaded
+3. `~/.openrewind/models/ggml-*.bin`
+4. VoiceInk's models folder (already on this Mac: `ggml-large-v3-turbo-q5_0.bin`)
+
+NVIDIA Parakeet v3 needs neither `whisper-cli` nor a ggml file: pick it in Settings and it downloads.
 
 Test it without a mic:
 
@@ -494,22 +800,134 @@ permission is optional; it gives cleaner text than OCR.
 
 On when you run `record` or `serve` from the terminal, or after **Settings → Local Search Server** in the app.
 
+Nothing the block list covers comes back: screenshots of a blocked app, a blocked site, a private
+window or a window or address with a blocked word are left out of `/search` (also `mode=meaning`),
+and `/frames/{id}` answers `404` for them, the same rule as Ask AI and AI apps. That includes
+screenshots saved before you blocked them, when the blocked app, site or window was the one in front.
+An older screenshot of another app can still show a blocked window behind it, and its text can
+include text from that window. `/apps` leaves out blocked apps. Audio transcripts are not filtered
+by app (a clip has no app). The `total` in `pagination` counts only what can be shown, on every page.
+
+If a search would have to skip more than 20,000 hidden screenshots, it stops there: `pagination`
+then has `"truncated": true`, and `total` counts only what comes before that point.
+
 | Route | What |
 |-------|------|
 | `GET /health` | Status, frame count, permissions |
 | `GET /search?q=&app_name=&window_name=&start_time=&end_time=&limit=&offset=&max_content_length=` | Full-text search. Times: ISO, `2h ago`, `today`, `yesterday`, `YYYY-MM-DD` |
-| `GET /frames/{id}` | Snapshot as JPEG |
+| `GET /frames/{id}` | Snapshot as JPEG (also for frames kept in a video) |
 | `GET /apps?start_time=` | Apps with frame counts |
 | `GET /audio/{chunk_id}` | Audio chunk WAV |
 
 `content_type`: `all` (screen + audio), `ocr` (screen only), `audio`.
 
-Response: `{"data":[{"type":"OCR","content":{"frame_id","text","timestamp","app_name","window_name","file_path","text_source"}},{"type":"Audio","content":{"chunk_id","transcription","timestamp","start_time","end_time","device_name","device_type"}}],"pagination":{"limit","offset","total"}}`
+`mode=meaning` searches by meaning instead of words (only while **Search by Meaning** is on, else
+400; `/health` says `"search_by_meaning": true`). Results come best first, in the same shape plus a
+`score`, and leave out blocked apps and sites. A screen result is a moment: `timestamp` is where
+it starts and `text` is the moment's text.
+
+Response: `{"data":[{"type":"OCR","content":{"frame_id","text","timestamp","app_name","window_name","file_path","text_source"}},{"type":"Audio","content":{"chunk_id","transcription","timestamp","start_time","end_time","device_name","device_type"}}],"pagination":{"limit","offset","total"}}` (plus `"truncated": true` when a search stopped early, see above)
+
+## Encryption and App Lock
+
+Both are off by default. Find them in **Settings → Encryption & Lock**, on the Mac and on Windows.
+
+**Encrypt Recordings** encrypts new screenshots, audio clips and compressed videos (Compress Older
+Recordings) with AES-256-GCM, and the database with [SQLCipher](https://www.zetetic.net/sqlcipher/).
+The database holds everything else OpenRewind keeps: the text of each screenshot, transcripts, the
+Journal's recaps, Meetings and their notes, and the Search by Meaning index, so those are encrypted
+too. What is already recorded is encrypted in the
+background; quitting halfway is fine, it carries on at the next launch. Turning it off decrypts
+everything back the same way. The menu shows how far it has got. The database is rewritten in one
+go first: recording waits until that is done (a few seconds, up to a minute or two for a very large
+history), and it needs free disk space for a second copy of the database.
+
+- **What it protects against:** someone who copies your disk, a backup or the `~/.openrewind`
+  folder, and other user accounts on the same computer. Without your login they see only
+  encrypted files.
+- **What it does not protect against:** apps running as you. OpenRewind has to record in the
+  background without asking for a password, so the key is kept where your login unlocks it: the
+  login Keychain on the Mac, DPAPI for your Windows account on Windows
+  (`~/.openrewind/encryption-key.dpapi`). Anything that can run as you can ask for it too. The
+  login Keychain is a file (`~/Library/Keychains/login.keychain-db`) protected by your login
+  password; it is not tied to this Mac, so a copy of it plus your password opens the key.
+- **What was there before:** backups, Time Machine snapshots and cloud copies made before you turned
+  it on still hold the plain files, and the old plain files are deleted, not wiped, so they can stay
+  on the disk until it reuses the space. Turn it on before you record anything sensitive, or delete
+  the older backups.
+- **The log** (`~/.openrewind/openrewind.log`) is a plain file. With encryption on it no longer
+  names the app of each saved frame or meeting, or a meeting's times; earlier lines (from before it
+  was on) still do.
+- **Recovery key:** **Export Recovery Key…** saves the key as a text file (72 characters in 9 groups)
+  that only you can read. OpenRewind offers to save it when you turn encryption on. If the Keychain
+  or your Windows account is reset, or you move your recordings to another computer, OpenRewind asks
+  for it at launch and checks it against your recordings. **If you lose the key and the Keychain or
+  Windows account, the recordings are lost for good.** Keep it somewhere safe, like a password
+  manager. The same key works in the Mac and the Windows app. OpenRewind never replaces a stored key
+  it cannot read, and keeps a copy of the old one when a recovery key replaces it.
+- Speech to text: each clip is decrypted in memory. Parakeet works from memory; whisper-cli needs a
+  file, so it gets the clip as a WAV file in your temp folder that only you can read, for the few
+  seconds it takes, deleted right after.
+- Compressed videos: the video player reads files, so a video being shown (timeline, search, clip
+  export, AI screenshots) is decrypted to a file in your temp folder that only you can read, while it
+  is in use. It is closed and deleted after 30 seconds unused, when the timeline closes or the app
+  locks or quits, and after each AI-app (MCP) request. A new video is made in the temp folder and
+  saved into `data/video` encrypted; no plain video is written under `data/`. Copies left by a crash
+  are removed when the app, `record`, `serve` or `mcp` next starts, and on each pass of Compress
+  Older Recordings.
+- Exports are plain on purpose: a clip (GIF or video), Save Screenshot, Live Text, and the Journal's
+  and Meetings' Copy and Save as Markdown write ordinary files where you choose, for you to share.
+- The Search by Meaning model files are not encrypted: they are the public all-MiniLM-L6-v2 model,
+  not your data. Its index of your history is in the encrypted database.
+- AI apps (MCP) keep working with encryption on: `OpenRewind mcp` reads the key the same way the app
+  does (Keychain or DPAPI) and opens the database read-only. With the App Lock on, they follow it (see
+  below).
+- Files (format version 2): an encrypted file is `ORENC`, the version, a key id (4 bytes), a 12-byte
+  nonce, the encrypted data and a 16-byte tag. The file key and the database key are both derived
+  from the one key you can export (HKDF-SHA256, salt `OpenRewind`, info `openrewind/files/v2` and
+  `openrewind/db/v2`), so they are never the same. Each file is also bound to its place under
+  `data/` (for example `2026-10-19/14-30-05.jpg`), so files swapped or moved inside the folder do
+  not open. Plain and encrypted files can sit side by side, so the switch can stop anywhere.
+- Libraries: [skiptools/swift-sqlcipher](https://github.com/skiptools/swift-sqlcipher) 1.9.0 on
+  the Mac (SQLCipher 4.15.0 with LibTomCrypt, built into the app and pinned to one commit in
+  `Package.resolved`), and `SQLitePCLRaw.bundle_e_sqlcipher` 2.1.10 on Windows, which carries an
+  older community build (SQLCipher 4.5.2). Both use the SQLCipher 4 default format, so a database
+  moves between them; the Windows one should move to a newer build when one is available. Their
+  licenses are in `THIRD_PARTY_NOTICES.txt`, which ships with both apps.
+- For developers: every reader of recordings goes through one loader, `RecordingFile.read(path)`
+  on the Mac and `RecordingFile.Read(path)` on Windows. It returns the plain bytes of a plain or an
+  encrypted file. Pictures (stills and video frames) go through `FrameImages`, and both speech
+  engines read clips through `Transcriber.loadClipSamples` (Mac) / `Transcriber.LoadClipSamples`
+  (Windows), which use it. New features that open screenshots, videos or audio should call these
+  too; recordings are written with `RecordingFile.write` / `RecordingFile.Write`.
+  `OpenRewind selftest-encryption` (Mac) checks the format against the vectors in the Windows tests.
+
+**Require Touch ID or Password to Open Timeline** (Mac) / **Require Windows Hello to Open Timeline**
+(Windows) asks before showing the timeline, search, Ask AI, Journal, Meetings, Insights, Blocked Apps &
+Sites, the data folder and setup, before opening a moment from an Ask AI answer, and before deleting recordings or
+changing how long they are kept. Recording keeps going while locked. An unlock lasts until the screen
+locks or the computer sleeps, or until **Lock Again After** has passed with none of those windows in
+use (5 minutes, 15 minutes (default), 1 hour, or only when the screen locks); then they close. While
+locked, the Local Search Server answers `423 Locked` for search, screenshots and audio, and `/health`
+says only that it is running. AI apps (MCP) follow the lock too: with it on, they get your history
+only while OpenRewind is running and unlocked (within **Lock Again After** of its last use), and
+otherwise get a message saying it is locked. Turning AI apps on or off and **Connect AI Apps…** ask
+for the unlock first. Windows Hello needs at least a PIN; without it (or after it is removed)
+your Windows password works instead, so you can always turn the lock off. A Mac needs a login password.
+
+The lock is against someone using your computer while you are away from it, not against programs
+running as you: those could turn it off in the settings file (`settings.json` on Windows,
+`defaults` on the Mac) or run `OpenRewind serve` from a terminal. Encrypt Recordings is what protects
+the files.
 
 ## Data
 
-`~/.openrewind/db.sqlite`, `~/.openrewind/data/<date>/*.heic` (`*.jpg` on Windows and older recordings), and
-`~/.openrewind/data/audio/<date>/*.wav`.
+`~/.openrewind/db.sqlite`, `~/.openrewind/data/<date>/*.heic` (`*.jpg` on Windows and older recordings),
+`~/.openrewind/data/video/<date>/*.mp4` (with Compress Older Recordings on), and
+`~/.openrewind/data/audio/<date>/*.wav`. In the API, a frame kept in a video has the video as
+`file_path` and its frame number in it as `offset_index`.
+With Encrypt Recordings on, these files keep their names but are encrypted (see
+[Encryption and App Lock](#encryption-and-app-lock)).
 Delete the folder to wipe everything, or from the terminal:
 
 ```bash
@@ -521,11 +939,12 @@ Delete the folder to wipe everything, or from the terminal:
 ## Not yet (Rewind had these)
 
 - Speaker identification (who said what)
+- Meeting summaries (Ask AI and the Journal recap summarize the day's transcripts, but not each meeting on its own)
 - UI input events (clicks, keys)
 - Browser URL per frame
-- Video chunk encoding (ffmpeg) instead of JPEGs
 - Plugins
 
 ## License
 
-[MIT](LICENSE). Use it, change it, share it.
+[MIT](LICENSE). Use it, change it, share it. What the apps include from others, and under which
+licenses, is in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).

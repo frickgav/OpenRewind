@@ -13,6 +13,10 @@ final class TimelineModel: ObservableObject {
     private var allFrames: [TimelineFrame] = []
     /// Only show moments when this app was in front (nil = all apps).
     @Published private(set) var appFilter: String?
+    /// Apps never shown in the timeline (see HiddenApps), as the timeline names them.
+    @Published private(set) var hiddenApps: [String] = HiddenApps.names
+    /// `hiddenApps` in lower case.
+    var hiddenKeys: Set<String> { Set(hiddenApps.map { $0.lowercased() }) }
     @Published private(set) var audio: [TimelineAudio] = []
     /// Recorded stretches, with long breaks between them (see TimelineAxis).
     private(set) var sessions: [TimelineAxis.Session] = []
@@ -31,9 +35,22 @@ final class TimelineModel: ObservableObject {
     @Published var selectedHit = 0
     /// True while the result list is open under the search box.
     @Published var showResults = false
+    /// Recent meetings, for the Meetings chip under search (newest first).
+    @Published private(set) var meetings: [Meeting] = []
     /// Bumped to ask the view to focus the search box.
     @Published var focusSearchToken = 0
     var searchWork: DispatchWorkItem?
+    /// Search by Meaning, when the app has it. It can search only once its model is loaded.
+    var meaning: MeaningService?
+    /// The user picked Meaning over Keyword in the search box.
+    @Published var byMeaning = false
+    /// A meaning search is running in the background.
+    @Published var searching = false
+    /// Starred moments (see Stars.swift), and whether the result list shows only them.
+    @Published var stars: [Star] = []
+    @Published var starredOnly = false
+    /// Bumped by each search, so an older meaning search that finishes late is dropped.
+    var searchSeq = 0
     /// Set by the overlay: gives the keyboard back to the timeline (so space plays audio again).
     var leaveSearchBox: (() -> Void)?
     /// Set by the overlay: closes it without giving focus back to the app that was in front.
@@ -56,6 +73,13 @@ final class TimelineModel: ObservableObject {
     @Published var clipStart: Date?
     @Published var clipEnd: Date?
     @Published var exportClip: ClipRange?
+    /// A delete is running (TimelineDelete.swift); another waits for it to finish.
+    var deleting = false
+    /// The next drag across the bar selects a stretch instead of moving (Select a Stretch, TimelineDelete.swift).
+    @Published var selectingRange = false
+    /// True while the timeline is on screen. A Save dialog checks it after it closes: the timeline may have been
+    /// closed (or App Lock locked) while it was up, and then nothing is read or saved.
+    var isShown = false
     /// Live Text on the shown screenshot, for copying what is selected (see LiveText.swift).
     weak var liveText: ImageAnalysisOverlayView?
     private var thumbCache: [Int64: NSImage] = [:]
@@ -69,7 +93,15 @@ final class TimelineModel: ObservableObject {
     /// "Now" as of the last reload. The bar uses this instead of the clock, so it holds still while open.
     private(set) var now = Date()
 
-    init(db: Database) { self.db = db }
+    private var hiddenObserver: NSObjectProtocol?
+
+    init(db: Database) {
+        self.db = db
+        // Shown again from Settings → Blocked Apps & Sites while the timeline is open.
+        hiddenObserver = NotificationCenter.default.addObserver(forName: HiddenApps.changed, object: nil, queue: .main) { [weak self] _ in
+            self?.refreshHidden()
+        }
+    }
 
     var current: TimelineFrame? { frames.indices.contains(index) ? frames[index] : nil }
 
@@ -83,10 +115,8 @@ final class TimelineModel: ObservableObject {
         let f = frames[frameIndex(at: date)]
         guard date <= (f.end == nil ? f.time.addingTimeInterval(60) : AppFilter.until(f)) else { return nil }
         if let img = thumbCache[f.id] { return (f, img) }
-        let opts = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 480,
-                     kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary
-        guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: f.path) as CFURL, nil),
-              let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts) else { return (f, nil) }
+        guard let cg = FrameImages.shared.thumbnail(f.source, maxPixels: 480)
+                ?? currentSource(f).flatMap({ FrameImages.shared.thumbnail($0, maxPixels: 480) }) else { return (f, nil) }
         let img = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
         thumbCache[f.id] = img
         thumbOrder.append(f.id)
@@ -119,6 +149,18 @@ final class TimelineModel: ObservableObject {
     }
 
     /// Go back to this moment: the browser tab, the document, or the app window.
+    /// ⇧O and the top bar button: open again what was open at the shown moment, after asking which.
+    func restoreWorkspace() {
+        let at = current?.time ?? playhead
+        guard let snap = db.workspace(at: at) else { show(notice: "No workspace was saved around this moment"); return }
+        let items = Workspace.restorable(snap.items, BlocklistStore.shared.current)
+        guard !items.isEmpty else { show(notice: "Nothing from this moment can be opened again"); return }
+        guard let picked = WorkspaceRestore.ask(snap, items), !picked.isEmpty else { return }
+        closeForOpen?()
+        let n = WorkspaceRestore.open(picked)
+        log("restore workspace: opened \(n) of \(picked.count)")
+    }
+
     func openCurrent() {
         guard let target = currentTarget, let f = current else {
             show(notice: "Nothing to open for this moment")
@@ -171,8 +213,14 @@ final class TimelineModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
     }
 
-    /// Apps in the loaded history, the one in front longest first (for the app filter menu).
-    private(set) var apps: [String] = []
+    /// Apps in the loaded history, the one in front longest first, hidden ones too.
+    private var allApps: [String] = []
+
+    /// Apps in the loaded history that are not hidden, the one in front longest first (for the app filter menu).
+    var apps: [String] { let h = hiddenKeys; return allApps.filter { !h.contains($0.lowercased()) } }
+
+    /// Every loaded screenshot, hidden apps too (search checks speech against it).
+    var allTimelineFrames: [TimelineFrame] { allFrames }
 
     /// The newest screenshot of any app.
     var newest: TimelineFrame? { allFrames.last }
@@ -196,11 +244,61 @@ final class TimelineModel: ObservableObject {
         show(notice: "Only showing \(app). Press A for all apps.")
     }
 
-    /// Frames and the bar's stretches for the current app filter. While filtering, time in
-    /// other apps becomes breaks, and audio does not keep those stretches open.
+    /// H: hide the app in this screenshot from the timeline, now and on every later open.
+    func hideCurrentApp() {
+        guard let app = current?.appName, !app.isEmpty else { show(notice: "No app to hide in this screenshot"); return }
+        hide(app: app)
+    }
+
+    /// Leave `app` out of the timeline from now on (it is still recorded). `stopRecording` also adds it
+    /// to the block list, so it is blurred and its text is not saved from now on.
+    func hide(app: String, stopRecording: Bool = false) {
+        guard !app.isEmpty else { return }
+        if stopRecording { block(app) }
+        if !hiddenKeys.contains(app.lowercased()) {
+            HiddenApps.hide(app)
+        }
+        refreshHidden()
+        show(notice: stopRecording
+             ? "Hid \(app) and stopped recording it. Undo in Settings → Blocked Apps & Sites."
+             : "Hid \(app) from the timeline. Show it again from the apps menu.")
+    }
+
+    /// Show `app` in the timeline again.
+    func unhide(app: String) {
+        HiddenApps.show(app)
+        refreshHidden()
+        show(notice: "Showing \(app) again")
+    }
+
+    /// Read the hidden apps again and show the timeline without them, near the same time.
+    private func refreshHidden() {
+        let names = HiddenApps.names
+        guard names != hiddenApps else { return }
+        let at = playhead
+        stopAudio()
+        hiddenApps = names
+        if let app = appFilter, hiddenKeys.contains(app.lowercased()) { appFilter = nil }
+        applyFilter()
+        show(frameIndex(at: at))
+        if !query.trimmingCharacters(in: .whitespaces).isEmpty { runSearch(query.trimmingCharacters(in: .whitespaces)) }
+    }
+
+    /// Add `app` to the block list (by bundle id when the app can be found, and by name).
+    private func block(_ app: String) {
+        let list = BlocklistStore.shared.current
+        guard !list.blocksApp(bundleID: nil, name: app) else { return }
+        let id = appURL(app).flatMap { Bundle(url: $0)?.bundleIdentifier } ?? ""
+        if !id.isEmpty, list.blocksApp(bundleID: id, name: nil) { return }
+        BlocklistStore.shared.save(Blocklist(apps: list.apps + [Blocklist.App(id: id, name: app)], keywords: list.keywords,
+                                             privateWindows: list.privateWindows, sites: list.sites, extraNames: list.extraNames))
+    }
+
+    /// Frames and the bar's stretches for the current app filter and hidden apps. While filtering
+    /// or hiding, time in other (or hidden) apps becomes breaks, and audio does not keep those stretches open.
     private func applyFilter() {
-        frames = AppFilter.apply(allFrames, app: appFilter)
-        sessions = appFilter == nil
+        frames = AppFilter.apply(allFrames, app: appFilter, hidden: hiddenKeys)
+        sessions = appFilter == nil && hiddenApps.isEmpty
             ? TimelineAxis.sessions(frames: frames, audio: audio, now: now)
             : TimelineAxis.sessions(frames: frames, audio: [], now: now, gap: AppFilter.gapThreshold)
     }
@@ -214,12 +312,25 @@ final class TimelineModel: ObservableObject {
     func reload(hours: Double = 24, keepApp: Bool = false) {
         let at = Date(), since = at.addingTimeInterval(-hours * 3600)
         let keep = keepApp ? appFilter : nil
+        reloadStars()
         apply(now: at, since: since, frames: db.timelineFrames(since: since), audio: db.timelineAudio(since: since))
-        if let keep, allFrames.contains(where: { $0.appName == keep }) {
+        if let keep, allFrames.contains(where: { $0.appName == keep }), !hiddenKeys.contains(keep.lowercased()) {
             appFilter = keep
             applyFilter()
             show(frames.count - 1)
         }
+    }
+
+    /// After a delete: read the history again as far back as it was loaded, keep the app filter and go back to `date`.
+    func reloadAfterDelete(at date: Date) {
+        let keep = appFilter, since = loadedSince
+        reloadStars()
+        apply(now: Date(), since: since, frames: db.timelineFrames(since: since), audio: db.timelineAudio(since: since))
+        if let keep, allFrames.contains(where: { $0.appName == keep }), !hiddenKeys.contains(keep.lowercased()) {
+            appFilter = keep
+            applyFilter()
+        }
+        jump(to: date)
     }
 
     /// Bumped by every load, so a slower background load that finishes later is dropped.
@@ -232,9 +343,10 @@ final class TimelineModel: ObservableObject {
         now = at
         loadedSince = since
         allFrames = loaded
-        apps = AppFilter.apps(allFrames)
+        allApps = AppFilter.apps(allFrames)
         audio = heard
         appFilter = nil
+        hiddenApps = HiddenApps.names
         applyFilter()
         show(frames.count - 1)
     }
@@ -247,7 +359,7 @@ final class TimelineModel: ObservableObject {
         let keepId = current?.id
         loadedSince = since
         allFrames = older + allFrames
-        apps = AppFilter.apps(allFrames)
+        allApps = AppFilter.apps(allFrames)
         audio = db.timelineAudio(since: since)
         applyFilter()
         if let keepId, let i = frames.firstIndex(where: { $0.id == keepId }) { index = i }
@@ -271,13 +383,32 @@ final class TimelineModel: ObservableObject {
 
     func jumpToNow() { stopAudio(); show(frames.count - 1) }
 
+    /// Reads recent meetings for the Meetings chip, off the main thread.
+    func loadMeetings() {
+        let store = db, blocked = BlocklistStore.shared.current
+        DispatchQueue.global(qos: .utility).async {
+            // Calls in blocked apps or sites stay out of the list, as in the Meetings window.
+            let list = Array(store.shownMeetings(limit: 40).filter { !MeetingDetector.hides(blocked, $0) }.prefix(15))
+            DispatchQueue.main.async { [weak self] in self?.meetings = list }
+        }
+    }
+
+    /// Jump to the start of a meeting, with every app shown.
+    func open(meeting m: Meeting) {
+        showResults = false
+        open(at: m.start, app: nil)
+    }
+
     /// Go to a moment, loading enough history, showing only `app` when given (Insights).
     /// History back to that moment is read in the background; the timeline shows what it has until then.
     func open(at date: Date, app: String?) {
         let app = app?.isEmpty == true ? nil : app
         func finish() {
             // An app that is not in the loaded history (or "Unknown app") shows every app.
-            if let app, allFrames.contains(where: { $0.appName == app }) {
+            if let app, hiddenKeys.contains(app.lowercased()) {
+                setAppFilter(nil)
+                show(notice: "\(app) is hidden from the timeline. Show it again from the apps menu.")
+            } else if let app, allFrames.contains(where: { $0.appName == app }) {
                 if app != appFilter {
                     setAppFilter(app)
                     show(notice: "Only showing \(app). Press A for all apps.")
@@ -319,13 +450,26 @@ final class TimelineModel: ObservableObject {
         image = loadImage(f)
         refreshHighlights()
         updateCaption()
-        // Warm the cache for the next scroll step either way.
-        for j in [index - 1, index + 1] where frames.indices.contains(j) { _ = loadImage(frames[j]) }
+        // Warm the cache for the next scroll step either way. Video frames are decoded off the main thread
+        // (a seek can decode up to Compaction.keyframeInterval frames); the next step finds them in FrameImages.
+        let near = [index - 1, index + 1].filter { frames.indices.contains($0) }.map { frames[$0] }
+        for n in near where !n.source.isVideo { _ = loadImage(n) }
+        let videos = near.map(\.source).filter(\.isVideo)
+        if !videos.isEmpty {
+            DispatchQueue.global(qos: .userInitiated).async { for v in videos { _ = FrameImages.shared.image(v) } }
+        }
+    }
+
+    /// Where the frame's picture is now, when that is not where the timeline's list says: the compactor may
+    /// have moved it into a video (and deleted the still) or written its video again since the list was read.
+    private func currentSource(_ f: TimelineFrame) -> FrameSource? {
+        guard let now = db.frame(id: f.id)?.source, now != f.source else { return nil }
+        return now
     }
 
     private func loadImage(_ f: TimelineFrame) -> NSImage? {
         if let img = imageCache[f.id] { return img }
-        guard let img = NSImage(contentsOfFile: f.path) else { return nil }
+        guard let img = FrameImages.shared.nsImage(f.source) ?? currentSource(f).flatMap({ FrameImages.shared.nsImage($0) }) else { return nil }
         imageCache[f.id] = img
         cacheOrder.append(f.id)
         if cacheOrder.count > 24 { imageCache.removeValue(forKey: cacheOrder.removeFirst()) }
@@ -352,7 +496,7 @@ final class TimelineModel: ObservableObject {
     func play(_ a: TimelineAudio) {
         stopAudio()
         do {
-            let p = try AVAudioPlayer(contentsOf: URL(fileURLWithPath: a.path))
+            let p = try AVAudioPlayer(data: RecordingFile.read(a.path))
             p.currentTime = max(0, playhead.timeIntervalSince(a.start))
             p.play()
             player = p

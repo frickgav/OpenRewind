@@ -94,7 +94,7 @@ public class McpTests : IDisposable
     {
         var names = ((JsonArray)Ask(Server(), """{"jsonrpc":"2.0","id":1,"method":"tools/list"}""")["result"]!["tools"]!)
             .Select(t => (string)t!["name"]!).ToList();
-        Assert.Equal(new[] { "activity_summary", "search_screen", "search_audio", "get_screen_text", "list_meetings" }, names);
+        Assert.Equal(new[] { "activity_summary", "search_screen", "search_audio", "get_screen_text", "list_meetings", "list_starred", "list_promises" }, names);
         var tool = Ask(Server(), """{"jsonrpc":"2.0","id":1,"method":"tools/list"}""")["result"]!["tools"]![1]!;
         Assert.Equal("object", (string?)tool["inputSchema"]!["type"]);
         Assert.Equal("query", (string?)tool["inputSchema"]!["required"]![0]);
@@ -205,6 +205,75 @@ public class McpTests : IDisposable
         Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1760000000).UtcDateTime, Time.ParseIso(Time.Parse(at)!));
     }
 
+    /// Puts every word on one axis per word, so a query matches the moment that has its word.
+    sealed class WordEmbedder : IEmbedder, IDisposable
+    {
+        public string ModelId => "fake-mcp";
+        public bool Disposed;
+        public float[] Embed(string text)
+        {
+            var v = new float[32];
+            foreach (var w in WordPiece.Words(text)) v[Math.Abs(w.GetHashCode()) % 32] += 1;
+            return Vectors.Normalize(v);
+        }
+        public void Dispose() => Disposed = true;
+    }
+
+    [Fact]
+    public void SearchByMeaningIsOfferedOnlyWhenOnAndReady()
+    {
+        var t = DateTime.UtcNow.AddHours(-1);
+        AddFrame(t, "Chrome", "Acme portal", "invoice 1042 due friday");
+        AddFrame(t.AddMinutes(3), "1Password", "Vault", "invoice for the vault");
+        var dir = Path.Combine(home, "models", "minilm");
+        Directory.CreateDirectory(dir);
+        var loaded = new List<WordEmbedder>();
+        using var ro = Database.OpenReadOnly(Path.Combine(home, "db.sqlite"));
+        using var meaning = new McpMeaning(dir, _ => { var e = new WordEmbedder(); loaded.Add(e); return e; });
+        bool on = false;
+        McpServer S() => new("1", () =>
+        {
+            var tools = new AiTools(ro) { Blocked = blocked, Meaning = meaning.Get(ro, on) };
+            return new McpState(true, tools, MeaningMissing: meaning.Missing);
+        });
+        List<string> Names() => ((JsonArray)Ask(S(), """{"jsonrpc":"2.0","id":1,"method":"tools/list"}""")["result"]!["tools"]!)
+            .Select(x => (string)x!["name"]!).ToList();
+        JsonObject Search() => Ask(S(), Call("search_by_meaning", new JsonObject { ["query"] = "invoice" }));
+
+        // Off: not offered, and a call says why instead of "unknown tool".
+        Assert.DoesNotContain("search_by_meaning", Names());
+        var off = Search();
+        Assert.True((bool)off["result"]!["isError"]!);
+        Assert.Contains("off in OpenRewind's Settings", Text(off));
+
+        // On but the model is not on this PC yet.
+        on = true;
+        Assert.DoesNotContain("search_by_meaning", Names());
+        Assert.Contains("downloading", Text(Search()));
+        foreach (var f in MiniLm.Files)
+        {
+            using var fs = File.Create(Path.Combine(dir, f.Name));
+            fs.SetLength(f.Size);
+        }
+
+        // The app indexes; this process only reads, with its own copy of the model and the block list.
+        var app = new WordEmbedder();
+        var indexer = new MeaningService(db) { Embedder = app, Blocked = () => blocked, Pace = () => MeaningPace.Idle };
+        while (indexer.Step()) { }
+        blocked = new(new List<BlockedApp> { new("1Password", "1Password") }, new List<string>(), false);
+        Assert.Contains("search_by_meaning", Names());
+        var hit = Search();
+        Assert.False((bool)hit["result"]!["isError"]!);
+        Assert.Contains("Acme portal", Text(hit));
+        Assert.DoesNotContain("Vault", Text(hit));
+        Assert.Single(loaded);  // loaded once, then kept
+
+        // Turned off: the model is let go.
+        on = false;
+        Assert.DoesNotContain("search_by_meaning", Names());
+        Assert.True(loaded[0].Disposed);
+    }
+
     [Fact]
     public void ReadOnlyDatabaseReadsWhatTheAppWrote()
     {
@@ -235,17 +304,23 @@ public class McpTests : IDisposable
     [Fact]
     public void SummaryNamesBlockedAppsOnlyAsBlockedApp()
     {
-        var t = DateTime.UtcNow.AddMinutes(-20);
+        // A fixed range around the frames, not "today", so it also works just after midnight.
+        var t = DateTime.UtcNow.AddHours(-2);
         for (int i = 0; i < 10; i++) AddFrame(t.AddSeconds(i * 60), "Robinhood", "Portfolio $12,000", "stocks");
         for (int i = 10; i < 20; i++) AddFrame(t.AddSeconds(i * 60), "Notepad", "plan.txt", "plan");
         blocked = new Blocklist(new List<BlockedApp> { new("robinhood", "Robinhood") }, new List<string>(), false);
-        var text = Text(Ask(Server(), Call("activity_summary", new JsonObject { ["start"] = "today" })));
+        JsonObject Range() => new()
+        {
+            ["start"] = McpServer.LocalIso(new DateTimeOffset(t.AddMinutes(-1))),
+            ["end"] = McpServer.LocalIso(new DateTimeOffset(t.AddMinutes(25))),
+        };
+        var text = Text(Ask(Server(), Call("activity_summary", Range())));
         Assert.Contains(AiTools.BlockedAppLabel, text);
         Assert.Contains("Notepad", text);
         Assert.DoesNotContain("Robinhood", text);
         Assert.DoesNotContain("Portfolio", text);
         // The shared lookup does it, so Ask AI inside the app gets the same.
-        var inApp = new AiTools(db) { Blocked = blocked }.Run(new AiToolCall("1", "activity_summary", new JsonObject { ["start"] = "today" }));
+        var inApp = new AiTools(db) { Blocked = blocked }.Run(new AiToolCall("1", "activity_summary", Range()));
         Assert.Contains(AiTools.BlockedAppLabel, inApp);
         Assert.DoesNotContain("Robinhood", inApp);
         Assert.DoesNotContain("Portfolio", inApp);

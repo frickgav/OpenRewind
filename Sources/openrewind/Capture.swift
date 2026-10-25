@@ -37,7 +37,8 @@ enum Capture {
 
     /// Like `screenshot`, leaving out the windows in `excluding`. Also returns where the display
     /// is (global points, top-left origin), so window frames can be placed on the image.
-    static func capture(excluding: Set<CGWindowID> = []) async throws -> (image: CGImage, bounds: CGRect) {
+    /// `display` names the screen, so Compress Older Recordings keeps each screen in its own videos.
+    static func capture(excluding: Set<CGWindowID> = []) async throws -> (image: CGImage, bounds: CGRect, display: String) {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         let mouse = NSEvent.mouseLocation
         let target = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
@@ -56,6 +57,6 @@ enum Capture {
         cfg.height = Int(CGFloat(display.height) * scale)
         cfg.showsCursor = false
         let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
-        return (image, CGDisplayBounds(display.displayID))
+        return (image, CGDisplayBounds(display.displayID), "display-\(display.displayID)")
     }
 }

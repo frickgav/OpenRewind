@@ -61,16 +61,18 @@ struct AISettings {
 
     private static let d = UserDefaults.standard
 
-    static func load() -> AISettings {
+    /// `interactive: false` is for jobs that run by themselves (promises, the phone): the key is only
+    /// read when that cannot bring up the macOS Keychain password prompt (see KeyStore.get).
+    static func load(interactive: Bool = true) -> AISettings {
         let kind = AIProviderKind(rawValue: d.string(forKey: "aiProvider") ?? "") ?? .anthropic
-        return load(kind)
+        return load(kind, interactive: interactive)
     }
 
-    static func load(_ kind: AIProviderKind) -> AISettings {
+    static func load(_ kind: AIProviderKind, interactive: Bool = true) -> AISettings {
         AISettings(kind: kind,
                    model: d.string(forKey: "aiModel.\(kind.rawValue)") ?? kind.suggestedModels.first ?? "",
                    baseURL: d.string(forKey: "aiBaseURL.\(kind.rawValue)") ?? kind.defaultBaseURL,
-                   key: KeyStore.get(kind.rawValue))
+                   key: KeyStore.get(kind.rawValue, interactive: interactive))
     }
 
     func save() {
@@ -213,9 +215,12 @@ enum KeyStore {
     private static var cache: [String: String?] = [:]
     private static let lock = NSLock()
 
-    static func get(_ account: String) -> String? {
+    /// `interactive: false` reads the Keychain only when this build saved the key (so macOS does not ask
+    /// for the password); otherwise nil until something the user did reads it once.
+    static func get(_ account: String, interactive: Bool = true) -> String? {
         lock.lock(); defer { lock.unlock() }
         if let hit = cache[account] { return hit }
+        if !interactive, UserDefaults.standard.string(forKey: "aiKeychainOwner.\(account)") != buildID { return nil }
         let value = read(account)
         cache.updateValue(value, forKey: account)
         if let value { takeOwnership(account, value) }
@@ -227,6 +232,8 @@ enum KeyStore {
         lock.lock(); defer { lock.unlock() }
         write(account, value)
         cache.updateValue((value?.isEmpty ?? true) ? nil : value, forKey: account)
+        // This build wrote it, so it reads it back without a prompt.
+        if let value, !value.isEmpty { UserDefaults.standard.set(buildID, forKey: "aiKeychainOwner.\(account)") }
     }
 
     private static func read(_ account: String) -> String? {
@@ -262,7 +269,7 @@ enum KeyStore {
     }
 
     /// Changes whenever the app binary does.
-    private static var buildID: String {
+    static var buildID: String {
         let exe = Bundle.main.executableURL
         let date = exe.flatMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate }
         let version = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""

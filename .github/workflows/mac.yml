@@ -2,9 +2,9 @@ name: Mac app
 
 on:
   push:
-    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", "scripts/gif-check.py", ".github/workflows/mac.yml"]
+    paths: ["Sources/**", "Package.swift", "Package.resolved", "THIRD_PARTY_NOTICES.txt", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", "scripts/server-check.py", "scripts/gif-check.py", ".github/workflows/mac.yml"]
   pull_request:
-    paths: ["Sources/**", "Package.swift", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", "scripts/gif-check.py", ".github/workflows/mac.yml"]
+    paths: ["Sources/**", "Package.swift", "Package.resolved", "THIRD_PARTY_NOTICES.txt", "packaging/**", "scripts/build-app.sh", "scripts/make-icons.py", "scripts/*-signing-cert.sh", "scripts/mcp-check.py", "scripts/server-check.py", "scripts/gif-check.py", ".github/workflows/mac.yml"]
   workflow_dispatch:
 
 permissions:
@@ -34,11 +34,37 @@ jobs:
         run: codesign --display --requirements - dist/OpenRewind.app 2>&1 | grep -E '^designated => .*(certificate (leaf|root)|anchor apple generic)'
       - name: Check the CLI starts
         run: dist/OpenRewind.app/Contents/MacOS/OpenRewind help
+      # The file format against the vectors the Windows tests use (so each app reads the other's
+      # files), and SQLCipher: encrypt, search, reopen, wrong key refused, read-only, decrypt.
+      - name: Encryption self-test
+        run: dist/OpenRewind.app/Contents/MacOS/OpenRewind selftest-encryption
+      # Search by Meaning end to end with a made-up model: index, read back, search, reopen, a failed write.
+      - name: Search by Meaning check
+        run: dist/OpenRewind.app/Contents/MacOS/OpenRewind meaning-check
+      # Delete on the timeline: one screenshot, by words, a range, and the deleted text gone from the file too.
+      - name: Timeline delete check
+        run: dist/OpenRewind.app/Contents/MacOS/OpenRewind delete-check
+      # Parakeet's 30 s audio windows on clip lengths around the cut points (30.01 s used to crash), no model needed.
+      - name: Parakeet window check
+        run: dist/OpenRewind.app/Contents/MacOS/OpenRewind parakeet-check
+      # Secret redaction, Phone Access encryption against the phone page's SJCL vectors, Restore Workspace JSON.
+      - name: Features check
+        run: dist/OpenRewind.app/Contents/MacOS/OpenRewind features-check
+      - name: Check the notices ship
+        run: test -s dist/OpenRewind.app/Contents/Resources/THIRD_PARTY_NOTICES.txt
+      # Compress Older Recordings for real: encode made-up screenshots, read every frame back, delete, rewrite.
+      - name: Video check
+        run: OPENREWIND_HOME="$RUNNER_TEMP/openrewind-video-check" dist/OpenRewind.app/Contents/MacOS/OpenRewind video-check
+
       # Export Clip's GIF encoder (GifWriter.swift): write a test GIF and decode it with an independent decoder.
       - name: GIF encoder check
         run: |
           dist/OpenRewind.app/Contents/MacOS/OpenRewind gif-check "$RUNNER_TEMP/check.gif"
           python3 scripts/gif-check.py "$RUNNER_TEMP/check.gif"
+      # Connect AI Apps' JSON and TOML editors and safe file writes (MCPConnectCheck.swift), on the
+      # same cases as the Windows tests.
+      - name: One-click connect check
+        run: dist/OpenRewind.app/Contents/MacOS/OpenRewind connect-check "$RUNNER_TEMP/connect-check"
       # Start it as an AI app does (OpenRewind mcp, pipes for stdin/stdout) and talk MCP to it,
       # with the Settings switch off, then on with an empty history.
       - name: MCP check
@@ -51,6 +77,12 @@ jobs:
           defaults write ai.agilityresources.openrewind mcpEnabled -bool true
           python3 scripts/mcp-check.py "$EXE" on
           defaults delete ai.agilityresources.openrewind mcpEnabled
+      # The local search server (`OpenRewind serve`, port 3031 in the app) with a block list set: a
+      # blocked app, site, word or private window never comes back from /search, /frames or /apps.
+      - name: Local server block list check
+        run: |
+          export OPENREWIND_HOME="$RUNNER_TEMP/openrewind-server-home"
+          python3 scripts/server-check.py dist/OpenRewind.app/Contents/MacOS/OpenRewind
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: OpenRewind-mac

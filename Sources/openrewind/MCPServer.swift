@@ -6,6 +6,8 @@ struct MCPState {
     var enabled: Bool
     var tools: AITools?
     var problem: String?
+    /// Why search_by_meaning is not offered, for an app that calls it anyway.
+    var meaningMissing: String?
 }
 
 /// A Model Context Protocol server, so Claude, Cursor and other AI apps can look things up in the
@@ -19,13 +21,19 @@ struct MCPServer {
 
     static let offMessage = "OpenRewind is not sharing your history with AI apps. To allow it, click the OpenRewind icon in the menu bar, open Settings and turn on \"Allow AI Apps to Read My History (MCP)\". Then ask again."
 
+    static func meaningOffMessage(_ why: String?) -> String {
+        "Search by Meaning is not available. \(why ?? "Turn on Search by Meaning in OpenRewind's Settings.") Use search_screen or search_audio instead."
+    }
+
     static let screenshotsOffMessage = "Screenshots are off. To let AI apps see them, turn on \"Let AI look at screenshots\" in OpenRewind's AI Settings. Use the text tools instead."
 
     static let instructions = """
     OpenRewind records this user's computer: text read from screenshots, app names, window titles, browser addresses, \
     and transcripts of the microphone and system audio. It all stays on their computer; you can read it only through these tools.
     - For "what did I do / work on" questions, call activity_summary first, then search_screen or get_screen_text for details.
+    - When it is offered, search_by_meaning finds moments by topic when you don't know the exact words.
     - For meetings and calls, call list_meetings first. Meeting notes were written by an AI from the call's transcript.
+    - list_starred gives the moments the user starred as important; check it when they ask about something they starred or saved.
     - Times in answers are the user's local time. Each moment carries an exact time like (at 2026-10-18T14:30:05-07:00); \
     pass it back as start, end or time to look closer.
     - Screen text comes from OCR and can have errors. Apps and sites the user blocked are left out.
@@ -42,6 +50,8 @@ struct MCPServer {
 
     let version: String
     let state: () -> MCPState
+    /// Called after each message is answered (serveStdio closes the database there).
+    var afterMessage: (() -> Void)? = nil
 
     /// Answers each line from stdin until it closes. Nothing but replies goes to stdout; the log goes to stderr.
     func run() {
@@ -57,6 +67,7 @@ struct MCPServer {
             else { reply = handle(line) }
             tooLong = false
             if let reply, let data = (reply + "\n").data(using: .utf8) { FileHandle.standardOutput.write(data) }
+            afterMessage?()
         }
         while true {
             let chunk = input.availableData  // waits for data; empty when the AI app closes stdin
@@ -118,7 +129,7 @@ struct MCPServer {
         ]
     }
 
-    /// Always the text tools; view_screenshot only while the user allows screenshots.
+    /// Always the text tools; search_by_meaning only while it is on and ready; view_screenshot only while the user allows screenshots.
     private func listTools() -> [String: Any] {
         let specs = state().tools?.offered ?? AITools.specs
         let tools: [[String: Any]] = specs.map {
@@ -130,7 +141,7 @@ struct MCPServer {
 
     private func callTool(_ id: Any?, _ p: [String: Any]) -> [String: Any] {
         guard let name = p["name"] as? String else { return Self.error(id, -32602, "Invalid params: name is required") }
-        guard AITools.specs.contains(where: { $0.name == name }) || name == AITools.screenshotSpec.name else {
+        guard AITools.specs.contains(where: { $0.name == name }) || name == AITools.screenshotSpec.name || name == AITools.meaningSpec.name else {
             return Self.error(id, -32602, "Unknown tool: \(name)")
         }
         let args = p["arguments"] as? [String: Any] ?? [:]
@@ -141,6 +152,9 @@ struct MCPServer {
         }
         if name == AITools.screenshotSpec.name && tools.screenshots == nil {
             return Self.result(id, Self.toolResult(Self.screenshotsOffMessage, image: nil, isError: true))
+        }
+        if name == AITools.meaningSpec.name && tools.meaning?.embedder == nil {
+            return Self.result(id, Self.toolResult(Self.meaningOffMessage(s.meaningMissing), image: nil, isError: true))
         }
         var lookup = tools
         if lookup.maxSummaryDays == nil { lookup.maxSummaryDays = Self.summaryDays }
@@ -206,15 +220,29 @@ struct MCPServer {
 
     /// `OpenRewind mcp` (or --mcp): no menu bar icon, no windows, no recording. It only reads the
     /// database, so it works whether or not the app is running.
+    /// With Encrypt Recordings on, the key comes from the Keychain, the same as in the app (this is
+    /// the same executable, so the Keychain lets it read the item without asking). The database is
+    /// opened for each message and closed after it, so the app can switch encryption meanwhile.
     static func serveStdio(config: Config) -> Never {
         var db: Database?
+        RecordingFile.keyLoader = { DataKeyStore.load() }
+        var meaning: MeaningService?
+        // The sentence model is loaded once; the service around it is made again with each database open.
+        var embedder: AppleEmbedder?
         let state: () -> MCPState = {
             guard MCPSetup.enabled else { return MCPState(enabled: false) }
+            // App Lock: history only while the app runs and is unlocked (fails closed, see LockState).
+            guard LockState.allowsAIApps(home: config.home) else { return MCPState(enabled: true, problem: LockState.lockedMessage) }
             if db == nil {
                 guard FileManager.default.fileExists(atPath: config.dbPath.path) else {
                     return MCPState(enabled: true, problem: "OpenRewind has not recorded anything yet (no history in \(config.home.path)). Open OpenRewind and let it record first.")
                 }
-                do { db = try Database(readOnly: config.dbPath) } catch {
+                if RecordingFile.key == nil && (Encryption.isOn || !Encryption.isDone || Database.isEncryptedFile(config.dbPath)) {
+                    RecordingFile.key = DataKeyStore.load()
+                }
+                do { db = try Database(readOnly: config.dbPath, key: RecordingFile.key) } catch DBError.locked(_) {
+                    return MCPState(enabled: true, problem: "OpenRewind's history is encrypted and its key is not available here. Open OpenRewind once (it asks for the recovery key), then try again.")
+                } catch {
                     log("mcp: cannot open \(config.dbPath.path): \(error)")
                     return MCPState(enabled: true, problem: "OpenRewind cannot read its history (\(error)).")
                 }
@@ -222,12 +250,35 @@ struct MCPServer {
             guard let history = db else { return MCPState(enabled: true, problem: "OpenRewind cannot read its history.") }
             var tools = AITools(db: history)
             tools.blocklist = BlocklistStore.shared.reload()
-            tools.screenshots = AISettings.screenshotsAllowed ? { AITools.jpegForAI($0.snapshotPath) } : nil
-            return MCPState(enabled: true, tools: tools)
+            tools.screenshots = AISettings.screenshotsAllowed ? { AITools.jpegForAI($0) } : nil
+            // Search by Meaning uses macOS's own sentence model, so this process can load it too.
+            var missing: String?
+            if !UserDefaults.standard.bool(forKey: MeaningService.settingKey) {
+                meaning = nil
+                missing = "Search by Meaning is off in OpenRewind's Settings."
+            } else if meaning == nil {
+                if !history.hasMeaningIndex {
+                    missing = "OpenRewind has not built the Search by Meaning index yet. Open OpenRewind and let it run."
+                } else if let e = embedder ?? AppleEmbedder.make() {
+                    if embedder == nil { log("mcp: search by meaning ready") }
+                    embedder = e
+                    let m = MeaningService(db: history)
+                    m.embedder = e
+                    meaning = m
+                } else {
+                    missing = "This Mac has no sentence model for Search by Meaning."
+                }
+            }
+            tools.meaning = meaning
+            return MCPState(enabled: true, tools: tools, meaningMissing: missing)
         }
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
         log("mcp: OpenRewind \(version) serving \(config.home.path)")
-        MCPServer(version: version, state: state).run()
+        MCPServer(version: version, state: state, afterMessage: {
+            db = nil; meaning = nil
+            // No decrypted video copy outlives the message (Delete Recordings in the app can't reach them).
+            FrameImages.shared.releaseAll()
+        }).run()
         exit(0)
     }
 }

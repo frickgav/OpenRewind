@@ -226,7 +226,7 @@ final class ClipExporter {
     /// Write `plan` as a `size` clip to `url` in the background. `progress` gets how many of the plan's frames are
     /// done, about ten times a second; it and `done` run on the main thread. `done` gets nil on success.
     /// A cancelled or failed export leaves no file behind.
-    func export(_ plan: ClipPlan.Result, format: ClipFormat, size: (width: Int, height: Int), to url: URL,
+    func export(_ plan: ClipPlan.Result, db: Database, format: ClipFormat, size: (width: Int, height: Int), to url: URL,
                 progress: @escaping (Int) -> Void, done: @escaping (Error?) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             let tmp = url.deletingLastPathComponent().appendingPathComponent("." + url.lastPathComponent + ".part")
@@ -241,8 +241,8 @@ final class ClipExporter {
                     last = Date(); lastDone = n
                     DispatchQueue.main.async { progress(n) }
                 }
-                if format == .gif { try writeGIF(plan.frames, size: size, to: tmp, progress: report) }
-                else { try writeMP4(plan, size: size, to: tmp, progress: report) }
+                if format == .gif { try writeGIF(plan.frames, db: db, size: size, to: tmp, progress: report) }
+                else { try writeMP4(plan, db: db, size: size, to: tmp, progress: report) }
                 if isCancelled { throw CancellationError() }
                 // The save panel already asked before replacing a file; replacing keeps the old one if it fails.
                 if FileManager.default.fileExists(atPath: url.path) {
@@ -258,13 +258,16 @@ final class ClipExporter {
         }
     }
 
-    /// Output size for the first screenshot that can still be read (only its header is read), or nil.
-    static func outputSize(_ frames: [ClipFrame], _ format: ClipFormat) -> (width: Int, height: Int)? {
+    /// Output size for the first screenshot that can still be read (only a still's header is read; a frame kept
+    /// in a video is decoded), or nil.
+    static func outputSize(_ frames: [ClipFrame], db: Database, _ format: ClipFormat) -> (width: Int, height: Int)? {
         for f in frames {
-            guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: f.frame.path) as CFURL, nil),
-                  let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
-                  let w = props[kCGImagePropertyPixelWidth] as? Int, let h = props[kCGImagePropertyPixelHeight] as? Int else { continue }
-            return ClipPlan.outputSize(width: w, height: h, format: format)
+            if !f.frame.source.isVideo, let s = FrameImages.stillSize(f.frame.path) {
+                return ClipPlan.outputSize(width: s.width, height: s.height, format: format)
+            }
+            if let img = FrameImages.shared.current(db, id: f.frame.id, f.frame.source, cache: false) {
+                return ClipPlan.outputSize(width: img.width, height: img.height, format: format)
+            }
         }
         return nil
     }
@@ -280,7 +283,7 @@ final class ClipExporter {
         ctx.draw(image, in: CGRect(x: (CGFloat(width) - w) / 2, y: (CGFloat(height) - h) / 2, width: w, height: h))
     }
 
-    private func writeMP4(_ plan: ClipPlan.Result, size: (width: Int, height: Int), to url: URL, progress: (Int) -> Void) throws {
+    private func writeMP4(_ plan: ClipPlan.Result, db: Database, size: (width: Int, height: Int), to url: URL, progress: (Int) -> Void) throws {
         let (w, h) = size
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let settings: [String: Any] = [
@@ -311,7 +314,7 @@ final class ClipExporter {
         for (p, f) in plan.frames.enumerated() {
             for s in ClipPlan.samples([f]) { samples.append((s, p)) }
         }
-        var lastPath: String?
+        var lastSource: FrameSource?
         var image: CGImage?
         for (i, (s, frame)) in samples.enumerated() {
             while !input.isReadyForMoreMediaData {
@@ -319,10 +322,11 @@ final class ClipExporter {
                 Thread.sleep(forTimeInterval: 0.005)
             }
             if isCancelled { writer.cancelWriting(); throw CancellationError() }
-            if s.frame.path != lastPath {
-                // A missing file keeps the picture before it.
-                image = ImageTools.load(URL(fileURLWithPath: s.frame.path)) ?? image
-                lastPath = s.frame.path
+            if s.frame.source != lastSource {
+                // A missing picture keeps the one before it. Read past the picture cache, so an export does not
+                // push out the timeline's.
+                image = FrameImages.shared.current(db, id: s.frame.id, s.frame.source, cache: false) ?? image
+                lastSource = s.frame.source
             }
             guard let buffer = pixelBuffer(adaptor.pixelBufferPool, width: w, height: h, image: image) else {
                 writer.cancelWriting()
@@ -358,7 +362,7 @@ final class ClipExporter {
         return pb
     }
 
-    private func writeGIF(_ frames: [ClipFrame], size: (width: Int, height: Int), to url: URL, progress: (Int) -> Void) throws {
+    private func writeGIF(_ frames: [ClipFrame], db: Database, size: (width: Int, height: Int), to url: URL, progress: (Int) -> Void) throws {
         let (w, h) = size
         // BGRA in memory, as GifWriter reads it.
         guard FileManager.default.createFile(atPath: url.path, contents: nil),
@@ -370,17 +374,17 @@ final class ClipExporter {
         let file = try FileHandle(forWritingTo: url)
         defer { try? file.close() }
         let gif = try GifWriter(output: file, width: w, height: h)
-        var lastPath: String?
+        var lastSource: FrameSource?
         var drawn = false
         for (i, f) in frames.enumerated() {
             if isCancelled { throw CancellationError() }
-            if f.frame.path != lastPath {
-                // A missing file keeps the picture before it.
-                if let image = ImageTools.load(URL(fileURLWithPath: f.frame.path)) {
+            if f.frame.source != lastSource {
+                // A missing picture keeps the one before it.
+                if let image = FrameImages.shared.current(db, id: f.frame.id, f.frame.source, cache: false) {
                     Self.draw(image, in: ctx, width: w, height: h)
                     drawn = true
                 }
-                lastPath = f.frame.path
+                lastSource = f.frame.source
             }
             if drawn {
                 try gif.addFrame(pixels.assumingMemoryBound(to: UInt8.self), bytesPerRow: ctx.bytesPerRow, seconds: f.duration)
@@ -446,11 +450,16 @@ extension TimelineModel {
         show(notice: "Copied the screenshot")
     }
 
-    /// Every word Live Text found on the shown screenshot.
+    /// Every word on the shown screenshot: what Live Text found, or the text saved with it (from
+    /// Accessibility or OCR when it was recorded) while Live Text is still reading or not available.
     func copyAllText() {
+        guard let f = current else { show(notice: "No screenshot at this moment"); return }
+        if currentHidden || f.blocked { show(notice: "This moment is from a blocked app or site"); return }
         let transcript: String? = MainActor.assumeIsolated { liveText?.analysis?.transcript }
-        guard !currentHidden, let text = transcript, !text.isEmpty else {
-            show(notice: "No text found on this screenshot yet")
+        var text = transcript ?? ""
+        if text.isEmpty { text = db.frame(id: f.id)?.text ?? "" }
+        guard !text.isEmpty else {
+            show(notice: "No text found on this screenshot")
             return
         }
         NSPasteboard.general.clearContents()
@@ -467,10 +476,10 @@ extension TimelineModel {
         panel.allowedContentTypes = [.png]
         panel.nameFieldStringValue = ClipPlan.fileName(f.time, ext: "png")
         panel.directoryURL = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first
-        // Above the timeline, which floats over everything.
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        guard let cg = ImageTools.load(URL(fileURLWithPath: f.path)) else { show(notice: "The file for this moment was deleted"); return }
+        guard Dialogs.run(panel) == .OK, let url = panel.url else { return }
+        // The timeline may have been closed (or locked) while the dialog was up.
+        guard isShown else { return }
+        guard let cg = FrameImages.shared.current(db, id: f.id, f.source) else { show(notice: "The file for this moment was deleted"); return }
         do {
             try ImageTools.write(cg, to: url, type: .png, quality: 1)
             show(notice: "Saved \(url.lastPathComponent)")
@@ -483,13 +492,13 @@ extension TimelineModel {
     func markStart() {
         clipStart = playhead
         if let e = clipEnd, e < playhead { clipEnd = nil }
-        show(notice: clipEnd == nil ? "Clip starts here. Press ] where it ends." : "Clip marked. ⌘E exports it.")
+        show(notice: clipEnd == nil ? "Starts here. Press ] where it ends." : "Marked. ⌫ deletes it, ⌘E exports it.")
     }
 
     func markEnd() {
         clipEnd = playhead
         if let s = clipStart, s > playhead { clipStart = nil }
-        show(notice: clipStart == nil ? "Clip ends here. Press [ where it starts." : "Clip marked. ⌘E exports it.")
+        show(notice: clipStart == nil ? "Ends here. Press [ where it starts." : "Marked. ⌫ deletes it, ⌘E exports it.")
     }
 
     var hasMarks: Bool { clipStart != nil || clipEnd != nil }
@@ -504,7 +513,7 @@ extension TimelineModel {
         exportClip = ClipRange(start: r.start, end: r.end)
     }
 
-    /// The screenshots in a range as the timeline shows them (with its app filter), what the clip will be and its
+    /// The screenshots in a range as the timeline shows them (with its app filter, without hidden apps), what the clip will be and its
     /// size, or why there is none. Reads only that range of the database; safe off the main thread.
     static func clipPlan(db: Database, appFilter: String?, _ start: Date, _ end: Date, speed: Double,
                          format: ClipFormat) -> ClipInfo {
@@ -513,13 +522,13 @@ extension TimelineModel {
         guard end.timeIntervalSince(start) <= ClipPlan.maxLength else {
             return problem("A clip can cover at most \(Int(ClipPlan.maxLength / 3600)) hours.")
         }
-        let shown = AppFilter.apply(db.timelineFrames(from: start, to: end), app: appFilter)
+        let shown = AppFilter.apply(db.timelineFrames(from: start, to: end), app: appFilter, hidden: HiddenApps.keys)
         let list = BlocklistStore.shared.current
         let plan = ClipPlan.make(shown, from: start, to: end, speed: speed, format: format) { list.hides($0) }
         guard !plan.frames.isEmpty else {
             return problem(plan.blocked > 0 ? "Every screenshot in that range is from a blocked app or site." : "No screenshots in that range.")
         }
-        guard let size = ClipExporter.outputSize(plan.frames, format) else { return problem("The screenshots in that range were deleted.") }
+        guard let size = ClipExporter.outputSize(plan.frames, db: db, format) else { return problem("The screenshots in that range were deleted.") }
         return ClipInfo(plan: plan, size: size, problem: nil)
     }
 }

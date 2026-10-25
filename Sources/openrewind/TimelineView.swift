@@ -47,35 +47,40 @@ struct TimelineView: View {
     var chat: AIChatModel? = nil
     @FocusState private var searchFocused: Bool
 
+    /// The pointer is over the bottom of the screen, so the full bar shows instead of the thin scrubber.
+    @State private var dockHover = false
+    @State private var dockLeave: DispatchWorkItem?
+
+    /// Like Rewind: the old screen fills the whole display, a slim glass bar floats at the top,
+    /// and a thin scrubber runs along the bottom that grows into the full bar under the pointer.
     var body: some View {
         ZStack {
+            // Seen only where a screenshot from another display does not fill this one.
             Backdrop().ignoresSafeArea()
             theme.scrim.ignoresSafeArea()
-            HStack(spacing: 0) {
-            VStack(spacing: 14) {
+            screenshot.ignoresSafeArea()
+            VStack(spacing: 10) {
                 topBar
                 if let gap = staleGap { staleBanner(gap) }
                 UpdateBanner()
                 ZStack(alignment: .topLeading) {
-                    screenshot
-                    if model.showResults { results.padding(.top, 2) }
+                    Color.clear
+                    if model.showResults { results.padding(.top, 2).padding(.leading, 22) }
                 }
-                controls
-                TimelineBar(model: model).frame(height: 102)
-                hints
+                dock
             }
-            .padding(.horizontal, 28)
-            .padding(.top, 22)
-            .padding(.bottom, 16)
+            .padding(.top, 14)
             if model.showAI, let chat {
-                AIChatView(model: chat) { model.showAI = false }
-                    .frame(width: 420)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(theme.stroke))
-                    .shadow(color: theme.shadow, radius: 16)
-                    .padding(.vertical, 16).padding(.trailing, 16)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-            }
+                HStack {
+                    Spacer()
+                    AIChatView(model: chat) { model.showAI = false }
+                        .frame(width: 420)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(theme.stroke))
+                        .shadow(color: theme.shadow, radius: 16)
+                        .padding(.top, 64).padding(.bottom, dockExpanded ? 190 : 120).padding(.trailing, 16)
+                }
+                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
             if let n = model.notice {
                 VStack {
@@ -100,25 +105,41 @@ struct TimelineView: View {
 
     // MARK: top bar
 
-    /// Search on the left, the playhead time in the middle, help and close on the right.
+    /// Search and its filters on the left; the playhead time, Ask AI, share, help and close on the right.
+    /// Each group floats on frosted glass over the screenshot.
     private var topBar: some View {
-        ZStack {
-            HStack(spacing: 10) {
-                searchBar.frame(maxWidth: 460)
+        HStack(spacing: 10) {
+            HStack(spacing: 8) {
+                searchBar.frame(width: 320)
+                if model.meaningAvailable { SearchModeSwitch(model: model) }
                 AppFilterMenu(model: model)
-                Spacer(minLength: 220)
+                MeetingsMenu(model: model)
+                StarredFilterButton(model: model)
+            }
+            .padding(6)
+            .glass(Capsule(), theme)
+            Spacer(minLength: 16)
+            HStack(spacing: 6) {
+                Text(model.playhead, format: .dateTime.hour().minute().second())
+                    .font(.system(size: 15, weight: .semibold, design: .rounded)).monospacedDigit()
+                Text(relative(model.playhead)).font(.system(size: 11)).foregroundColor(theme.dim).lineLimit(1)
+            }
+            .padding(.horizontal, 16).frame(height: 42)
+            .glass(Capsule(), theme)
+            .allowsHitTesting(false)
+            HStack(spacing: 6) {
                 if chat != nil { askAIButton }
+                IconButton(symbol: "macwindow.on.rectangle", help: "Restore workspace: reopen what was open then (⇧O)") { model.restoreWorkspace() }
+                StarButton(model: model)
                 FrameMenu(model: model)
+                DeleteMenu(model: model)
                 IconButton(symbol: "questionmark", help: "Keyboard shortcuts (?)") { model.showHelp.toggle() }
                 IconButton(symbol: "xmark", help: "Close (esc)", action: close)
             }
-            VStack(spacing: 1) {
-                Text(model.playhead, format: .dateTime.hour().minute().second())
-                    .font(.system(size: 28, weight: .semibold, design: .rounded)).monospacedDigit()
-                Text(relative(model.playhead)).font(.system(size: 12)).foregroundColor(theme.dim)
-            }
-            .allowsHitTesting(false)
+            .padding(6)
+            .glass(Capsule(), theme)
         }
+        .padding(.horizontal, 16)
     }
 
     private var askAIButton: some View {
@@ -156,14 +177,17 @@ struct TimelineView: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.yellow.opacity(0.15)))
+        .glass(RoundedRectangle(cornerRadius: 8), theme)
     }
 
     // MARK: search
 
+    private var searchPrompt: String { model.searchingByMeaning ? "Describe what you saw or heard" : "Search what you saw or heard" }
+
     private var searchBar: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass").foregroundColor(theme.dim)
-            TextField("Search what you saw or heard", text: $model.query)
+            TextField(searchPrompt, text: $model.query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 15))
                 .focused($searchFocused)
@@ -181,7 +205,7 @@ struct TimelineView: View {
                         .buttonStyle(.plain).help("Older match (⌘G)")
                     Button("List") { model.showResults = true; searchFocused = true }
                         .buttonStyle(.plain).font(.system(size: 12, weight: .medium))
-                } else if model.hits.isEmpty && !model.showResults {
+                } else if model.hits.isEmpty && !model.showResults && !model.searching {
                     Text("No matches").font(.system(size: 12)).foregroundColor(theme.faint)
                 }
                 Button { model.clearSearch() } label: { Image(systemName: "xmark.circle.fill") }
@@ -198,10 +222,12 @@ struct TimelineView: View {
     private var results: some View {
         VStack(alignment: .leading, spacing: 0) {
             if model.hits.isEmpty {
-                Text("No matches for “\(model.query)”").foregroundColor(theme.dim).padding(16)
+                Text(model.searching ? "Searching by meaning…"
+                     : model.starredOnly ? (model.query.isEmpty ? "No starred moments yet. Press S here, or \(StarShortcut.label) anywhere, to star one." : "No starred moments match “\(model.query)”")
+                     : "No matches for “\(model.query)”").foregroundColor(theme.dim).padding(16)
             } else {
                 HStack(spacing: 6) {
-                    Text("\(model.hits.count) moment\(model.hits.count == 1 ? "" : "s")")
+                    Text("\(model.hits.count) \(model.starredOnly ? "starred " : "")moment\(model.hits.count == 1 ? "" : "s")" + (model.searchingByMeaning && !model.starredOnly ? " · closest in meaning first" : ""))
                     Spacer()
                     Keycap("↑"); Keycap("↓"); Text("choose")
                     Keycap("return").padding(.leading, 6); Text("go")
@@ -233,7 +259,9 @@ struct TimelineView: View {
     private func hitRow(_ h: SearchHit, selected: Bool) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Group {
-                if h.kind == .screen, let icon = AppIcons.icon(for: h.title) {
+                if h.kind == .star {
+                    Image(systemName: "star.fill").foregroundColor(.yellow)
+                } else if h.kind == .screen, let icon = AppIcons.icon(for: h.title) {
                     Image(nsImage: icon).resizable().frame(width: 18, height: 18)
                 } else {
                     Image(systemName: h.kind == .audio ? "waveform" : "display")
@@ -258,7 +286,8 @@ struct TimelineView: View {
 
     /// Bold + yellow the searched words inside a snippet.
     private func highlighted(_ text: String) -> Text {
-        let words = model.query.lowercased().split(separator: " ").map(String.init).filter { !$0.isEmpty }
+        // A meaning match need not contain the typed words, so none are marked.
+        let words = model.searchingByMeaning ? [] : model.query.lowercased().split(separator: " ").map(String.init).filter { !$0.isEmpty }
         var out = Text("")
         var rest = Substring(text)
         while !rest.isEmpty {
@@ -282,40 +311,19 @@ struct TimelineView: View {
 
     // MARK: screenshot
 
-    /// The screenshot, with the spoken words at this moment shown like subtitles.
+    /// The screenshot over the whole display, as if looking at the screen at that moment.
     private var screenshot: some View {
         GeometryReader { geo in
-            ZStack(alignment: .bottom) {
-                if let img = model.image {
-                    Image(nsImage: img)
-                        .resizable()
-                        .interpolation(.high)
-                        .aspectRatio(contentMode: .fit)
-                        .overlay { liveText(img) }
-                        .overlay(highlightBoxes)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(theme.stroke))
-                        .shadow(color: theme.shadow, radius: 24)
-                        .frame(width: geo.size.width, height: geo.size.height)
-                } else {
-                    emptyState.frame(width: geo.size.width, height: geo.size.height)
-                }
-                if let target = model.currentTarget, let f = model.current {
-                    openButton(target, f)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .padding(.trailing, 18).padding(.bottom, 18)
-                }
-                if let c = model.caption {
-                    Text(c)
-                        .font(.system(size: 17, weight: .medium))
-                        .multilineTextAlignment(.center)
-                        .lineLimit(3)
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 16).padding(.vertical, 9)
-                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.78)))
-                        .frame(maxWidth: min(900, geo.size.width - 80))
-                        .padding(.bottom, 22)
-                }
+            if let img = model.image {
+                Image(nsImage: img)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .overlay { liveText(img) }
+                    .overlay(highlightBoxes)
+                    .frame(width: geo.size.width, height: geo.size.height)
+            } else {
+                emptyState.frame(width: geo.size.width, height: geo.size.height)
             }
         }
     }
@@ -356,20 +364,65 @@ struct TimelineView: View {
         .background(RoundedRectangle(cornerRadius: 14).fill(theme.surface))
     }
 
-    // MARK: controls row
+    // MARK: bottom dock
 
-    /// App on the left, audio in the middle, live + zoom on the right.
-    private var controls: some View {
-        HStack(spacing: 12) {
-            appBadge.frame(maxWidth: .infinity, alignment: .leading)
-            audioButtons.layoutPriority(1)
-            HStack(spacing: 10) {
-                liveButton
-                zoomPicker
+    /// The full bar shows while the pointer is near it, while dragging, and while the tour points at it.
+    private var dockExpanded: Bool { dockHover || model.selectingRange || model.tutorialStep == 0 || model.tutorialStep == 1 }
+
+    /// Spoken words like subtitles, the app and audio of this moment, Open, then the scrubber at the very bottom.
+    private var dock: some View {
+        VStack(spacing: 10) {
+            if let c = model.caption {
+                Text(c)
+                    .font(.system(size: 17, weight: .medium))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 16).padding(.vertical, 9)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.78)))
+                    .frame(maxWidth: 900)
+                    .allowsHitTesting(false)
             }
-            .frame(maxWidth: .infinity, alignment: .trailing)
+            if model.markedRange != nil || model.selectingRange { selectionBar }
+            HStack(spacing: 10) {
+                appBadge
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .glass(Capsule(), theme)
+                    .opacity(model.current == nil ? 0 : 1)
+                Spacer(minLength: 12)
+                audioButtons
+                Spacer(minLength: 12)
+                if let target = model.currentTarget, let f = model.current { openButton(target, f) }
+                liveButton
+                if dockExpanded { zoomPicker.transition(.opacity) }
+            }
+            .padding(.horizontal, 20)
+            TimelineBar(model: model, compact: !dockExpanded)
+                .frame(height: dockExpanded ? 102 : 34)
+                .padding(.horizontal, dockExpanded ? 20 : 0)
+                .padding(.bottom, dockExpanded ? 10 : 2)
         }
-        .frame(height: 36)
+        .padding(.top, 26)
+        .contentShape(Rectangle())
+        .background(
+            // Frosted fade behind the bottom, like Rewind's: clear at the top, glass at the screen edge.
+            Rectangle().fill(.ultraThinMaterial)
+                .mask(LinearGradient(colors: [.clear, .black.opacity(0.85), .black], startPoint: .top, endPoint: .bottom))
+                .opacity(dockExpanded ? 1 : 0.8)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+        )
+        .onHover { inside in
+            dockLeave?.cancel()
+            if inside {
+                withAnimation(.easeOut(duration: 0.18)) { dockHover = true }
+            } else {
+                // A short wait, so passing over the edge does not make the bar jump.
+                let w = DispatchWorkItem { withAnimation(.easeOut(duration: 0.22)) { dockHover = false } }
+                dockLeave = w
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: w)
+            }
+        }
     }
 
     private var appBadge: some View {
@@ -402,7 +455,9 @@ struct TimelineView: View {
         HStack(spacing: 8) {
             if model.audioHere.isEmpty {
                 Label("No audio at this moment", systemImage: "speaker.slash")
-                    .font(.system(size: 12)).foregroundColor(theme.faint)
+                    .font(.system(size: 12)).foregroundColor(theme.dim)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .glass(Capsule(), theme)
             }
             ForEach(model.audioHere, id: \.id) { a in
                 let on = model.playingChunk == a.id
@@ -415,7 +470,8 @@ struct TimelineView: View {
                     }
                     .font(.system(size: 12, weight: .medium))
                     .padding(.horizontal, 13).padding(.vertical, 7)
-                    .background(Capsule().fill(on ? Color.accentColor : theme.surfaceHi))
+                    .background(Capsule().fill(on ? Color.accentColor : Color.clear))
+                    .glass(Capsule(), theme)
                     .foregroundColor(on ? .white : theme.text)
                     .contentShape(Capsule())
                 }
@@ -459,6 +515,27 @@ struct TimelineView: View {
         .help("\(help) (O)")
     }
 
+    /// The stretch marked with [ ] or a drag across the bar, and what to do with it.
+    private var selectionBar: some View {
+        HStack(spacing: 10) {
+            if let r = model.markedRange {
+                Image(systemName: "selection.pin.in.out").foregroundColor(.accentColor)
+                Text("Selected \(r.from.formatted(date: .omitted, time: .standard)) – \(r.to.formatted(date: .omitted, time: .standard))")
+                    .font(.system(size: 12, weight: .semibold)).monospacedDigit()
+                Button { model.deleteMarkedRange() } label: { Label("Delete…", systemImage: "trash") }
+                    .buttonStyle(.borderedProminent).tint(.red).controlSize(.small)
+                Button("Export Clip…") { model.openExport() }.controlSize(.small)
+                IconButton(symbol: "xmark", help: "Clear the selection (esc)") { model.clearMarks() }
+            } else {
+                Image(systemName: "hand.draw").foregroundColor(.accentColor)
+                Text("Drag across the bar below to select what to delete").font(.system(size: 12, weight: .semibold))
+                IconButton(symbol: "xmark", help: "Cancel (esc)") { model.selectingRange = false }
+            }
+        }
+        .padding(.leading, 14).padding(.trailing, 6).padding(.vertical, 5)
+        .glass(Capsule(), theme)
+    }
+
     private var liveButton: some View {
         Button { model.jumpToNow() } label: {
             HStack(spacing: 6) {
@@ -472,7 +549,8 @@ struct TimelineView: View {
             }
             .font(.system(size: 12, weight: .semibold))
             .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(Capsule().fill(model.isLive ? theme.surface : Color.accentColor))
+            .background(Capsule().fill(model.isLive ? Color.clear : Color.accentColor))
+            .glass(Capsule(), theme)
             .foregroundColor(model.isLive ? theme.dim : .white)
             .contentShape(Capsule())
         }
@@ -500,46 +578,32 @@ struct TimelineView: View {
             }
         }
         .padding(2)
-        .background(Capsule().fill(theme.surface))
+        .glass(Capsule(), theme)
         .help("Time shown across the bar (+ and − also zoom)")
     }
 
     // MARK: hints and help
-
-    private var hints: some View {
-        HStack(spacing: 14) {
-            hint(["←", "→"], "move")
-            hint(["space"], "play audio")
-            hint(["/"], "search")
-            hint(["+", "−"], "zoom")
-            hint(["O"], "open")
-            hint(["[", "]"], "mark clip")
-            hint(["?"], "all keys")
-            hint(["esc"], "close")
-        }
-        .font(.system(size: 11)).foregroundColor(theme.faint)
-    }
-
-    private func hint(_ keys: [String], _ what: String) -> some View {
-        HStack(spacing: 4) {
-            ForEach(keys, id: \.self) { Keycap($0) }
-            Text(what)
-        }
-    }
 
     private static let shortcuts: [(String, [[String]], String)] = [
         ("Move", [["←"], ["→"]], "Previous / next screenshot"),
         ("", [["⇧", "←"], ["⇧", "→"]], "Back / forward 1 minute"),
         ("", [["↑"], ["↓"]], "Back / forward 10 minutes"),
         ("", [["scroll"]], "Scroll the trackpad or wheel"),
+        ("", [["⌘", "⇧", "scroll"]], "From any app: open the timeline and go back"),
         ("", [["N"]], "Go to now"),
         ("Open", [["O"]], "Open the tab, document or window from this moment"),
+        ("", [["⇧", "O"]], "Restore the workspace: reopen what was open then"),
+        ("Star", [["S"]], "Star this moment / remove its star"),
         ("Filter", [["A"]], "Only this app / all apps again"),
+        ("", [["H"]], "Hide this app from the timeline"),
         ("Copy", [["⌘", "C"]], "Copy the selected text, or the screenshot"),
         ("", [["drag"]], "Select text on the screenshot"),
+        ("", [["⇧", "⌘", "C"]], "Copy all the text on the screenshot"),
         ("", [["⌘", "S"]], "Save the screenshot as a PNG"),
-        ("Clip", [["["], ["]"]], "Mark where a clip starts / ends"),
+        ("Clip", [["["], ["]"]], "Mark where a stretch starts / ends"),
+        ("", [["⇧", "drag"]], "Select a stretch on the bar"),
         ("", [["⌘", "E"]], "Export a clip as MP4 or GIF"),
+        ("Delete", [["⌫"]], "Delete this screenshot, or the selected stretch"),
         ("Audio", [["space"]], "Play or pause audio from here"),
         ("Search", [["/"], ["⌘", "F"]], "Search screen text and speech"),
         ("", [["⌘", "G"], ["⇧", "⌘", "G"]], "Older / newer match"),
@@ -571,7 +635,7 @@ struct TimelineView: View {
                         }
                     }
                 }
-                Text("Drag or click the bar to move. Hover it to preview.\nThe share button at the top has copy, save and export too.")
+                Text("⌘⇧ + scroll anywhere opens the timeline. Drag or click the bar at the bottom to move; hover it to preview.\nThe share button at the top has copy, save and export too.")
                     .font(.system(size: 12)).foregroundColor(theme.dim)
             }
             .padding(24)
@@ -593,6 +657,54 @@ struct TimelineView: View {
 
 // MARK: - small parts
 
+extension View {
+    /// Frosted glass behind a floating control, so it reads over any screenshot.
+    func glass<S: Shape>(_ shape: S, _ theme: Theme) -> some View {
+        background(shape.fill(.regularMaterial))
+            .overlay(shape.stroke(theme.stroke))
+            .shadow(color: .black.opacity(theme.dark ? 0.35 : 0.12), radius: 8, y: 2)
+    }
+
+    /// A filter chip under search, like Rewind's Apps / Meetings / Starred.
+    func chip(_ theme: Theme, on: Bool = false) -> some View {
+        padding(.horizontal, 10).frame(height: 30)
+            .background(RoundedRectangle(cornerRadius: 8).fill(on ? Color.accentColor.opacity(0.3) : theme.surfaceHi))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.stroke))
+    }
+}
+
+/// Meetings chip: recent meetings, newest first. Picking one goes to when it started.
+struct MeetingsMenu: View {
+    @Environment(\.colorScheme) private var scheme
+    private var theme: Theme { Theme(scheme) }
+    @ObservedObject var model: TimelineModel
+
+    var body: some View {
+        Menu {
+            if model.meetings.isEmpty {
+                Text("No meetings yet")
+            }
+            ForEach(model.meetings) { m in
+                Button {
+                    model.open(meeting: m)
+                } label: {
+                    Text("\(m.name)  ·  \(m.start.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute()))")
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "calendar").foregroundColor(theme.dim)
+                Text("Meetings").font(.system(size: 13, weight: .medium))
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .chip(theme)
+        .help("Go to a recent meeting")
+    }
+}
+
 /// A key drawn like a keyboard key.
 struct Keycap: View {
     @Environment(\.colorScheme) private var scheme
@@ -612,6 +724,36 @@ struct Keycap: View {
     }
 }
 
+/// "Keyword | Meaning" next to search, shown while Search by Meaning is on.
+struct SearchModeSwitch: View {
+    @Environment(\.colorScheme) private var scheme
+    private var theme: Theme { Theme(scheme) }
+    @ObservedObject var model: TimelineModel
+
+    var body: some View {
+        HStack(spacing: 0) {
+            segment("Keyword", on: !model.byMeaning) { model.setByMeaning(false) }
+            segment("Meaning", on: model.byMeaning) { model.setByMeaning(true) }
+        }
+        .padding(3)
+        .background(Capsule().fill(theme.surface))
+        .overlay(Capsule().stroke(theme.stroke))
+        .fixedSize()
+        .help("Keyword finds the exact words. Meaning finds moments about the same thing, even in other words.")
+    }
+
+    private func segment(_ title: String, on: Bool, _ act: @escaping () -> Void) -> some View {
+        Button(action: act) {
+            Text(title).font(.system(size: 12, weight: .semibold))
+                .foregroundColor(on ? theme.text : theme.dim)
+                .padding(.horizontal, 12).frame(height: 28)
+                .background(Capsule().fill(on ? Color.accentColor.opacity(0.35) : Color.clear))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 /// Copy, save and export, as a round button in the top bar.
 struct FrameMenu: View {
     @Environment(\.colorScheme) private var scheme
@@ -620,8 +762,8 @@ struct FrameMenu: View {
 
     var body: some View {
         Menu {
-            Button("Copy Screenshot (or selected text)") { model.copy() }
-            Button("Copy All Text") { model.copyAllText() }
+            Button("Copy Screenshot (or selected text)   ⌘C") { model.copy() }
+            Button("Copy All Text   ⇧⌘C") { model.copyAllText() }
             Button("Save Screenshot…") { model.saveFrame() }
             Divider()
             Button("Mark Clip Start Here") { model.markStart() }
@@ -638,6 +780,34 @@ struct FrameMenu: View {
         .frame(width: 30, height: 30)
         .background(Circle().fill(theme.surfaceHi))
         .help("Copy, save or export (⌘C, ⌘S, ⌘E)")
+    }
+}
+
+/// Delete, as a round trash button in the top bar (TimelineDelete.swift).
+struct DeleteMenu: View {
+    @Environment(\.colorScheme) private var scheme
+    private var theme: Theme { Theme(scheme) }
+    @ObservedObject var model: TimelineModel
+
+    var body: some View {
+        Menu {
+            Button("Delete This Screenshot…") { model.deleteShownScreenshot() }.disabled(model.current == nil)
+            Button("Select a Stretch to Delete…") { model.startSelecting() }
+            if model.markedRange != nil { Button("Delete Selected Stretch…") { model.deleteMarkedRange() } }
+            if model.canDeleteMatching {
+                Divider()
+                Button("Delete Every Screenshot with “\(model.query.trimmingCharacters(in: .whitespaces))”…") { model.deleteMatching() }
+            }
+        } label: {
+            Image(systemName: "trash")
+                .font(.system(size: 12, weight: .semibold))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .frame(width: 30, height: 30)
+        .background(Circle().fill(theme.surfaceHi))
+        .help("Delete this screenshot, a stretch of time, or every screenshot with the searched words (⌫)")
     }
 }
 
@@ -663,6 +833,21 @@ struct AppFilterMenu: View {
                         }
                     }
                 }
+                if let app = model.current?.appName, !app.isEmpty {
+                    Divider()
+                    Button { model.hide(app: app) } label: { Label("Hide \(app) from Timeline", systemImage: "eye.slash") }
+                    Button { model.hide(app: app, stopRecording: true) } label: {
+                        Label("Hide \(app) and Stop Recording It", systemImage: "nosign")
+                    }
+                }
+                if !model.hiddenApps.isEmpty {
+                    Divider()
+                    Menu("Hidden Apps") {
+                        ForEach(model.hiddenApps, id: \.self) { app in
+                            Button("Show \(app) Again") { model.unhide(app: app) }
+                        }
+                    }
+                }
             } label: {
                 HStack(spacing: 6) {
                     if let app = model.appFilter, let icon = AppIcons.icon(for: app) {
@@ -670,21 +855,21 @@ struct AppFilterMenu: View {
                     } else if model.appFilter == nil {
                         Image(systemName: "square.grid.2x2").foregroundColor(theme.dim)
                     }
-                    Text(model.appFilter ?? "All apps").font(.system(size: 13, weight: .medium)).lineLimit(1)
+                    Text(model.appFilter ?? "Apps").font(.system(size: 13, weight: .medium)).lineLimit(1)
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundColor(theme.dim)
                 }
             }
             .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
             .fixedSize()
-            .help("Only show moments when one app was in front (A)")
+            .help("Only show moments when one app was in front (A), or hide an app (H)")
             if model.appFilter != nil {
                 Button { model.setAppFilter(nil) } label: { Image(systemName: "xmark.circle.fill") }
                     .buttonStyle(.plain).foregroundColor(theme.faint).help("Show all apps")
             }
         }
-        .padding(.horizontal, 14).padding(.vertical, 9)
-        .background(Capsule().fill(model.appFilter != nil ? Color.accentColor.opacity(0.3) : theme.surface))
-        .overlay(Capsule().stroke(theme.stroke))
-        .frame(maxWidth: 240)
+        .chip(theme, on: model.appFilter != nil)
+        .frame(maxWidth: 220)
     }
 }
 
@@ -760,7 +945,11 @@ struct TimelineBar: View {
     @Environment(\.colorScheme) private var scheme
     private var theme: Theme { Theme(scheme) }
     @ObservedObject var model: TimelineModel
+    /// Rewind's thin scrubber: a faint strip of app colors and a white playhead, nothing else.
+    var compact = false
     @State private var dragStartV: TimeInterval?
+    /// Where a selecting drag (Select a Stretch, or ⇧-drag) started.
+    @State private var selectFromV: TimeInterval?
     @State private var hoverX: CGFloat?
 
     // The top 20 pt hold the playhead time bubble.
@@ -779,9 +968,13 @@ struct TimelineBar: View {
             let x = { (d: Date) -> CGFloat in CGFloat((axis.v(d) - v0) / model.span) * w }
             let px = x(model.playhead)
             ZStack(alignment: .topLeading) {
-                RoundedRectangle(cornerRadius: 10).fill(theme.surface).padding(.top, 20)
+                if !compact { RoundedRectangle(cornerRadius: 10).fill(theme.surface).padding(.top, 20) }
                 Canvas { ctx, size in
                     let startDate = axis.date(v0), endDate = axis.date(v1)
+                    if compact {
+                        drawCompact(ctx, size: size, from: startDate, to: endDate, x: x, px: px)
+                        return
+                    }
                     drawApps(ctx, size: size, from: startDate, to: endDate, x: x)
                     drawAudio(ctx, size: size, from: startDate, to: endDate, x: x)
                     drawBreaks(ctx, axis: axis, size: size, x: x)
@@ -791,6 +984,7 @@ struct TimelineBar: View {
                         ctx.fill(Path(CGRect(x: x(h.time) - 1.5, y: 24, width: 3, height: 10)), with: .color(theme.match))
                     }
                     drawMarks(ctx, size: size, x: x)
+                    TimelineBar.drawStars(ctx, stars: model.stars, from: startDate, to: endDate, x: x)
                     // "Now" edge.
                     let nx = x(now)
                     if nx < size.width - 1 {
@@ -800,7 +994,7 @@ struct TimelineBar: View {
                                  with: .color(.red.opacity(0.7)))
                     }
                     // Hover line.
-                    if let hx = hoverX, dragStartV == nil, abs(hx - px) > 3 {
+                    if let hx = hoverX, dragStartV == nil, selectFromV == nil, abs(hx - px) > 3 {
                         ctx.fill(Path(CGRect(x: hx - 0.5, y: 20, width: 1, height: size.height - 22)),
                                  with: .color(theme.dim))
                     }
@@ -815,7 +1009,7 @@ struct TimelineBar: View {
                     ctx.fill(Path(roundedRect: bubble, cornerRadius: 7.5), with: .color(theme.playhead))
                     ctx.draw(label, at: CGPoint(x: bubble.midX, y: bubble.midY))
                 }
-                if let hx = hoverX, dragStartV == nil, abs(hx - px) > 3 {
+                if !compact, let hx = hoverX, dragStartV == nil, selectFromV == nil, abs(hx - px) > 3 {
                     let d = axis.date(v0 + Double(hx / w) * model.span)
                     if d <= now { HoverPreview(model: model, date: d).position(previewPosition(hx, width: w)) }
                 }
@@ -830,6 +1024,15 @@ struct TimelineBar: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { g in
+                        if dragStartV == nil && selectFromV == nil && (model.selectingRange || NSEvent.modifierFlags.contains(.shift)) {
+                            selectFromV = v0 + Double(g.startLocation.x / w) * model.span
+                        }
+                        if let sv = selectFromV {
+                            // Selecting: the bar stays put and the marks follow the pointer, never past now.
+                            let v = v0 + Double(min(max(0, g.location.x), w) / w) * model.span
+                            model.select(axis.date(min(sv, v)), min(axis.date(max(sv, v)), now))
+                            return
+                        }
                         if dragStartV == nil {
                             // A click jumps to where you clicked; a drag then moves from there.
                             let v = v0 + Double(g.startLocation.x / w) * model.span
@@ -841,9 +1044,49 @@ struct TimelineBar: View {
                             model.jump(to: axis.date(sv - Double(g.translation.width / w) * model.span))
                         }
                     }
-                    .onEnded { _ in dragStartV = nil }
+                    .onEnded { _ in
+                        dragStartV = nil
+                        if selectFromV != nil {
+                            selectFromV = nil
+                            model.selectingRange = false
+                        }
+                    }
             )
         }
+    }
+
+    /// The thin scrubber: app colors as a faint strip along the bottom edge, search matches and clip marks,
+    /// and a white playhead standing up from the edge.
+    private func drawCompact(_ ctx: GraphicsContext, size: CGSize, from: Date, to: Date, x: (Date) -> CGFloat, px: CGFloat) {
+        let stripY = size.height - 5
+        var strip = ctx
+        strip.opacity = 0.55
+        let frames = model.frames
+        if !frames.isEmpty {
+            var i = max(0, model.frameIndex(at: from))
+            let last = model.frameIndex(at: to)
+            while i <= last {
+                let f = frames[i]
+                let next = f.end ?? (i + 1 < frames.count ? frames[i + 1].time : f.time.addingTimeInterval(2))
+                let a = x(f.time), b = x(min(next, f.time.addingTimeInterval(60)))
+                if b > 0 && a < size.width {
+                    strip.fill(Path(CGRect(x: a, y: stripY, width: max(1, b - a), height: 3)),
+                               with: .color(Color(TimelineModel.color(for: f.appName))))
+                }
+                i += 1
+            }
+        }
+        for h in model.hits where h.time >= from && h.time <= to {
+            ctx.fill(Path(CGRect(x: x(h.time) - 1, y: stripY - 6, width: 2, height: 9)), with: .color(theme.match))
+        }
+        for m in [model.clipStart, model.clipEnd].compactMap({ $0 }) {
+            ctx.fill(Path(CGRect(x: x(m) - 1, y: stripY - 10, width: 2, height: 13)), with: .color(.accentColor))
+        }
+        TimelineBar.drawStars(ctx, stars: model.stars, from: from, to: to, x: x)
+        var head = ctx
+        head.addFilter(.shadow(color: .black.opacity(0.35), radius: 4))
+        head.fill(Path(roundedRect: CGRect(x: px - 2, y: 2, width: 4, height: size.height - 2), cornerRadius: 2),
+                  with: .color(.white))
     }
 
     /// The preview card floats above the bar, centered on the pointer but kept on screen.
