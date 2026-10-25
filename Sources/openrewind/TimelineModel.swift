@@ -75,6 +75,8 @@ final class TimelineModel: ObservableObject {
     @Published var exportClip: ClipRange?
     /// A delete is running (TimelineDelete.swift); another waits for it to finish.
     var deleting = false
+    /// The next drag across the bar selects a stretch instead of moving (Select a Stretch, TimelineDelete.swift).
+    @Published var selectingRange = false
     /// True while the timeline is on screen. A Save dialog checks it after it closes: the timeline may have been
     /// closed (or App Lock locked) while it was up, and then nothing is read or saved.
     var isShown = false

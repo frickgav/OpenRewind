@@ -189,6 +189,7 @@ final class OverlayController {
             if model.showHelp { model.showHelp = false }
             else if model.showResults { model.showResults = false }
             else if model.showAI { model.showAI = false }
+            else if model.selectingRange { model.selectingRange = false }
             else if model.clearTextSelection() {}
             else if model.hasMarks { model.clearMarks() }
             else { hide() }

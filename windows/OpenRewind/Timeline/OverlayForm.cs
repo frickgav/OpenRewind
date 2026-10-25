@@ -36,7 +36,10 @@ sealed class OverlayForm : Form
     bool dockHover;
     /// Folds the full bar back a moment after the pointer leaves, so passing over the edge does not make it jump.
     readonly System.Windows.Forms.Timer dockLeave = new() { Interval = 500 };
-    bool DockExpanded => dockHover || dragStartV != null || HoldFullBar;
+    bool DockExpanded => dockHover || dragStartV != null || selectFromV != null || model.SelectingRange || HoldFullBar;
+    /// Where a selecting drag (Select a Stretch, or Shift-drag) started, and the bar's left edge then.
+    double? selectFromV;
+    double selectV0;
     /// Set by the tour while it points at the bar.
     public bool HoldFullBar { get; set; }
 
@@ -270,6 +273,7 @@ sealed class OverlayForm : Form
         using (var lg = new LinearGradientBrush(new PointF(0, fade.Y - 1), new PointF(0, fade.Bottom), Color.Transparent, Draw.WithAlpha(CardColor, full ? 0.9 : 0.75)))
             g.FillRectangle(lg, fade);
         DrawCaption(g, captionBottom);
+        DrawSelectionBar(g, dockTop - 6 * k);
         DrawControls(g, controls);
         DrawBar(g, bar);
         if (model.Notice is string notice) DrawNotice(g, notice);
@@ -307,7 +311,7 @@ sealed class OverlayForm : Form
         const string askLabel = "✦  Ask AI";
         float btn = 30 * k, inner = 6 * k;
         float askW = Chat != null ? Draw.Measure(g, askLabel, Semibold(12.5f)).Width + 28 * k : 0;
-        float rightW = inner + (askW > 0 ? askW + 6 * k : 0) + 4 * btn + 3 * 6 * k + inner;
+        float rightW = inner + (askW > 0 ? askW + 6 * k : 0) + 5 * btn + 4 * 6 * k + inner;
         var rightGroup = new RectangleF(r.Right - rightW, r.Y, rightW, r.Height);
         Glass(g, rightGroup, r.Height / 2);
         float by = r.Y + (r.Height - btn) / 2, bx = rightGroup.Right - inner - btn;
@@ -316,7 +320,10 @@ sealed class OverlayForm : Form
         var share = new RectangleF(bx - 2 * (btn + 6 * k), by, btn, btn);
         RoundButton(g, share, "", () => ShowFrameMenu(new Point((int)share.X, (int)(share.Bottom + 4 * k))));
         DrawShareIcon(g, share.X + share.Width / 2, share.Y + share.Height / 2);
-        var star = new RectangleF(share.X - btn - 6 * k, by, btn, btn);
+        var trash = new RectangleF(share.X - btn - 6 * k, by, btn, btn);
+        RoundButton(g, trash, "", () => ShowDeleteMenu(new Point((int)trash.X, (int)(trash.Bottom + 4 * k))));
+        DrawTrashIcon(g, trash.X + trash.Width / 2, trash.Y + trash.Height / 2);
+        var star = new RectangleF(trash.X - btn - 6 * k, by, btn, btn);
         RoundButton(g, star, "", () => model.ToggleStar());
         var starred = model.CurrentStar != null;
         Draw.TextCentered(g, starred ? "★" : "☆", Semibold(13), starred ? Yellow : TextColor, star.X + star.Width / 2, star.Y + star.Height / 2);
@@ -677,11 +684,77 @@ sealed class OverlayForm : Form
         Add("Mark Clip End Here", "]", model.MarkEnd, model.Current != null);
         if (model.HasMarks) Add("Clear Clip Marks", "", model.ClearMarks);
         Add("Export Clip…", "Ctrl+E", ExportClip, model.Frames.Count > 0);
-        menu.Items.Add(new ToolStripSeparator());
-        Add("Delete This Screenshot…", "Del", () => model.DeleteShownScreenshot(ConfirmDelete), model.Current != null);
-        if (model.MarkedRange != null) Add("Delete Marked Range…", "Del", () => model.DeleteMarkedRange(ConfirmDelete));
-        if (model.CanDeleteMatching) Add($"Delete Every Screenshot with “{model.Query.Trim()}”…", "", () => model.DeleteMatching(ConfirmDelete));
         menu.Show(this, at);
+    }
+
+    /// The trash button: delete the shown screenshot, a stretch of time, or every screenshot with the searched words.
+    void ShowDeleteMenu(Point at)
+    {
+        frameMenu?.Dispose();
+        var menu = frameMenu = new ContextMenuStrip();
+        void Add(string text, string keys, Action act, bool enabled = true)
+        {
+            var item = new ToolStripMenuItem(text) { ShortcutKeyDisplayString = keys, Enabled = enabled };
+            item.Click += (_, _) => { act(); Invalidate(); };
+            menu.Items.Add(item);
+        }
+        Add("Delete This Screenshot…", model.MarkedRange == null ? "Del" : "", () => model.DeleteShownScreenshot(ConfirmDelete), model.Current != null);
+        Add("Select a Stretch to Delete…", "Shift+drag", model.StartSelecting, model.Frames.Count > 0);
+        if (model.MarkedRange != null) Add("Delete Selected Stretch…", "Del", () => model.DeleteMarkedRange(ConfirmDelete));
+        if (model.CanDeleteMatching)
+        {
+            menu.Items.Add(new ToolStripSeparator());
+            Add($"Delete Every Screenshot with “{model.Query.Trim()}”…", "", () => model.DeleteMatching(ConfirmDelete));
+        }
+        menu.Show(this, at);
+    }
+
+    /// A trash can, drawn so no font is needed.
+    void DrawTrashIcon(Graphics g, float cx, float cy)
+    {
+        float h = 5.5f * k;
+        using var pen = new Pen(TextColor, 1.5f * k) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        g.DrawLine(pen, cx - h, cy - h * 0.55f, cx + h, cy - h * 0.55f);
+        g.DrawLine(pen, cx - h * 0.35f, cy - h * 0.55f, cx - h * 0.25f, cy - h);
+        g.DrawLine(pen, cx - h * 0.25f, cy - h, cx + h * 0.25f, cy - h);
+        g.DrawLine(pen, cx + h * 0.25f, cy - h, cx + h * 0.35f, cy - h * 0.55f);
+        g.DrawLines(pen, new[] { new PointF(cx - h * 0.75f, cy - h * 0.55f), new PointF(cx - h * 0.6f, cy + h), new PointF(cx + h * 0.6f, cy + h),
+                                  new PointF(cx + h * 0.75f, cy - h * 0.55f) });
+    }
+
+    /// Over the dock while a stretch is selected (or about to be): what is selected, Delete, Export Clip and clear.
+    void DrawSelectionBar(Graphics g, float bottom)
+    {
+        var range = model.MarkedRange;
+        if (range == null && !model.SelectingRange) return;
+        var tf = Semibold(12.5f);
+        string text = range is (DateTime a, DateTime b)
+            ? $"Selected {a.ToLocalTime().ToString("T", CultureInfo.CurrentCulture)} – {b.ToLocalTime().ToString("T", CultureInfo.CurrentCulture)}"
+            : "Drag across the bar below to select what to delete";
+        var ts = Draw.Measure(g, text, tf);
+        const string del = "Delete…", exp = "Export Clip…";
+        float dw = range != null ? Draw.Measure(g, del, tf).Width + 24 * k : 0, ew = range != null ? Draw.Measure(g, exp, tf).Width + 24 * k : 0;
+        float h = 38 * k, btnH = 28 * k, btn = 26 * k;
+        float w = 16 * k + ts.Width + (range != null ? 12 * k + dw + 8 * k + ew : 0) + 10 * k + btn + 6 * k;
+        var r = new RectangleF(ClientSize.Width / 2f - w / 2, bottom - h, w, h);
+        Glass(g, r, h / 2);
+        float mid = r.Y + h / 2, x = r.X + 16 * k;
+        Draw.Text(g, text, tf, TextColor, x, mid - ts.Height / 2);
+        x += ts.Width + 12 * k;
+        if (range != null)
+        {
+            var dr = new RectangleF(x, mid - btnH / 2, dw, btnH);
+            Draw.Fill(g, dr, btnH / 2, Color.FromArgb(255, 69, 58));
+            Draw.TextCentered(g, del, tf, Color.White, dr.X + dr.Width / 2, mid);
+            hot.Add((dr, () => model.DeleteMarkedRange(ConfirmDelete)));
+            x += dw + 8 * k;
+            var er = new RectangleF(x, mid - btnH / 2, ew, btnH);
+            Draw.Fill(g, er, btnH / 2, Ink(0.12));
+            Draw.TextCentered(g, exp, tf, TextColor, er.X + er.Width / 2, mid);
+            hot.Add((er, ExportClip));
+            x += ew + 10 * k;
+        }
+        RoundButton(g, new RectangleF(x, mid - btn / 2, btn, btn), "✕", () => { model.SelectingRange = false; model.ClearMarks(); });
     }
 
     /// Asks before a delete on the timeline (TimelineDelete.cs): the index of the delete button chosen, or -1.
@@ -1322,9 +1395,10 @@ sealed class OverlayForm : Form
         ("COPY", new[] { new[] { "Ctrl", "C" } }, "Copy the selected text, or the screenshot"),
         ("", new[] { new[] { "drag" } }, "Select text on the screenshot"),
         ("", new[] { new[] { "Ctrl", "S" } }, "Save the screenshot as a PNG"),
-        ("CLIP", new[] { new[] { "[" }, new[] { "]" } }, "Mark where a clip starts / ends"),
+        ("CLIP", new[] { new[] { "[" }, new[] { "]" } }, "Mark where a stretch starts / ends"),
+        ("", new[] { new[] { "Shift", "drag" } }, "Select a stretch on the bar"),
         ("", new[] { new[] { "Ctrl", "E" } }, "Export a clip as MP4 or GIF"),
-        ("DELETE", new[] { new[] { "Del" } }, "Delete this screenshot, or the marked range"),
+        ("DELETE", new[] { new[] { "Del" } }, "Delete this screenshot, or the selected stretch"),
         ("SEARCH", new[] { new[] { "/" }, new[] { "Ctrl", "F" } }, "Search screen text and speech"),
         ("", new[] { new[] { "Ctrl", "G" }, new[] { "Shift", "Ctrl", "G" } }, "Older / newer match"),
         ("VIEW", new[] { new[] { "+" }, new[] { "−" } }, "Zoom the bar in / out"),
@@ -1440,6 +1514,7 @@ sealed class OverlayForm : Form
                 if (model.ShowHelp) model.ShowHelp = false;
                 else if (model.ShowResults) model.ShowResults = false;
                 else if (ChatOpen) chatPanel!.Close();
+                else if (model.SelectingRange) model.SelectingRange = false;
                 else if (model.HasSelection) model.ClearSelection();
                 else if (model.HasMarks) model.ClearMarks();
                 else { HideOverlay(); return true; }
@@ -1510,9 +1585,19 @@ sealed class OverlayForm : Form
         }
         if (!model.ShowHelp && !(model.ShowResults && hot.Any(h => h.Rect.Contains(e.Location) && h.Rect.Y < bar.Y)) && InBar(e.Location))
         {
-            // A click jumps to where you clicked; a drag then moves from there.
             var axis = model.Axis;
             var v = V0(axis) + (e.X - bar.X) / bar.Width * model.Span;
+            if (model.SelectingRange || (ModifierKeys & Keys.Shift) != 0)
+            {
+                // Selecting: the bar stays put and the marks follow the pointer.
+                selectV0 = V0(axis);
+                selectFromV = v;
+                model.StopAudio();
+                model.SelectRange(axis.Date(v), axis.Date(v));
+                Capture = true;
+                return;
+            }
+            // A click jumps to where you clicked; a drag then moves from there.
             dragStartV = v;
             dragStartX = e.X;
             model.Jump(axis.Date(v));
@@ -1531,6 +1616,14 @@ sealed class OverlayForm : Form
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (selectFromV is double from && e.Button == MouseButtons.Left)
+        {
+            var axis = model.Axis;
+            var v = selectV0 + Math.Clamp((e.X - bar.X) / bar.Width, 0, 1) * model.Span;
+            DateTime a = axis.Date(Math.Min(from, v)), b = axis.Date(Math.Max(from, v));
+            model.SelectRange(a, b > model.LoadedAt ? model.LoadedAt : b);
+            return;
+        }
         if (dragStartV is double sv && e.Button == MouseButtons.Left)
         {
             model.Jump(model.Axis.Date(sv - (e.X - dragStartX) / bar.Width * model.Span));
@@ -1554,6 +1647,7 @@ sealed class OverlayForm : Form
     {
         base.OnMouseUp(e);
         dragStartV = null;
+        if (selectFromV != null) { selectFromV = null; model.SelectingRange = false; }
         selecting = false;
         Capture = false;
         Invalidate();

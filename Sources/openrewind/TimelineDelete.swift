@@ -63,6 +63,19 @@ extension TimelineModel {
         }
     }
 
+    /// The trash button's Select a Stretch: the bar grows, and the next drag across it marks what to delete.
+    func startSelecting() {
+        selectingRange = true
+        stopAudio()
+        show(notice: "Drag across the bar at the bottom to select a stretch. ⇧-drag does it any time.")
+    }
+
+    /// A drag across the bar (Select a Stretch, or ⇧-drag): marks it like [ and ] do.
+    func select(_ a: Date, _ b: Date) {
+        clipStart = min(a, b)
+        clipEnd = max(a, b)
+    }
+
     var canDeleteMatching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty && !searchingByMeaning && !starredOnly }
 
     /// The marked range from the screenshot shown at its start through the one at its end, or nil without both marks.

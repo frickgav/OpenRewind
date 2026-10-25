@@ -76,6 +76,24 @@ sealed partial class TimelineModel
         });
     }
 
+    /// The next drag across the bar selects a stretch instead of moving (the trash button's Select a Stretch).
+    public bool SelectingRange { get; set; }
+
+    public void StartSelecting()
+    {
+        SelectingRange = true;
+        StopAudio();
+        ShowNotice("Drag across the bar at the bottom to select a stretch. Shift-drag does it any time.");
+    }
+
+    /// A drag across the bar (Select a Stretch, or Shift-drag): marks it like [ and ] do.
+    public void SelectRange(DateTime a, DateTime b)
+    {
+        ClipStart = a < b ? a : b;
+        ClipEnd = a < b ? b : a;
+        Notify();
+    }
+
     public bool CanDeleteMatching => Query.Trim().Length > 0 && !SearchingByMeaning && !StarredOnly;
 
     /// The marked range from the screenshot shown at its start through the one at its end, or null without both marks.
