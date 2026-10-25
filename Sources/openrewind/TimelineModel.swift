@@ -73,6 +73,8 @@ final class TimelineModel: ObservableObject {
     @Published var clipStart: Date?
     @Published var clipEnd: Date?
     @Published var exportClip: ClipRange?
+    /// A delete is running (TimelineDelete.swift); another waits for it to finish.
+    var deleting = false
     /// True while the timeline is on screen. A Save dialog checks it after it closes: the timeline may have been
     /// closed (or App Lock locked) while it was up, and then nothing is read or saved.
     var isShown = false
@@ -303,6 +305,18 @@ final class TimelineModel: ObservableObject {
             applyFilter()
             show(frames.count - 1)
         }
+    }
+
+    /// After a delete: read the history again as far back as it was loaded, keep the app filter and go back to `date`.
+    func reloadAfterDelete(at date: Date) {
+        let keep = appFilter, since = loadedSince
+        reloadStars()
+        apply(now: Date(), since: since, frames: db.timelineFrames(since: since), audio: db.timelineAudio(since: since))
+        if let keep, allFrames.contains(where: { $0.appName == keep }), !hiddenKeys.contains(keep.lowercased()) {
+            appFilter = keep
+            applyFilter()
+        }
+        jump(to: date)
     }
 
     /// Bumped by every load, so a slower background load that finishes later is dropped.

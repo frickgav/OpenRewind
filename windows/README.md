@@ -44,7 +44,7 @@ Needs Windows 10 (version 2004 or later) or Windows 11, x64 or ARM64.
   expect first, then the frame it is on and the time left, with Cancel.
   Right-click the screenshot or use the share button at the top for the same, plus **Copy All Text**.
   Clips use only the screenshots already saved and the app filter, and leave out blocked apps and
-  sites; see [Copy and export](../README.md#copy-and-export).
+  sites; see [Copy, export and delete](../README.md#copy-export-and-delete).
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
 - **Journal…** shows one page per day: top apps, sites and windows worked out on this PC, plus an

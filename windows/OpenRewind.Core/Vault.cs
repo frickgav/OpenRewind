@@ -56,6 +56,14 @@ public sealed partial class Database
             using var probe = c.CreateCommand();
             probe.CommandText = "SELECT count(*) FROM sqlite_master;";
             probe.ExecuteScalar();
+            // Deleted rows are overwritten with zeros, so a deleted screenshot's text does not stay readable in the
+            // file's free space (Delete on the timeline). Mac: the same.
+            if (mode != SqliteOpenMode.ReadOnly)
+            {
+                using var secure = c.CreateCommand();
+                secure.CommandText = "PRAGMA secure_delete = ON;";
+                secure.ExecuteNonQuery();
+            }
         }
         catch (SqliteException e)
         {

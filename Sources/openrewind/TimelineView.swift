@@ -576,6 +576,7 @@ struct TimelineView: View {
         ("", [["⌘", "S"]], "Save the screenshot as a PNG"),
         ("Clip", [["["], ["]"]], "Mark where a clip starts / ends"),
         ("", [["⌘", "E"]], "Export a clip as MP4 or GIF"),
+        ("Delete", [["⌫"]], "Delete this screenshot, or the marked range"),
         ("Audio", [["space"]], "Play or pause audio from here"),
         ("Search", [["/"], ["⌘", "F"]], "Search screen text and speech"),
         ("", [["⌘", "G"], ["⇧", "⌘", "G"]], "Older / newer match"),
@@ -742,6 +743,10 @@ struct FrameMenu: View {
             Button("Mark Clip End Here") { model.markEnd() }
             if model.hasMarks { Button("Clear Clip Marks") { model.clearMarks() } }
             Button("Export Clip…") { model.openExport() }
+            Divider()
+            Button("Delete This Screenshot…") { model.deleteShownScreenshot() }.disabled(model.current == nil)
+            if model.markedRange != nil { Button("Delete Marked Range…") { model.deleteMarkedRange() } }
+            if model.canDeleteMatching { Button("Delete Every Screenshot with “\(model.query.trimmingCharacters(in: .whitespaces))”…") { model.deleteMatching() } }
         } label: {
             Image(systemName: "square.and.arrow.up")
                 .font(.system(size: 12, weight: .semibold))
@@ -751,7 +756,7 @@ struct FrameMenu: View {
         .fixedSize()
         .frame(width: 30, height: 30)
         .background(Circle().fill(theme.surfaceHi))
-        .help("Copy, save or export (⌘C, ⌘S, ⌘E)")
+        .help("Copy, save, export or delete (⌘C, ⌘S, ⌘E, ⌫)")
     }
 }
 

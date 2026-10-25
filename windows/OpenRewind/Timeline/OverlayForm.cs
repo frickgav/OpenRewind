@@ -677,7 +677,24 @@ sealed class OverlayForm : Form
         Add("Mark Clip End Here", "]", model.MarkEnd, model.Current != null);
         if (model.HasMarks) Add("Clear Clip Marks", "", model.ClearMarks);
         Add("Export Clip…", "Ctrl+E", ExportClip, model.Frames.Count > 0);
+        menu.Items.Add(new ToolStripSeparator());
+        Add("Delete This Screenshot…", "Del", () => model.DeleteShownScreenshot(ConfirmDelete), model.Current != null);
+        if (model.MarkedRange != null) Add("Delete Marked Range…", "Del", () => model.DeleteMarkedRange(ConfirmDelete));
+        if (model.CanDeleteMatching) Add($"Delete Every Screenshot with “{model.Query.Trim()}”…", "", () => model.DeleteMatching(ConfirmDelete));
         menu.Show(this, at);
+    }
+
+    /// Asks before a delete on the timeline (TimelineDelete.cs): the index of the delete button chosen, or -1.
+    int ConfirmDelete(string title, string text, string[] buttons)
+    {
+        model.StopAudio();
+        var page = new TaskDialogPage { Caption = "OpenRewind", Heading = title, Text = text, Icon = TaskDialogIcon.Warning };
+        foreach (var b in buttons) page.Buttons.Add(new TaskDialogButton(b));
+        page.Buttons.Add(TaskDialogButton.Cancel);
+        page.DefaultButton = TaskDialogButton.Cancel;
+        var chosen = TaskDialog.ShowDialog(this, page);
+        Activate();
+        return Array.IndexOf(buttons, chosen.Text);
     }
 
     /// Export Clip…: the marked range, or the 5 minutes up to the shown screenshot.
@@ -1307,6 +1324,7 @@ sealed class OverlayForm : Form
         ("", new[] { new[] { "Ctrl", "S" } }, "Save the screenshot as a PNG"),
         ("CLIP", new[] { new[] { "[" }, new[] { "]" } }, "Mark where a clip starts / ends"),
         ("", new[] { new[] { "Ctrl", "E" } }, "Export a clip as MP4 or GIF"),
+        ("DELETE", new[] { new[] { "Del" } }, "Delete this screenshot, or the marked range"),
         ("SEARCH", new[] { new[] { "/" }, new[] { "Ctrl", "F" } }, "Search screen text and speech"),
         ("", new[] { new[] { "Ctrl", "G" }, new[] { "Shift", "Ctrl", "G" } }, "Older / newer match"),
         ("VIEW", new[] { new[] { "+" }, new[] { "−" } }, "Zoom the bar in / out"),
@@ -1439,6 +1457,7 @@ sealed class OverlayForm : Form
             case Keys.H when !ctrl: model.HideCurrentApp(); Invalidate(); break;
             case Keys.OemOpenBrackets when !ctrl: model.MarkStart(); break;
             case Keys.OemCloseBrackets when !ctrl: model.MarkEnd(); break;
+            case Keys.Delete: case Keys.Back: model.DeletePressed(ConfirmDelete); break;
             case Keys.Oemplus: case Keys.Add: model.Span = Math.Max(60, model.Span / 2); Invalidate(); break;
             case Keys.OemMinus: case Keys.Subtract: model.Span = Math.Min(12 * 3600, model.Span * 2); Invalidate(); break;
             default: return base.ProcessCmdKey(ref msg, keyData);

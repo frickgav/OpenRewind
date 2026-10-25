@@ -271,7 +271,7 @@ with **Keep For 1 Day** yesterday's recap stays while part of yesterday does.
 text, any other link or image becomes its text and address in plain text, and HTML is escaped, so
 opening the file never loads anything.
 
-## Copy and export
+## Copy, export and delete
 
 Get things out of the timeline, on the Mac and on Windows:
 
@@ -291,7 +291,23 @@ Get things out of the timeline, on the Mac and on Windows:
   leaves no file. When it is done, **Show in Finder** / **Show in Explorer** and **Open** take you
   to the file.
 - The share button at the top of the timeline (or a right-click on the screenshot on Windows) has
-  all of these, plus **Copy All Text** and **Mark Clip Start / End Here**.
+  all of these, plus **Copy All Text**, **Mark Clip Start / End Here** and the deletes below.
+
+Delete things from the timeline, on the Mac and on Windows (each asks first, and can't be undone):
+
+- **⌫** / **Delete** deletes the shown screenshot, or the marked range when both ends are marked
+  with **[** and **]**. A range takes every app's screenshots in it (also ones hidden or filtered
+  out); you choose whether the audio clips that start in it go too.
+- **Delete Every Screenshot with "…"** (share button, while keyword search has words in it)
+  deletes every screenshot that has those words, in any app and on any day: for a password or key
+  that was on screen.
+- What was made from them goes too: the screen text and its search index rows, Search by Meaning
+  moments, stars on them, meeting titles taken from them and the journal recap of the day. Videos
+  are written again without them (see Compress Older Recordings).
+- The deleted text is not left in the database file: SQLite overwrites what a delete frees
+  (`secure_delete`), the search index drops the words at once (FTS5 `secure-delete`; Windows' SQLCipher
+  is too old for it, so there the index is merged after a delete, a little at a time), and the
+  write-ahead log is emptied. The same goes for **Delete Recordings** in the menu.
 
 What is left out:
 
@@ -593,7 +609,7 @@ copies to `/Applications` and restarts the app in one step. It lives in the menu
   search only finds that app's screen text (and speech heard while it was in front).
 - **Copy and export**: drag across text on a screenshot and **⌘C** copies it; with nothing
   selected **⌘C** copies the screenshot, **⌘S** saves it as a PNG, **[** and **]** mark a clip and
-  **⌘E** exports it as MP4 or GIF. See [Copy and export](#copy-and-export).
+  **⌘E** exports it as MP4 or GIF. See [Copy, export and delete](#copy-export-and-delete).
 - **Search…** opens the timeline with the cursor in its search box, or the web search page
   when the local search server is on.
 - **Insights…** shows where your time went today or this week (see [Insights](#insights)).
