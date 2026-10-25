@@ -228,8 +228,9 @@ final class Recorder {
         var title = window.windowName
         let rawText = text
         if redact {
-            // Text from Accessibility: a quick read finds where things are, a careful one when it has a secret.
-            let boxes = secretBoxes ?? OCR.recognizeFindingSecrets(image, fast: !Secrets.has(text)).secrets
+            // Text from Accessibility: a quick read finds where things are, a careful one when it names or has a
+            // secret. A field Accessibility only shows as "••••" can still show the key on screen.
+            let boxes = secretBoxes ?? OCR.recognizeFindingSecrets(image, fast: !Secrets.mightHave(text), known: Secrets.values(text)).secrets
             if !boxes.isEmpty || !secureFields.isEmpty {
                 guard let blurred = Redaction.blurSecrets(image, boxes: boxes, fields: secureFields, bounds: bounds) else {
                     log("could not blur secrets; skipping this frame")

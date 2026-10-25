@@ -196,10 +196,121 @@ public static class Secrets
         return Redact(s);
     }
 
+    /// Known key prefixes as OCR may read them, with the "_" or "-" after them lost or turned into a space.
+    static readonly Regex stem = new(@"^(?:whsec|sk|rk|gh[pousr]|github|xox[abposre]|glpat|npm|hf|pypi|shp(?:at|ss|ca|pa)|xapp|do[opr]|ya29|AKIA|ASIA|AIza)$", Opts);
+    static readonly Regex nameOnly = new(@"(?i)(?<![A-Za-z])(?:" + Names + @")(?![A-Za-z])", Opts);
+    static readonly Regex runWord = new(@"[A-Za-z0-9_+/=.\-]+", Opts);
+    /// A known prefix or a secret's name somewhere in rough OCR text: worth a careful read before saving.
+    static readonly Regex hint = new(@"(?<![A-Za-z0-9])(?:whsec|sk[-_ ]|rk[-_ ]|gh[pousr][-_ ]|github[-_ ]pat|xox[abposre]|glpat|npm[-_ ]|hf[-_ ]|pypi|shp(?:at|ss|ca|pa)|xapp|do[opr][-_ ]v1|ya29|AKIA|ASIA|AIza|eyJ)", Opts);
+
+    /// True when `text` names a secret or has a key prefix, even one OCR broke up: the Mac reads such a screen
+    /// carefully, not quickly, before it looks for what to blur.
+    public static bool MightHave(string text) =>
+        !string.IsNullOrEmpty(text) && (hint.IsMatch(text) || nameOnly.IsMatch(text) || Has(text));
+
+    /// Secrets in OCR lines that Find misses because OCR put spaces inside a key ("whsec P30x 05bX…"): a run
+    /// of words with one space between them that starts with a known prefix, or that follows a secret's name
+    /// (on the same line or the line above) from its first word with letters and digits, and that looks like
+    /// a key once the spaces are taken out. Ranges are within each line.
+    public static List<(int Line, int Start, int Length)> FindInLines(IReadOnlyList<string> lines)
+    {
+        var out_ = new List<(int, int, int)>();
+        for (int i = 0; i < lines.Count; i++)
+        {
+            var line = lines[i] ?? "";
+            var words = runWord.Matches(line).Cast<Match>().ToList();
+            if (words.Count < 2) continue;
+            bool named = nameOnly.IsMatch(line) || (i > 0 && nameOnly.IsMatch(lines[i - 1] ?? ""));
+            for (int w = 0; w < words.Count;)
+            {
+                int end = w;
+                while (end + 1 < words.Count && words[end + 1].Index == words[end].Index + words[end].Length + 1) end++;
+                if (Loose(words.GetRange(w, end - w + 1), named) is (int a, int b)) out_.Add((i, a, b - a));
+                w = end + 1;
+            }
+        }
+        return out_;
+    }
+
+    /// Start and end of a key inside one run of words, or null.
+    static (int, int)? Loose(List<Match> words, bool named)
+    {
+        int from = words.FindIndex(m => stem.IsMatch(Head(m.Value)));
+        if (from < 0 && named) from = words.FindIndex(m => IsMixed(m.Value));
+        if (from < 0 || words.Count - from < 2) return null;
+        var part = words.Skip(from).Select(m => m.Value).ToList();
+        var head = Head(part[0]);
+        bool keyish;
+        if (stem.IsMatch(head))
+        {
+            var rest = (part[0].Length > head.Length ? part[0][(head.Length + 1)..] : "") + string.Concat(part.Skip(1));
+            keyish = rest.Length >= 16 && LooksLikeKey(rest);
+        }
+        else keyish = LooksLikeKey(string.Concat(part));
+        if (!keyish || !part.Any(p => p.Length >= 4 && IsMixed(p))) return null;
+        var last = words[^1];
+        return (words[from].Index, last.Index + last.Length);
+    }
+
+    /// A word up to its first "_", "-" or ".".
+    static string Head(string w)
+    {
+        int k = w.IndexOfAny(new[] { '_', '-', '.' });
+        return k < 0 ? w : w[..k];
+    }
+
+    static bool IsMixed(string s) => s.Any(char.IsAsciiDigit) && s.Any(char.IsAsciiLetter);
+
+    /// Where each secret in `secrets` (found in text read another way, such as Accessibility) shows in the
+    /// OCR `lines`, even when OCR misread it a little: a stretch of 10 key characters of the secret in the
+    /// line, ignoring spaces, case-sensitive but with O/0 and l/1/I taken as the same. Ranges are within each line.
+    public static List<(int Line, int Start, int Length)> Locate(IEnumerable<string> secrets, IReadOnlyList<string> lines)
+    {
+        const int chunk = 10;
+        var keys = secrets.Select(Fold).Where(k => k.Length >= chunk).Distinct().ToList();
+        var out_ = new List<(int, int, int)>();
+        if (keys.Count == 0) return out_;
+        for (int i = 0; i < lines.Count; i++)
+        {
+            var line = lines[i] ?? "";
+            var sb = new StringBuilder();
+            var at = new List<int>();
+            for (int c = 0; c < line.Length; c++)
+                if (!char.IsWhiteSpace(line[c])) { sb.Append(FoldChar(line[c])); at.Add(c); }
+            var folded = sb.ToString();
+            int lo = int.MaxValue, hi = -1;
+            foreach (var k in keys)
+                for (int s = 0; s + chunk <= k.Length; s += chunk / 2)
+                {
+                    var piece = k.Substring(s, chunk);
+                    for (int f = folded.IndexOf(piece, StringComparison.Ordinal); f >= 0; f = folded.IndexOf(piece, f + 1, StringComparison.Ordinal))
+                    {
+                        lo = Math.Min(lo, at[f]);
+                        hi = Math.Max(hi, at[f + chunk - 1] + 1);
+                    }
+                }
+            if (hi > lo) out_.Add((i, lo, hi - lo));
+        }
+        return out_;
+    }
+
+    /// The secrets themselves (not where they are) in `text`.
+    public static List<string> Values(string text) => Find(text).Select(h => text.Substring(h.Start, h.Length)).ToList();
+
+    static string Fold(string s)
+    {
+        var sb = new StringBuilder(s.Length);
+        foreach (var c in s) if (!char.IsWhiteSpace(c)) sb.Append(FoldChar(c));
+        return sb.ToString();
+    }
+
+    static char FoldChar(char c) => c switch { 'O' => '0', 'o' => '0', 'l' => '1', 'I' => '1', '|' => '1', _ => c };
+
     /// Which of `words` (one line after another, as OCR reads them) are part of a secret, by index.
     /// Words of a line are joined with spaces and lines with new lines, so a card number read as four
-    /// words or a key over several lines is still found.
-    public static HashSet<int> WordsToHide(IReadOnlyList<(string Text, int Line)> words)
+    /// words or a key over several lines is still found. Keys OCR broke up with spaces (FindInLines) count
+    /// too, and so do the `known` secrets (from Accessibility text) wherever OCR shows them (Locate).
+    public static HashSet<int> WordsToHide(IReadOnlyList<(string Text, int Line)> words, IEnumerable<string>? known = null)
     {
         var hide = new HashSet<int>();
         if (words.Count == 0) return hide;
@@ -211,22 +322,31 @@ public static class Secrets
             starts[i] = sb.Length;
             sb.Append(words[i].Text);
         }
-        var hits = Find(sb.ToString());
+        var all = sb.ToString();
+        // The same text, line by line, with where each line starts in it.
+        var lines = all.Split('\n');
+        var lineStart = new int[lines.Length];
+        for (int l = 1; l < lines.Length; l++) lineStart[l] = lineStart[l - 1] + lines[l - 1].Length + 1;
+        var hits = Find(all).Select(h => (h.Start, h.End)).ToList();
+        foreach (var (l, a, n) in FindInLines(lines)) hits.Add((lineStart[l] + a, lineStart[l] + a + n));
+        if (known != null)
+            foreach (var (l, a, n) in Locate(known, lines)) hits.Add((lineStart[l] + a, lineStart[l] + a + n));
         if (hits.Count == 0) return hide;
         for (int i = 0; i < words.Count; i++)
         {
             int a = starts[i], b = a + words[i].Text.Length;
-            foreach (var h in hits)
-                if (a < h.End && h.Start < b) { hide.Add(i); break; }
+            foreach (var (hs, he) in hits)
+                if (a < he && hs < b) { hide.Add(i); break; }
         }
         return hide;
     }
 
-    /// The boxes (fractions of the picture) of the words in `text` that are part of a secret.
-    public static List<RectangleF> Boxes(FrameText text)
+    /// The boxes (fractions of the picture) of the words in `text` that are part of a secret, also where the
+    /// `known` secrets (found in Accessibility text) show.
+    public static List<RectangleF> Boxes(FrameText text, IEnumerable<string>? known = null)
     {
         var words = text.Words;
-        var hide = WordsToHide(words.Select(w => (w.Text, w.Line)).ToList());
+        var hide = WordsToHide(words.Select(w => (w.Text, w.Line)).ToList(), known);
         return hide.OrderBy(i => i).Select(i => words[i].Box).ToList();
     }
 

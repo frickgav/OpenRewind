@@ -235,4 +235,62 @@ public class SecretsNamedAndPrefixed
     [InlineData("password\n/Users/sam/Projects/App2024/Sources")]
     [InlineData("Create a token for the release-2026-q4-build pipeline")]
     public void LeavesThisAlone(string text) => Assert.Equal(text, Secrets.Redact(text));
+
+    // OCR quirks: a quick read turned "whsec_P30x…" into "whsec P30x… asEC… j PP" (fake key, seen on a Mac).
+    static HashSet<int> Hidden(string[] lines, IEnumerable<string>? known = null) =>
+        Secrets.WordsToHide(lines.SelectMany((l, i) => l.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(w => (w, i))).ToList(), known);
+
+    [Theory]
+    [InlineData("whsec P30x05bXkdXj asECmrtf5xNDbvB0E j PP")]
+    [InlineData("whsec_P30x05bXkdXj asECmrtf5xNDbvB0E")]
+    [InlineData("ghp 1a2B3c4D5e6F7g8H9i0J kLmNoPqRsTuVwXyZ12")]
+    [InlineData("sk proj 4fG7hJ2kL9mN3pQ8 rS1tU6vW0xY5zA")]
+    public void HidesKeysOcrBrokeUp(string line)
+    {
+        var hide = Hidden(new[] { "Settings", line });
+        Assert.DoesNotContain(0, hide);
+        Assert.Contains(1, hide);     // the prefix word
+        Assert.Contains(2, hide);     // the next piece
+    }
+
+    [Fact]
+    public void HidesBrokenKeyUnderItsName()
+    {
+        var hide = Hidden(new[] { "Signing Secret", "P30x05bXkdXj asECmrtf5xNDbvB0E" });
+        Assert.Contains(2, hide);
+        Assert.Contains(3, hide);
+        Assert.DoesNotContain(0, hide);
+    }
+
+    [Theory]
+    [InlineData("Password", "Must be 8 characters with 2 numbers")]
+    [InlineData("API key", "Created on Oct 25 2026 by Gavien")]
+    [InlineData("Settings", "npm install react-dom typescript")]
+    [InlineData("Settings", "github.com/frickgav/OpenRewind pull 57")]
+    [InlineData("Token", "Expires in 30 days")]
+    [InlineData("Meeting notes", "sk 2 items left for Q4 review")]
+    public void LeavesOrdinaryLinesAlone(string first, string second) => Assert.Empty(Hidden(new[] { first, second }));
+
+    [Fact]
+    public void FindsKnownSecretWhereOcrMisreadIt()
+    {
+        // Accessibility had the key; OCR read 0 as O, l as 1, and broke it up.
+        const string key = "whsec_P30x05bXkdXjlasECmrtf5xNDbvB0E";
+        var hide = Hidden(new[] { "Webhooks", "whsec P3Ox05bXkdXj1asEC mrtf5xNDbvBOE", "Done" }, new[] { key });
+        Assert.Contains(1, hide);
+        Assert.Contains(2, hide);
+        Assert.Contains(3, hide);
+        Assert.DoesNotContain(0, hide);
+        Assert.DoesNotContain(4, hide);
+    }
+
+    [Fact]
+    public void KnownSecretNotOnScreenHidesNothing() =>
+        Assert.Empty(Hidden(new[] { "README", "Install with brew" }, new[] { "whsec_P30x05bXkdXjlasECmrtf5xNDbvB0E" }));
+
+    [Theory]
+    [InlineData("Signing Secret ••••••••", true)]
+    [InlineData("whsec P30x05bX", true)]
+    [InlineData("Weekly report draft", false)]
+    public void MightHave(string text, bool want) => Assert.Equal(want, Secrets.MightHave(text));
 }

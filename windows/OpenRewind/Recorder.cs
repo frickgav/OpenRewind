@@ -134,7 +134,9 @@ sealed class Recorder
         if (RedactSecrets)
         {
             words ??= Ocr.Words(image);
-            Redactor.BlurSecrets(image, Secrets.Boxes(words), passwords, screen);
+            // Text from UI Automation: its secrets are also looked for where OCR misread them a little.
+            var known = source == "accessibility" ? Secrets.Values(text) : null;
+            Redactor.BlurSecrets(image, Secrets.Boxes(words, known), passwords, screen);
             text = Secrets.Redact(text);
             title = Secrets.Redact(title);
             url = Secrets.RedactUrl(url);

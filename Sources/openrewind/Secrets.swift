@@ -168,6 +168,125 @@ enum Secrets {
 
     static func has(_ text: String) -> Bool { !find(text).isEmpty }
 
+    /// Known key prefixes as OCR may read them, with the "_" or "-" after them lost or turned into a space.
+    private static let stem = re(#"^(?:whsec|sk|rk|gh[pousr]|github|xox[abposre]|glpat|npm|hf|pypi|shp(?:at|ss|ca|pa)|xapp|do[opr]|ya29|AKIA|ASIA|AIza)$"#)
+    private static let nameOnly = re(#"(?i)(?<![A-Za-z])(?:"# + names + #")(?![A-Za-z])"#)
+    private static let runWord = re(#"[A-Za-z0-9_+/=.\-]+"#)
+    /// A known prefix or a secret's name somewhere in rough OCR text: worth a careful read before saving.
+    private static let hint = re(#"(?<![A-Za-z0-9])(?:whsec|sk[-_ ]|rk[-_ ]|gh[pousr][-_ ]|github[-_ ]pat|xox[abposre]|glpat|npm[-_ ]|hf[-_ ]|pypi|shp(?:at|ss|ca|pa)|xapp|do[opr][-_ ]v1|ya29|AKIA|ASIA|AIza|eyJ)"#)
+
+    /// True when `text` names a secret or has a key prefix, even one OCR broke up: such a screen is read
+    /// carefully, not quickly, before looking for what to blur.
+    static func mightHave(_ text: String) -> Bool {
+        !text.isEmpty && (matches(hint, text) || matches(nameOnly, text) || has(text))
+    }
+
+    /// Secrets in OCR lines that find misses because OCR put spaces inside a key ("whsec P30x 05bX…"): a run
+    /// of words with one space between them that starts with a known prefix, or that follows a secret's name
+    /// (on the same line or the line above) from its first word with letters and digits, and that looks like
+    /// a key once the spaces are taken out. Ranges are within each line (UTF-16). Same as Secrets.cs.
+    static func findInLines(_ lines: [String]) -> [(line: Int, range: NSRange)] {
+        var out: [(line: Int, range: NSRange)] = []
+        for (i, line) in lines.enumerated() {
+            let ns = line as NSString
+            let words = runWord.matches(in: line, range: NSRange(location: 0, length: ns.length)).map(\.range)
+            guard words.count >= 2 else { continue }
+            let named = matches(nameOnly, line) || (i > 0 && matches(nameOnly, lines[i - 1]))
+            var w = 0
+            while w < words.count {
+                var end = w
+                while end + 1 < words.count, words[end + 1].location == words[end].location + words[end].length + 1 { end += 1 }
+                if let r = loose(ns, Array(words[w...end]), named: named) { out.append((i, r)) }
+                w = end + 1
+            }
+        }
+        return out
+    }
+
+    /// Where a key is inside one run of words, or nil.
+    private static func loose(_ ns: NSString, _ words: [NSRange], named: Bool) -> NSRange? {
+        let text = words.map { ns.substring(with: $0) }
+        var from = text.firstIndex(where: { matches(stem, head($0)) })
+        if from == nil, named { from = text.firstIndex(where: isMixed) }
+        guard let f = from, words.count - f >= 2 else { return nil }
+        let part = Array(text[f...])
+        let h = head(part[0])
+        let keyish: Bool
+        if matches(stem, h) {
+            let rest = (part[0].count > h.count ? String(part[0].dropFirst(h.count + 1)) : "") + part.dropFirst().joined()
+            keyish = rest.count >= 16 && looksLikeKey(rest)
+        } else {
+            keyish = looksLikeKey(part.joined())
+        }
+        guard keyish, part.contains(where: { $0.count >= 4 && isMixed($0) }) else { return nil }
+        let a = words[f].location, last = words[words.count - 1]
+        return NSRange(location: a, length: last.location + last.length - a)
+    }
+
+    /// A word up to its first "_", "-" or ".".
+    private static func head(_ w: String) -> String {
+        String(w.prefix(while: { $0 != "_" && $0 != "-" && $0 != "." }))
+    }
+
+    private static func isMixed(_ s: String) -> Bool {
+        s.contains(where: { $0.isASCII && $0.isNumber }) && s.contains(where: { $0.isASCII && $0.isLetter })
+    }
+
+    /// Where each of `secrets` (found in text read another way, such as Accessibility) shows in the OCR
+    /// `lines`, even when OCR misread it a little: a stretch of 10 characters of the secret in the line,
+    /// ignoring spaces, case-sensitive but with O/0 and l/1/I taken as the same. Ranges are within each line (UTF-16).
+    static func locate(_ secrets: [String], in lines: [String]) -> [(line: Int, range: NSRange)] {
+        let chunk = 10
+        let keys = Array(Set(secrets.map(fold))).filter { $0.count >= chunk }.map { Array($0.utf16) }
+        var out: [(line: Int, range: NSRange)] = []
+        guard !keys.isEmpty else { return out }
+        for (i, line) in lines.enumerated() {
+            var folded: [UInt16] = []
+            var at: [Int] = []
+            for (c, u) in line.utf16.enumerated() where !isSpace(u) {
+                folded.append(foldUnit(u)); at.append(c)
+            }
+            var lo = Int.max, hi = -1
+            for k in keys {
+                var s = 0
+                while s + chunk <= k.count {
+                    let piece = Array(k[s..<(s + chunk)])
+                    var f = 0
+                    while f + chunk <= folded.count {
+                        if Array(folded[f..<(f + chunk)]) == piece {
+                            lo = min(lo, at[f]); hi = max(hi, at[f + chunk - 1] + 1)
+                        }
+                        f += 1
+                    }
+                    s += chunk / 2
+                }
+            }
+            if hi > lo { out.append((i, NSRange(location: lo, length: hi - lo))) }
+        }
+        return out
+    }
+
+    /// The secrets themselves (not where they are) in `text`.
+    static func values(_ text: String) -> [String] {
+        let ns = text as NSString
+        return find(text).map { ns.substring(with: $0) }
+    }
+
+    private static func isSpace(_ u: UInt16) -> Bool { u == 32 || u == 9 || u == 10 || u == 13 || u == 0xA0 }
+
+    private static func fold(_ s: String) -> String {
+        String(decoding: s.utf16.filter { !isSpace($0) }.map(foldUnit), as: UTF16.self)
+    }
+
+    /// O and o as 0, l, I and | as 1.
+    private static func foldUnit(_ u: UInt16) -> UInt16 {
+        switch u {
+        case 79, 111: return 48
+        case 108, 73, 124: return 49
+        default: return u
+        }
+    }
+
     /// `text` with every secret replaced by [redacted].
     static func redact(_ text: String) -> String {
         let hits = find(text)
