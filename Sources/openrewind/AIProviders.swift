@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Security
 
 /// The AI services a user can bring their own key for. Requests go straight from this Mac to the
@@ -61,8 +61,8 @@ struct AISettings {
 
     private static let d = UserDefaults.standard
 
-    /// `interactive: false` is for jobs that run by themselves (promises, the phone): the key is only
-    /// read when that cannot bring up the macOS Keychain password prompt (see KeyStore.get).
+    /// `interactive: false` for work nobody asked for just now (timers, meeting checks, promises, the
+    /// phone): it never brings up the Keychain prompt, and the key reads as missing until the user opens the AI.
     static func load(interactive: Bool = true) -> AISettings {
         let kind = AIProviderKind(rawValue: d.string(forKey: "aiProvider") ?? "") ?? .anthropic
         return load(kind, interactive: interactive)
@@ -215,12 +215,18 @@ enum KeyStore {
     private static var cache: [String: String?] = [:]
     private static let lock = NSLock()
 
-    /// `interactive: false` reads the Keychain only when this build saved the key (so macOS does not ask
-    /// for the password); otherwise nil until something the user did reads it once.
+    /// A read by a build that doesn't own the item yet brings up the macOS password prompt. With
+    /// `interactive` false that read is skipped (nil, not cached), so a timer never puts up a prompt
+    /// while the app is in the background, where it can't take typing. Otherwise the app comes to
+    /// the front first, so the prompt gets the keyboard.
     static func get(_ account: String, interactive: Bool = true) -> String? {
         lock.lock(); defer { lock.unlock() }
         if let hit = cache[account] { return hit }
-        if !interactive, UserDefaults.standard.string(forKey: "aiKeychainOwner.\(account)") != buildID { return nil }
+        if !owned(account) {
+            guard exists(account) else { cache.updateValue(nil, forKey: account); return nil }
+            guard interactive else { return nil }
+            comeForward()
+        }
         let value = read(account)
         cache.updateValue(value, forKey: account)
         if let value { takeOwnership(account, value) }
@@ -230,10 +236,32 @@ enum KeyStore {
     /// nil or "" removes the key.
     static func set(_ account: String, _ value: String?) {
         lock.lock(); defer { lock.unlock() }
-        write(account, value)
+        if write(account, value) { UserDefaults.standard.set(buildID, forKey: ownerKey(account)) }
         cache.updateValue((value?.isEmpty ?? true) ? nil : value, forKey: account)
-        // This build wrote it, so it reads it back without a prompt.
-        if let value, !value.isEmpty { UserDefaults.standard.set(buildID, forKey: "aiKeychainOwner.\(account)") }
+    }
+
+    private static func ownerKey(_ account: String) -> String { "aiKeychainOwner.\(account)" }
+
+    /// This build saved the item, so reading it doesn't ask.
+    private static func owned(_ account: String) -> Bool {
+        UserDefaults.standard.string(forKey: ownerKey(account)) == buildID
+    }
+
+    /// Asks only for the item's attributes, which never brings up the prompt.
+    private static func exists(_ account: String) -> Bool {
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                kSecAttrAccount as String: account, kSecMatchLimit as String: kSecMatchLimitOne,
+                                kSecReturnAttributes as String: true]
+        var out: CFTypeRef?
+        return SecItemCopyMatching(q as CFDictionary, &out) != errSecItemNotFound
+    }
+
+    /// The menu bar app is usually in the background; a prompt it puts up there shows but the
+    /// keyboard stays with the app in front.
+    private static func comeForward() {
+        let go: () -> Void = { NSApp?.activate(ignoringOtherApps: true) }
+        // Not sync: the main thread may be waiting on `lock`. The prompt stays up until answered.
+        if Thread.isMainThread { go() } else { DispatchQueue.main.async(execute: go) }
     }
 
     private static func read(_ account: String) -> String? {
@@ -245,27 +273,26 @@ enum KeyStore {
         return String(data: data, encoding: .utf8)
     }
 
-    private static func write(_ account: String, _ value: String?) {
+    @discardableResult
+    private static func write(_ account: String, _ value: String?) -> Bool {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                 kSecAttrAccount as String: account]
         _ = SecItemDelete(q as CFDictionary)
-        guard let value, !value.isEmpty else { return }
+        guard let value, !value.isEmpty else { return true }
         var add = q
         add[kSecValueData as String] = Data(value.utf8)
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let status = SecItemAdd(add as CFDictionary, nil)
         if status != errSecSuccess { log("could not save AI key to the Keychain (\(status))") }
+        return status == errSecSuccess
     }
 
     /// macOS lets only the app build that saved a Keychain item read it without asking; a new build
     /// (every update, as the app is not signed by Apple) gets the password prompt. After the first
     /// read in a new build, save the key again so this build owns it and later launches stay quiet.
     private static func takeOwnership(_ account: String, _ value: String) {
-        let build = buildID
-        let key = "aiKeychainOwner.\(account)"
-        guard UserDefaults.standard.string(forKey: key) != build else { return }
-        write(account, value)
-        UserDefaults.standard.set(build, forKey: key)
+        guard !owned(account) else { return }
+        if write(account, value) { UserDefaults.standard.set(buildID, forKey: ownerKey(account)) }
     }
 
     /// Changes whenever the app binary does.

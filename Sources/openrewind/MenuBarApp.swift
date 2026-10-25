@@ -219,7 +219,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// check, up to `Journal.autoAttempts` times. Days with nothing recorded, or with a recap of the
     /// whole day already, are skipped; a recap written by hand partway through the day is replaced.
     private func writeDueRecap() {
-        let s = AISettings.load()
+        let s = AISettings.load(interactive: false)
         guard !writingRecap, s.isReady, JournalSettings.isOn(for: s),
               let key = Journal.autoRecapDue(now: Date(), lastDone: JournalSettings.lastAutoDay,
                                              attemptDay: JournalSettings.attemptDay, attempts: JournalSettings.attempts),

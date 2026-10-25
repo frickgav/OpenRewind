@@ -1086,7 +1086,7 @@ final class MeetingCenter: ObservableObject {
 
     /// Summaries are on but AI Settings now use another provider than the one agreed to.
     static var needsNewConsent: Bool {
-        let ai = AISettings.load()
+        let ai = AISettings.load(interactive: false)
         return autoSummarize && ai.isReady && consent != MeetingNotes.consentKey(ai)
     }
 
@@ -1163,7 +1163,7 @@ final class MeetingCenter: ObservableObject {
     /// Shows "Meeting detected. Take notes?" once per meeting, without taking focus from the call.
     private func ask(_ m: Meeting) {
         guard prompts[m.id] == nil else { return }
-        let ai = AISettings.load()
+        let ai = AISettings.load(interactive: false)
         let summarizer = Self.autoSummarize && Self.consent == MeetingNotes.consentKey(ai) && ai.isReady ? ai.kind.title : nil
         let view = MeetingPromptView(meeting: m, summarizer: summarizer) { [weak self] take, remember in
             self?.answer(m, take: take, remember: remember)
@@ -1216,7 +1216,7 @@ final class MeetingCenter: ObservableObject {
     /// tokens on older ones), and only to the provider they agreed to.
     private func autoSummarizes(_ m: Meeting) -> Bool {
         MeetingNotes.autoSummarizes(m, on: Self.autoSummarize, since: Self.autoSince, consent: Self.consent,
-                                    ai: AISettings.load(), blocked: BlocklistStore.shared.current)
+                                    ai: AISettings.load(interactive: false), blocked: BlocklistStore.shared.current)
     }
 
     func isSummarizing(_ id: Int64) -> Bool { summarizing.contains(id) }
