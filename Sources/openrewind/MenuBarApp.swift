@@ -769,6 +769,7 @@ final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let db = self.engine.db, now = Date()
             DispatchQueue.global(qos: .userInitiated).async {
                 let f = db.deleteFrames(from: from, to: now), a = db.deleteAudio(from: from, to: now)
+                db.flushDeleted()
                 log("deleted \(f) screenshots, \(a) audio clips (\(what))")
             }
         }

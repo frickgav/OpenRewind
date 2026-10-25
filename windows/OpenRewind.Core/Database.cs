@@ -66,7 +66,51 @@ public sealed partial class Database : IDisposable
         Exec("PRAGMA journal_mode=WAL;");
         Exec("PRAGMA busy_timeout=5000;");
         Migrate();
+        SecureDeleteSearchText();
         FinishHomeMove(Path.GetDirectoryName(this.path)!);
+    }
+
+    /// The search indexes keep a deleted row's words until their segments are merged. With FTS5's secure-delete
+    /// option (stored in the index, so this only writes it again) a delete takes them out of the index at once.
+    /// It needs SQLite 3.42, and the SQLCipher this app ships is 3.39: without it FlushDeleted merges the index
+    /// instead (PurgeDeletedSearchText). Mac: the same, where SQLite is new enough.
+    void SecureDeleteSearchText()
+    {
+        secureSearchDelete = true;
+        foreach (var t in SearchIndexes)
+        {
+            try { Exec($"INSERT INTO {t}({t}, rank) VALUES('secure-delete', 1);"); }
+            catch (SqliteException) { secureSearchDelete = false; }
+        }
+    }
+
+    static readonly string[] SearchIndexes = { "frames_fts", "audio_fts" };
+    /// Set when every search index takes deleted words out at once (SecureDeleteSearchText).
+    bool secureSearchDelete;
+
+    /// Without secure-delete, merges all of each search index into one segment, which leaves out the words of
+    /// deleted rows (each delete only adds a "deleted" mark next to them until then). It goes a little at a time
+    /// and lets go of the database in between, so recording and the timeline keep working; on a big index it
+    /// takes a while, so it runs off the UI thread.
+    void PurgeDeletedSearchText()
+    {
+        foreach (var t in SearchIndexes)
+        {
+            try
+            {
+                while (true)
+                {
+                    lock (gate)
+                    {
+                        // FTS5: a merge step that did any work changes total_changes() by 2 or more.
+                        var before = ScalarLong("SELECT total_changes()");
+                        Exec($"INSERT INTO {t}({t}, rank) VALUES('merge', -1000);");
+                        if (ScalarLong("SELECT total_changes()") - before < 2) break;
+                    }
+                }
+            }
+            catch (SqliteException e) { Log.Write($"{t}: could not merge the search index after a delete: {e.Message}"); }
+        }
     }
 
     /// Read-only: no schema changes and no home move, which are the recording app's job (see OpenReadOnly).

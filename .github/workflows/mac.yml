@@ -41,6 +41,9 @@ jobs:
       # Search by Meaning end to end with a made-up model: index, read back, search, reopen, a failed write.
       - name: Search by Meaning check
         run: dist/OpenRewind.app/Contents/MacOS/OpenRewind meaning-check
+      # Delete on the timeline: one screenshot, by words, a range, and the deleted text gone from the file too.
+      - name: Timeline delete check
+        run: dist/OpenRewind.app/Contents/MacOS/OpenRewind delete-check
       # Parakeet's 30 s audio windows on clip lengths around the cut points (30.01 s used to crash), no model needed.
       - name: Parakeet window check
         run: dist/OpenRewind.app/Contents/MacOS/OpenRewind parakeet-check

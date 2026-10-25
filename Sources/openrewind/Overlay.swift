@@ -189,6 +189,7 @@ final class OverlayController {
             if model.showHelp { model.showHelp = false }
             else if model.showResults { model.showResults = false }
             else if model.showAI { model.showAI = false }
+            else if model.selectingRange { model.selectingRange = false }
             else if model.clearTextSelection() {}
             else if model.hasMarks { model.clearMarks() }
             else { hide() }
@@ -204,6 +205,7 @@ final class OverlayController {
         case kVK_ANSI_H where !cmd: model.hideCurrentApp()
         case kVK_ANSI_LeftBracket where !cmd: model.markStart()
         case kVK_ANSI_RightBracket where !cmd: model.markEnd()
+        case kVK_Delete where !cmd, kVK_ForwardDelete where !cmd: model.deletePressed()
         case kVK_ANSI_Equal, kVK_ANSI_KeypadPlus: model.span = max(60, model.span / 2)
         case kVK_ANSI_Minus, kVK_ANSI_KeypadMinus: model.span = min(12 * 3600, model.span * 2)
         default: return false

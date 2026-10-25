@@ -62,6 +62,11 @@ if command == "meaning-check" {
     exit(MeaningSelfTest.run(encrypted: false) && MeaningSelfTest.run(encrypted: true) ? 0 : 1)
 }
 
+// Hidden: Delete on the timeline on a throwaway database, deleted text included (DeleteSelfTest.swift), run by the Mac CI.
+if command == "delete-check" {
+    exit(DeleteSelfTest.run() ? 0 : 1)
+}
+
 // Hidden: checks Parakeet's 30 s audio windows on edge-case clip lengths, without the model (run by the Mac CI).
 if command == "parakeet-check" {
     let problems = ParakeetMath.selfTest()
