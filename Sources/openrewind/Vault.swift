@@ -65,6 +65,9 @@ extension Database {
             throw DBError.locked(key == nil ? "the database is encrypted and the key is not on this Mac"
                                             : "the key does not open this database (\(m))")
         }
+        // Deleted rows are overwritten with zeros, so a deleted screenshot's text does not stay readable in the
+        // file's free space (Delete on the timeline). Windows: the same.
+        if !readOnly { sqlite3_exec(handle, "PRAGMA secure_delete = ON;", nil, nil, nil) }
         return handle
     }
 

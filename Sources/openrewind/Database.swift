@@ -97,6 +97,7 @@ final class Database {
         try migrateWorkspaces()
         try migratePromises()
         try migratePhone()
+        secureDeleteSearchText()
         finishHomeMove(home: path.deletingLastPathComponent())
     }
 
@@ -138,6 +139,15 @@ final class Database {
     }
 
     deinit { sqlite3_close(db) }
+
+    /// The search indexes keep a deleted row's words until their segments are merged. With FTS5's secure-delete
+    /// option (stored in the index, so this only writes it again) a delete takes them out of the index at once.
+    /// Needs SQLite 3.42; an older one keeps working as before. Windows: the same.
+    private func secureDeleteSearchText() {
+        for t in ["frames_fts", "audio_fts"] {
+            do { try exec("INSERT INTO \(t)(\(t), rank) VALUES('secure-delete', 1);") } catch { log("\(t): no secure delete (\(error))") }
+        }
+    }
 
     func migrate() throws {
         try exec("""

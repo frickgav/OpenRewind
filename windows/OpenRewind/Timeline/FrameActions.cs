@@ -17,14 +17,14 @@ sealed partial class TimelineModel
     {
         ClipStart = Playhead;
         if (ClipEnd is DateTime e && e < Playhead) ClipEnd = null;
-        ShowNotice(ClipEnd == null ? "Clip starts here. Press ] where it ends." : "Clip marked. Ctrl+E exports it.");
+        ShowNotice(ClipEnd == null ? "Starts here. Press ] where it ends." : "Marked. Delete deletes it, Ctrl+E exports it.");
     }
 
     public void MarkEnd()
     {
         ClipEnd = Playhead;
         if (ClipStart is DateTime s && s > Playhead) ClipStart = null;
-        ShowNotice(ClipStart == null ? "Clip ends here. Press [ where it starts." : "Clip marked. Ctrl+E exports it.");
+        ShowNotice(ClipStart == null ? "Ends here. Press [ where it starts." : "Marked. Delete deletes it, Ctrl+E exports it.");
     }
 
     public void ClearMarks() { ClipStart = ClipEnd = null; Notify(); }

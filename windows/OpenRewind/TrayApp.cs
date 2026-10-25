@@ -646,6 +646,7 @@ sealed partial class TrayApp : ApplicationContext
         Task.Run(() =>
         {
             int f = db.DeleteFrames(from, now), a = db.DeleteAudio(from, now);
+            db.FlushDeleted();
             Log.Write($"deleted {f} screenshots, {a} audio clips ({what})");
         });
     }
@@ -661,6 +662,7 @@ sealed partial class TrayApp : ApplicationContext
             int f = screen ? db.DeleteFrames(null, now) : 0;
             int a = audio ? db.DeleteAudio(null, now) : 0;
             db.DeleteRecaps(null, null);  // each one was written from both
+            db.FlushDeleted();  // VACUUM copies the search index as it is, deleted words and all
             db.Compact();
             Log.Write($"deleted {f} screenshots, {a} audio clips (all)");
         });

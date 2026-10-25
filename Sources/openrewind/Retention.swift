@@ -36,6 +36,37 @@ extension Database {
     @discardableResult
     func deleteFrames(from: Date?, to: Date?) -> Int {
         let (whereSQL, args) = Self.range("timestamp", from, to)
+        return deleteFrames(whereSQL, args, from: from, to: to)
+    }
+
+    /// One screenshot (Delete on the timeline): its row, text, picture and Search by Meaning moment, and what
+    /// was made from its moment (the time until the next screenshot): stars, meeting titles, the day's recap.
+    @discardableResult
+    func deleteFrame(id: Int64) -> Int {
+        guard let ts = strings("SELECT timestamp FROM frames WHERE id = ?", [.int(id)]).first,
+              let t = Time.iso.date(from: ts) else { return 0 }
+        let next = strings("SELECT MIN(timestamp) FROM frames WHERE timestamp > ?", [.text(ts)]).first.flatMap { Time.iso.date(from: $0) }
+        return deleteFrames("WHERE id = ?", [.int(id)], from: t, to: next ?? max(Date(), t.addingTimeInterval(1)))
+    }
+
+    /// Ids of every screenshot whose text, app or window title has all of `words` (as keyword search finds
+    /// them), in every app, hidden and blocked ones included. Oldest first.
+    func frameIds(matching words: String) -> [Int64] {
+        guard let match = Self.ftsQuery(words) else { return [] }
+        return strings("SELECT f.id FROM frames_fts JOIN frames f ON f.id = frames_fts.rowid WHERE frames_fts MATCH ? ORDER BY f.timestamp",
+                       [.text(match)]).compactMap { Int64($0) }
+    }
+
+    /// The deleted rows are gone from the file itself, not only from search: SQLite and the search index
+    /// overwrite what they free (secure_delete, see Database.connect and `secureDeleteSearchText`), and this
+    /// empties the write-ahead log, which still holds the old pages until a checkpoint. Windows: the same.
+    func flushDeleted() {
+        lock.lock(); defer { lock.unlock() }
+        if sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE);", nil, nil, nil) != SQLITE_OK { log("checkpoint after delete failed: \(errmsg)") }
+    }
+
+    /// `whereSQL` picks the frames; `from`/`to` is the time they cover, for what is kept by time.
+    private func deleteFrames(_ whereSQL: String, _ args: [Arg], from: Date?, to: Date?) -> Int {
         let and = whereSQL.isEmpty ? "WHERE" : whereSQL + " AND"
         var n = 0, stills: [String] = [], emptied: [String] = [], partial = false
         // Stars of this time go with its recordings, even when no frame is left in it.

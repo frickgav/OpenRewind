@@ -132,6 +132,7 @@ struct TimelineView: View {
                 IconButton(symbol: "macwindow.on.rectangle", help: "Restore workspace: reopen what was open then (⇧O)") { model.restoreWorkspace() }
                 StarButton(model: model)
                 FrameMenu(model: model)
+                DeleteMenu(model: model)
                 IconButton(symbol: "questionmark", help: "Keyboard shortcuts (?)") { model.showHelp.toggle() }
                 IconButton(symbol: "xmark", help: "Close (esc)", action: close)
             }
@@ -366,7 +367,7 @@ struct TimelineView: View {
     // MARK: bottom dock
 
     /// The full bar shows while the pointer is near it, while dragging, and while the tour points at it.
-    private var dockExpanded: Bool { dockHover || model.tutorialStep == 0 || model.tutorialStep == 1 }
+    private var dockExpanded: Bool { dockHover || model.selectingRange || model.tutorialStep == 0 || model.tutorialStep == 1 }
 
     /// Spoken words like subtitles, the app and audio of this moment, Open, then the scrubber at the very bottom.
     private var dock: some View {
@@ -382,6 +383,7 @@ struct TimelineView: View {
                     .frame(maxWidth: 900)
                     .allowsHitTesting(false)
             }
+            if model.markedRange != nil || model.selectingRange { selectionBar }
             HStack(spacing: 10) {
                 appBadge
                     .padding(.horizontal, 10).padding(.vertical, 6)
@@ -513,6 +515,27 @@ struct TimelineView: View {
         .help("\(help) (O)")
     }
 
+    /// The stretch marked with [ ] or a drag across the bar, and what to do with it.
+    private var selectionBar: some View {
+        HStack(spacing: 10) {
+            if let r = model.markedRange {
+                Image(systemName: "selection.pin.in.out").foregroundColor(.accentColor)
+                Text("Selected \(r.from.formatted(date: .omitted, time: .standard)) – \(r.to.formatted(date: .omitted, time: .standard))")
+                    .font(.system(size: 12, weight: .semibold)).monospacedDigit()
+                Button { model.deleteMarkedRange() } label: { Label("Delete…", systemImage: "trash") }
+                    .buttonStyle(.borderedProminent).tint(.red).controlSize(.small)
+                Button("Export Clip…") { model.openExport() }.controlSize(.small)
+                IconButton(symbol: "xmark", help: "Clear the selection (esc)") { model.clearMarks() }
+            } else {
+                Image(systemName: "hand.draw").foregroundColor(.accentColor)
+                Text("Drag across the bar below to select what to delete").font(.system(size: 12, weight: .semibold))
+                IconButton(symbol: "xmark", help: "Cancel (esc)") { model.selectingRange = false }
+            }
+        }
+        .padding(.leading, 14).padding(.trailing, 6).padding(.vertical, 5)
+        .glass(Capsule(), theme)
+    }
+
     private var liveButton: some View {
         Button { model.jumpToNow() } label: {
             HStack(spacing: 6) {
@@ -577,8 +600,10 @@ struct TimelineView: View {
         ("", [["drag"]], "Select text on the screenshot"),
         ("", [["⇧", "⌘", "C"]], "Copy all the text on the screenshot"),
         ("", [["⌘", "S"]], "Save the screenshot as a PNG"),
-        ("Clip", [["["], ["]"]], "Mark where a clip starts / ends"),
+        ("Clip", [["["], ["]"]], "Mark where a stretch starts / ends"),
+        ("", [["⇧", "drag"]], "Select a stretch on the bar"),
         ("", [["⌘", "E"]], "Export a clip as MP4 or GIF"),
+        ("Delete", [["⌫"]], "Delete this screenshot, or the selected stretch"),
         ("Audio", [["space"]], "Play or pause audio from here"),
         ("Search", [["/"], ["⌘", "F"]], "Search screen text and speech"),
         ("", [["⌘", "G"], ["⇧", "⌘", "G"]], "Older / newer match"),
@@ -758,6 +783,34 @@ struct FrameMenu: View {
     }
 }
 
+/// Delete, as a round trash button in the top bar (TimelineDelete.swift).
+struct DeleteMenu: View {
+    @Environment(\.colorScheme) private var scheme
+    private var theme: Theme { Theme(scheme) }
+    @ObservedObject var model: TimelineModel
+
+    var body: some View {
+        Menu {
+            Button("Delete This Screenshot…") { model.deleteShownScreenshot() }.disabled(model.current == nil)
+            Button("Select a Stretch to Delete…") { model.startSelecting() }
+            if model.markedRange != nil { Button("Delete Selected Stretch…") { model.deleteMarkedRange() } }
+            if model.canDeleteMatching {
+                Divider()
+                Button("Delete Every Screenshot with “\(model.query.trimmingCharacters(in: .whitespaces))”…") { model.deleteMatching() }
+            }
+        } label: {
+            Image(systemName: "trash")
+                .font(.system(size: 12, weight: .semibold))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .frame(width: 30, height: 30)
+        .background(Circle().fill(theme.surfaceHi))
+        .help("Delete this screenshot, a stretch of time, or every screenshot with the searched words (⌫)")
+    }
+}
+
 /// Pill next to search: "All apps", or the app the timeline is filtered to. Click to choose.
 struct AppFilterMenu: View {
     @Environment(\.colorScheme) private var scheme
@@ -895,6 +948,8 @@ struct TimelineBar: View {
     /// Rewind's thin scrubber: a faint strip of app colors and a white playhead, nothing else.
     var compact = false
     @State private var dragStartV: TimeInterval?
+    /// Where a selecting drag (Select a Stretch, or ⇧-drag) started.
+    @State private var selectFromV: TimeInterval?
     @State private var hoverX: CGFloat?
 
     // The top 20 pt hold the playhead time bubble.
@@ -939,7 +994,7 @@ struct TimelineBar: View {
                                  with: .color(.red.opacity(0.7)))
                     }
                     // Hover line.
-                    if let hx = hoverX, dragStartV == nil, abs(hx - px) > 3 {
+                    if let hx = hoverX, dragStartV == nil, selectFromV == nil, abs(hx - px) > 3 {
                         ctx.fill(Path(CGRect(x: hx - 0.5, y: 20, width: 1, height: size.height - 22)),
                                  with: .color(theme.dim))
                     }
@@ -954,7 +1009,7 @@ struct TimelineBar: View {
                     ctx.fill(Path(roundedRect: bubble, cornerRadius: 7.5), with: .color(theme.playhead))
                     ctx.draw(label, at: CGPoint(x: bubble.midX, y: bubble.midY))
                 }
-                if !compact, let hx = hoverX, dragStartV == nil, abs(hx - px) > 3 {
+                if !compact, let hx = hoverX, dragStartV == nil, selectFromV == nil, abs(hx - px) > 3 {
                     let d = axis.date(v0 + Double(hx / w) * model.span)
                     if d <= now { HoverPreview(model: model, date: d).position(previewPosition(hx, width: w)) }
                 }
@@ -969,6 +1024,15 @@ struct TimelineBar: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { g in
+                        if dragStartV == nil && selectFromV == nil && (model.selectingRange || NSEvent.modifierFlags.contains(.shift)) {
+                            selectFromV = v0 + Double(g.startLocation.x / w) * model.span
+                        }
+                        if let sv = selectFromV {
+                            // Selecting: the bar stays put and the marks follow the pointer, never past now.
+                            let v = v0 + Double(min(max(0, g.location.x), w) / w) * model.span
+                            model.select(axis.date(min(sv, v)), min(axis.date(max(sv, v)), now))
+                            return
+                        }
                         if dragStartV == nil {
                             // A click jumps to where you clicked; a drag then moves from there.
                             let v = v0 + Double(g.startLocation.x / w) * model.span
@@ -980,7 +1044,13 @@ struct TimelineBar: View {
                             model.jump(to: axis.date(sv - Double(g.translation.width / w) * model.span))
                         }
                     }
-                    .onEnded { _ in dragStartV = nil }
+                    .onEnded { _ in
+                        dragStartV = nil
+                        if selectFromV != nil {
+                            selectFromV = nil
+                            model.selectingRange = false
+                        }
+                    }
             )
         }
     }

@@ -492,13 +492,13 @@ extension TimelineModel {
     func markStart() {
         clipStart = playhead
         if let e = clipEnd, e < playhead { clipEnd = nil }
-        show(notice: clipEnd == nil ? "Clip starts here. Press ] where it ends." : "Clip marked. ⌘E exports it.")
+        show(notice: clipEnd == nil ? "Starts here. Press ] where it ends." : "Marked. ⌫ deletes it, ⌘E exports it.")
     }
 
     func markEnd() {
         clipEnd = playhead
         if let s = clipStart, s > playhead { clipStart = nil }
-        show(notice: clipStart == nil ? "Clip ends here. Press [ where it starts." : "Clip marked. ⌘E exports it.")
+        show(notice: clipStart == nil ? "Ends here. Press [ where it starts." : "Marked. ⌫ deletes it, ⌘E exports it.")
     }
 
     var hasMarks: Bool { clipStart != nil || clipEnd != nil }

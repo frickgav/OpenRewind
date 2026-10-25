@@ -41,6 +41,46 @@ public sealed partial class Database
     public int DeleteFrames(DateTime? from, DateTime? to)
     {
         var (where, args) = Range("timestamp", from, to);
+        return DeleteFrames(where, args, from, to);
+    }
+
+    /// One screenshot (Delete on the timeline): its row, text, picture and Search by Meaning moment, and what
+    /// was made from its moment (the time until the next screenshot): stars, meeting titles, the day's recap.
+    public int DeleteFrame(long id)
+    {
+        var ts = Strings("SELECT timestamp FROM frames WHERE id = ?", id).FirstOrDefault();
+        if (ts == null || Time.ParseIso(ts) is not DateTime t) return 0;
+        var next = Time.ParseIso(Strings("SELECT MIN(timestamp) FROM frames WHERE timestamp > ?", ts).FirstOrDefault() ?? "");
+        var now = DateTime.UtcNow;
+        return DeleteFrames("WHERE id = ?", new object[] { id }, t, next ?? (now > t.AddSeconds(1) ? now : t.AddSeconds(1)));
+    }
+
+    /// Screenshots with `from <= timestamp < to`, in every app.
+    public int CountFrames(DateTime from, DateTime to) =>
+        (int)ScalarLong("SELECT COUNT(*) FROM frames WHERE timestamp >= ? AND timestamp < ?", Time.Iso(from), Time.Iso(to));
+
+    /// Ids of every screenshot whose text, app or window title has all of `words` (as keyword search finds
+    /// them), in every app, hidden and blocked ones included. Oldest first.
+    public List<long> FrameIdsMatching(string words)
+    {
+        if (FtsQuery(words) is not string match) return new();
+        return Rows("SELECT f.id FROM frames_fts JOIN frames f ON f.id = frames_fts.rowid WHERE frames_fts MATCH ? ORDER BY f.timestamp",
+                    r => r.GetInt64(0), match);
+    }
+
+    /// The deleted rows are gone from the file itself, not only from search: SQLite overwrites what it frees
+    /// (secure_delete, see Vault.Open), the search index drops their words (SecureDeleteSearchText, or a merge
+    /// here when this SQLite can't), and this empties the write-ahead log, which still holds the old pages until
+    /// a checkpoint. Can take a while on a big database: call it off the UI thread. Mac: the same.
+    public void FlushDeleted()
+    {
+        if (!secureSearchDelete) PurgeDeletedSearchText();
+        try { Exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch (Exception e) { Log.Write($"checkpoint after delete failed: {e.Message}"); }
+    }
+
+    /// `where` picks the frames; `from`/`to` is the time they cover, for what is kept by time.
+    int DeleteFrames(string where, object[] args, DateTime? from, DateTime? to)
+    {
         var and = where.Length == 0 ? "WHERE" : where + " AND";
         List<string> stills, emptied = new();
         bool partial = false;
