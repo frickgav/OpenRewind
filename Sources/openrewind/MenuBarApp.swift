@@ -1347,6 +1347,24 @@ enum Permission: String, CaseIterable {
         }
     }
 
+    /// Name tccutil uses for this permission.
+    private var service: String {
+        switch self {
+        case .screen: return "ScreenCapture"
+        case .microphone: return "Microphone"
+        case .accessibility: return "Accessibility"
+        }
+    }
+
+    /// Remove OpenRewind's row for this permission, including one left from an older build.
+    func reset() {
+        guard let id = Bundle.main.bundleIdentifier else { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        p.arguments = ["reset", service, id]
+        do { try p.run(); p.waitUntilExit() } catch { log("cannot run tccutil: \(error.localizedDescription)") }
+    }
+
     /// Ask macOS to show its prompt, so OpenRewind is in the list in System Settings.
     func request() {
         switch self {
