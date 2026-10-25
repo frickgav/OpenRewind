@@ -179,6 +179,7 @@ final class OverlayController {
             default: return false  // let the text field have it
             }
         }
+        if cmd && shift && e.keyCode == UInt16(kVK_ANSI_C) { model.copyAllText(); return true }
         if cmd && e.keyCode == UInt16(kVK_ANSI_C) { model.copy(); return true }
         if cmd && e.keyCode == UInt16(kVK_ANSI_S) { model.saveFrame(); return true }
         if cmd && e.keyCode == UInt16(kVK_ANSI_E) { model.openExport(); return true }
@@ -199,6 +200,7 @@ final class OverlayController {
         case kVK_DownArrow: model.jump(to: model.playhead.addingTimeInterval(600))
         case kVK_Space: model.toggleAudio()
         case kVK_ANSI_N, kVK_End: model.jumpToNow()
+        case kVK_ANSI_O where !cmd && shift: model.restoreWorkspace()
         case kVK_ANSI_O where !cmd: model.openCurrent()
         case kVK_ANSI_A where !cmd: model.toggleAppFilter()
         case kVK_ANSI_S where !cmd: model.toggleStar()

@@ -71,6 +71,8 @@ extension Database {
         var n = 0, stills: [String] = [], emptied: [String] = [], partial = false
         // Stars of this time go with its recordings, even when no frame is left in it.
         deleteStarsWith(from: from, to: to)
+        deleteWorkspacesWith(from: from, to: to)
+        deletePromisesWith(from: from, to: to)
         // Meeting titles taken from these frames go first (their own statement: it takes the lock).
         if scalarInt("SELECT COUNT(*) FROM frames \(whereSQL)", args) > 0 {
             forgetMeetingWindows(from: from, to: to)
@@ -121,6 +123,7 @@ extension Database {
     @discardableResult
     func deleteAudio(from: Date?, to: Date?) -> Int {
         deleteMeetings(from: from, to: to)
+        deletePromisesWith(from: from, to: to, meetingsOnly: true)
         let (whereSQL, args) = Self.range("timestamp", from, to)
         let paths = strings("SELECT file_path FROM audio_chunks \(whereSQL)", args)
         guard !paths.isEmpty else { return 0 }
@@ -137,7 +140,7 @@ extension Database {
 
     // MARK: helpers
 
-    private static func range(_ col: String, _ from: Date?, _ to: Date?) -> (String, [Arg]) {
+    static func range(_ col: String, _ from: Date?, _ to: Date?) -> (String, [Arg]) {
         var parts: [String] = [], args: [Arg] = []
         if let from { parts.append("\(col) >= ?"); args.append(.text(Time.iso.string(from: from))) }
         if let to { parts.append("\(col) < ?"); args.append(.text(Time.iso.string(from: to))) }

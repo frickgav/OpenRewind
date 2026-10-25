@@ -89,6 +89,8 @@ public sealed partial class Database
         {
             // Stars of this time go with its recordings, even when no frame is left in it.
             DeleteStarsWith(from, to);
+            DeleteWorkspacesWith(from, to);
+            DeletePromisesWith(from, to);
             // Meeting titles taken from these frames go first (outside the transaction: their own statement).
             if (ScalarLong($"SELECT COUNT(*) FROM frames {where}", args) > 0) ForgetMeetingWindows(from, to);
             using var tx = conn.BeginTransaction();
@@ -127,6 +129,7 @@ public sealed partial class Database
     public int DeleteAudio(DateTime? from, DateTime? to)
     {
         DeleteMeetings(from, to);
+        DeletePromisesWith(from, to, meetingsOnly: true);
         var (where, args) = Range("timestamp", from, to);
         var paths = Strings($"SELECT file_path FROM audio_chunks {where}", args);
         if (paths.Count == 0) return 0;

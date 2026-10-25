@@ -116,12 +116,16 @@ sealed partial class TimelineModel
         ShowNotice("Copied the screenshot");
     }
 
-    /// Copy every word read on the shown screenshot.
+    /// Copy every word on the shown screenshot: what OCR read on the timeline, or the text saved with it
+    /// (from UI Automation or OCR when it was recorded) while that is still reading or not available.
     public void CopyAllText()
     {
-        if (CurrentHidden) { ShowNotice("This moment is from a blocked app or site"); return; }
-        if (Text is not FrameText text || text.IsEmpty) { ShowNotice("No text found on this screenshot yet"); return; }
-        PrivateClipboard.SetText(text.AllText);
+        if (Current is not TimelineFrame f) { ShowNotice("No screenshot at this moment"); return; }
+        if (CurrentHidden || f.Blocked) { ShowNotice("This moment is from a blocked app or site"); return; }
+        var all = Text is FrameText text && !text.IsEmpty ? text.AllText : "";
+        if (all.Length == 0) all = Db.FrameById(f.Id)?.Text ?? "";
+        if (all.Length == 0) { ShowNotice("No text found on this screenshot"); return; }
+        PrivateClipboard.SetText(all);
         ShowNotice("Copied the text on this screenshot");
     }
 

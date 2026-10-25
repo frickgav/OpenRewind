@@ -450,11 +450,16 @@ extension TimelineModel {
         show(notice: "Copied the screenshot")
     }
 
-    /// Every word Live Text found on the shown screenshot.
+    /// Every word on the shown screenshot: what Live Text found, or the text saved with it (from
+    /// Accessibility or OCR when it was recorded) while Live Text is still reading or not available.
     func copyAllText() {
+        guard let f = current else { show(notice: "No screenshot at this moment"); return }
+        if currentHidden || f.blocked { show(notice: "This moment is from a blocked app or site"); return }
         let transcript: String? = MainActor.assumeIsolated { liveText?.analysis?.transcript }
-        guard !currentHidden, let text = transcript, !text.isEmpty else {
-            show(notice: "No text found on this screenshot yet")
+        var text = transcript ?? ""
+        if text.isEmpty { text = db.frame(id: f.id)?.text ?? "" }
+        guard !text.isEmpty else {
+            show(notice: "No text found on this screenshot")
             return
         }
         NSPasteboard.general.clearContents()

@@ -129,6 +129,17 @@ sealed class SettingsForm : Form
             var blocked = BlockedAppsForm.Embedded(app.AppSettings, app.Db, app.TimelineHiddenChanged);
             body.Controls.Add(blocked);
             blocked.Show();
+            // Hide Secrets sits above the lists.
+            var top = new Page(this);
+            top.Row("Secrets");
+            top.Check("Hide passwords, API keys and card numbers", () => app.RedactSecrets, () => app.RedactSecrets = !app.RedactSecrets);
+            top.Note("Before a screenshot is saved, password fields, API keys and tokens, private keys and card numbers are blurred " +
+                     "and their text becomes [redacted], so search, AI and the local server never see them. Older recordings are not changed.");
+            top.Finish();
+            top.Panel.AutoScroll = false;
+            top.Panel.Dock = DockStyle.Top;
+            top.Panel.Height = top.Bottom + (int)(4 * k);
+            body.Controls.Add(top.Panel);
         }
         else
         {
@@ -276,6 +287,14 @@ sealed class SettingsForm : Form
         p.Row("Daily recap");
         p.Check("Write each day's recap automatically", () => app.AutoRecapOn, app.ToggleDailyRecap);
         p.LiveText(() => Journal.AutoRecapInfo(app.AppSettings.Ai().Kind.Title()), Ui.Faint, 11.5f, lines: 4);
+        p.Row("Promises");
+        p.Check("Remind me of things I promised", () => app.PromisesOn, app.TogglePromiseReminders);
+        p.LiveText(() => $"After meetings you take notes for, and every 3 hours, sends the transcript or the text of chat and mail apps on screen to {app.AppSettings.Ai().Kind.Title()} " +
+                         "to find what you said you would do, who for and by when. Blocked apps and sites are never sent; passwords and keys are taken out first. " +
+                         "Uses your key and costs tokens. Off by default.", Ui.Faint, 11.5f, lines: 4);
+        p.LiveText(() => app.PromisesPaused ? "Paused: AI Settings point at another provider than the one you agreed to. Turn it off and on to use this one." : "",
+                   Ui.Warn, 11.5f, lines: 2);
+        p.Buttons(("You Promised…", app.OpenPromises));
         p.Row("AI apps");
         p.Check("Allow AI apps to read my history (MCP)", () => app.AppSettings.McpEnabled, app.ToggleAiApps);
         p.Note("Lets Claude, ChatGPT, Cursor and other AI apps search your history on this PC. Blocked apps and sites are left out of screen text; audio transcripts are not filtered by app. Connect AI Apps has the details.");
@@ -307,6 +326,26 @@ sealed class SettingsForm : Form
         p.Row("Local server");
         p.Check($"Local search server (127.0.0.1:{app.ServerPort})", () => app.ServerOn, app.ToggleLocalServer);
         p.Note("Search in the browser and let local scripts read your history through the API. Only this PC can connect.");
+        p.Row("Phone Access");
+        p.Check("Search and ask from my phone on this Wi-Fi", () => app.PhoneOn, () => { app.TogglePhoneAccess(); Rebuild(); });
+        p.Note("Paired phones can search screen text and transcripts, ask AI and see promises, encrypted end to end with a key only they have. " +
+               "Screenshots and audio stay on this PC. Works on the same network, or from anywhere over a VPN such as Tailscale.");
+        if (app.PhoneProblem is string problem) p.Text(problem, Ui.Warn, 12.5f, lines: 2);
+        if (app.PhoneOn) p.Text("Listening on " + string.Join(", ", app.PhoneUrls), Ui.Dim, 12.5f, lines: 1);
+        var pair = p.Buttons(("Pair a Phone…", () => { app.PairPhone(); Rebuild(); }));
+        live.Add(() => pair[0].Enabled = app.PhoneOn);
+        p.Text("Turn off after", Ui.Text, 13.5f);
+        p.Combo(PhoneAccessController.AutoOffChoices.Select(h => (h == 0 ? "Never" : h == 1 ? "1 hour unused" : $"{h} hours unused" + (h == 4 ? " (default)" : ""), h)).ToArray(),
+                () => app.PhoneAutoOff, v => app.PhoneAutoOff = v, 240);
+        var devices = app.PhoneDevices;
+        foreach (var d in devices)
+        {
+            p.Text((d.Name.Length > 0 ? d.Name : "Phone") + $" · paired {d.Created.ToLocalTime():d MMM yyyy}" +
+                   (d.LastSeen is DateTime seen ? $", last used {seen.ToLocalTime():d MMM, t}" : ""), Ui.Text, 13, lines: 1);
+            p.Buttons(("Revoke", () => { if (app.RevokePhone(d)) Rebuild(); }));
+        }
+        // A phone paired from the pairing window, or a code that expired, changes the list.
+        live.Add(() => { if (app.PhoneDevices.Count != devices.Count) Rebuild(); });
     }
 
     // MARK: Storage
@@ -520,6 +559,9 @@ sealed class SettingsForm : Form
             EndRow();
             Add(new Panel { BackColor = Ui.Stroke, Height = Math.Max(1, (int)k) }, margin, x + w - margin, 20);
         }
+
+        /// How far down the page the rows reach.
+        public int Bottom => y;
 
         public void Finish()
         {

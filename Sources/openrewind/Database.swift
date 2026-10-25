@@ -94,6 +94,9 @@ final class Database {
         try migrateJournal()
         try migrateMeetings()
         try migrateStars()
+        try migrateWorkspaces()
+        try migratePromises()
+        try migratePhone()
         secureDeleteSearchText()
         finishHomeMove(home: path.deletingLastPathComponent())
     }
@@ -406,7 +409,7 @@ final class Database {
         return words.map { "\"\($0)\"*" }.joined(separator: " ")
     }
 
-    enum Arg { case text(String), int(Int64), real(Double) }
+    enum Arg { case text(String), int(Int64), real(Double), null }
 
     var errmsg: String { String(cString: sqlite3_errmsg(db)) }
 
@@ -420,6 +423,7 @@ final class Database {
             case .text(let s): bind(st, Int32(i + 1), s)
             case .int(let n): sqlite3_bind_int64(st, Int32(i + 1), n)
             case .real(let d): sqlite3_bind_double(st, Int32(i + 1), d)
+            case .null: sqlite3_bind_null(st, Int32(i + 1))
             }
         }
     }

@@ -127,6 +127,67 @@ enum OCR {
         return obs.compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
     }
 
+    /// Reads the image like recognize(_:) and also says where secrets are in it (see Secrets), as fractions
+    /// of its width and height (0–1, top-left origin), so they can be blurred before it is saved.
+    /// `fast` only looks for the secrets, for when the text came from Accessibility; a quick read that shows
+    /// a key prefix or a secret's name is read again carefully, since a quick read breaks keys up with spaces.
+    /// `known` are secrets found in the Accessibility text: they are blurred wherever OCR shows them, even
+    /// misread a little.
+    static func recognizeFindingSecrets(_ image: CGImage, fast: Bool = false, known: [String] = []) -> (text: String, secrets: [CGRect]) {
+        let first = readFindingSecrets(image, level: fast ? .fast : .accurate, correct: !fast, known: known)
+        guard fast, !first.secrets.isEmpty || Secrets.mightHave(first.text) else { return first }
+        // No language correction: it "fixes" keys into words.
+        let careful = readFindingSecrets(image, level: .accurate, correct: false, known: known)
+        return (careful.text, first.secrets + careful.secrets)
+    }
+
+    private static func readFindingSecrets(_ image: CGImage, level: VNRequestTextRecognitionLevel, correct: Bool,
+                                           known: [String]) -> (text: String, secrets: [CGRect]) {
+        let req = VNRecognizeTextRequest()
+        req.recognitionLevel = level
+        req.usesLanguageCorrection = correct
+        do { try VNImageRequestHandler(cgImage: image, options: [:]).perform([req]) } catch {
+            log("ocr failed: \(error)")
+            return ("", [])
+        }
+        let obs = (req.results ?? []).sorted {
+            abs($0.boundingBox.midY - $1.boundingBox.midY) > 0.01
+                ? $0.boundingBox.midY > $1.boundingBox.midY
+                : $0.boundingBox.minX < $1.boundingBox.minX
+        }
+        let read = obs.compactMap { o in o.topCandidates(1).first.map { (o, $0) } }
+        let lines = read.map(\.1)
+        // All lines in one text, so a key over several lines or a card number in pieces is still found.
+        var joined = ""
+        var starts: [Int] = []
+        for (i, line) in lines.enumerated() {
+            if i > 0 { joined += "\n" }
+            starts.append((joined as NSString).length)
+            joined += line.string
+        }
+        // Everything to hide, as (line, range in that line).
+        var parts: [(line: Int, range: NSRange)] = []
+        for h in Secrets.find(joined) {
+            for (i, line) in lines.enumerated() {
+                let a = starts[i], len = (line.string as NSString).length
+                let lo = max(h.location, a), hi = min(h.location + h.length, a + len)
+                if hi > lo { parts.append((i, NSRange(location: lo - a, length: hi - lo))) }
+            }
+        }
+        let strings = lines.map(\.string)
+        parts += Secrets.findInLines(strings)
+        parts += Secrets.locate(known, in: strings)
+        var boxes: [CGRect] = []
+        for p in parts {
+            let line = lines[p.line]
+            // The words' own box, or the whole line's when Vision can't give one for part of it.
+            var box = read[p.line].0.boundingBox
+            if let r = Range(p.range, in: line.string), let b = try? line.boundingBox(for: r)?.boundingBox { box = b }
+            boxes.append(CGRect(x: box.minX, y: 1 - box.maxY, width: box.width, height: box.height))
+        }
+        return (joined, boxes)
+    }
+
     /// Where the search terms appear in the image, as fractions of its width and height (0–1, top-left origin).
     static func find(_ terms: [String], in image: CGImage) -> [CGRect] {
         guard !terms.isEmpty else { return [] }

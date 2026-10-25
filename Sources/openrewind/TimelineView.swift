@@ -129,6 +129,7 @@ struct TimelineView: View {
             .allowsHitTesting(false)
             HStack(spacing: 6) {
                 if chat != nil { askAIButton }
+                IconButton(symbol: "macwindow.on.rectangle", help: "Restore workspace: reopen what was open then (⇧O)") { model.restoreWorkspace() }
                 StarButton(model: model)
                 FrameMenu(model: model)
                 DeleteMenu(model: model)
@@ -591,11 +592,13 @@ struct TimelineView: View {
         ("", [["⌘", "⇧", "scroll"]], "From any app: open the timeline and go back"),
         ("", [["N"]], "Go to now"),
         ("Open", [["O"]], "Open the tab, document or window from this moment"),
+        ("", [["⇧", "O"]], "Restore the workspace: reopen what was open then"),
         ("Star", [["S"]], "Star this moment / remove its star"),
         ("Filter", [["A"]], "Only this app / all apps again"),
         ("", [["H"]], "Hide this app from the timeline"),
         ("Copy", [["⌘", "C"]], "Copy the selected text, or the screenshot"),
         ("", [["drag"]], "Select text on the screenshot"),
+        ("", [["⇧", "⌘", "C"]], "Copy all the text on the screenshot"),
         ("", [["⌘", "S"]], "Save the screenshot as a PNG"),
         ("Clip", [["["], ["]"]], "Mark where a stretch starts / ends"),
         ("", [["⇧", "drag"]], "Select a stretch on the bar"),
@@ -759,8 +762,8 @@ struct FrameMenu: View {
 
     var body: some View {
         Menu {
-            Button("Copy Screenshot (or selected text)") { model.copy() }
-            Button("Copy All Text") { model.copyAllText() }
+            Button("Copy Screenshot (or selected text)   ⌘C") { model.copy() }
+            Button("Copy All Text   ⇧⌘C") { model.copyAllText() }
             Button("Save Screenshot…") { model.saveFrame() }
             Divider()
             Button("Mark Clip Start Here") { model.markStart() }

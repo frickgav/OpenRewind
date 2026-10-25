@@ -128,6 +128,43 @@ static class Redactor
         return true;
     }
 
+    /// Pixelate secrets in `image`: `words` are boxes as fractions of the picture (from OCR), `fields`
+    /// are password fields in desktop pixels; `screen` is where the picture is on the desktop.
+    public static void BlurSecrets(Bitmap image, IEnumerable<RectangleF> words, IEnumerable<Rectangle> fields, Rectangle? screen)
+    {
+        var rects = words.Select(b => Rectangle.FromLTRB(
+            (int)Math.Floor(b.Left * image.Width), (int)Math.Floor(b.Top * image.Height),
+            (int)Math.Ceiling(b.Right * image.Width), (int)Math.Ceiling(b.Bottom * image.Height))).ToList();
+        if (screen is Rectangle s && s.Width > 0)
+        {
+            // Screenshots can be scaled; map desktop pixels onto the picture.
+            double sx = (double)image.Width / s.Width, sy = (double)image.Height / s.Height;
+            foreach (var f in fields)
+                rects.Add(Rectangle.FromLTRB((int)((f.Left - s.Left) * sx), (int)((f.Top - s.Top) * sy),
+                                             (int)Math.Ceiling((f.Right - s.Left) * sx), (int)Math.Ceiling((f.Bottom - s.Top) * sy)));
+        }
+        var bounds = new Rectangle(0, 0, image.Width, image.Height);
+        using var g = Graphics.FromImage(image);
+        g.InterpolationMode = InterpolationMode.NearestNeighbor;
+        g.PixelOffsetMode = PixelOffsetMode.Half;
+        foreach (var raw in rects)
+        {
+            var r = raw;
+            r.Inflate(Math.Max(3, r.Height / 4), Math.Max(2, r.Height / 6));
+            r.Intersect(bounds);
+            if (r.Width <= 0 || r.Height <= 0) continue;
+            // Blocks a little taller than a line of text: no letter survives.
+            int bw = Math.Max(1, r.Width / Math.Max(6, r.Height)), bh = 1;
+            using var tiny = new Bitmap(bw, bh, PixelFormat.Format32bppRgb);
+            using (var tg = Graphics.FromImage(tiny))
+            {
+                tg.InterpolationMode = InterpolationMode.HighQualityBilinear;
+                tg.DrawImage(image, new Rectangle(0, 0, bw, bh), r, GraphicsUnit.Pixel);
+            }
+            g.DrawImage(tiny, r);
+        }
+    }
+
     /// Store apps live inside ApplicationFrameHost; the real app owns a child window.
     static uint RealPid(IntPtr hwnd, uint pid, Dictionary<uint, string?> paths)
     {

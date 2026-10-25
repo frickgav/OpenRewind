@@ -62,6 +62,115 @@ if command == "meaning-check" {
     exit(MeaningSelfTest.run(encrypted: false) && MeaningSelfTest.run(encrypted: true) ? 0 : 1)
 }
 
+// Hidden: secret redaction, Phone Access messages (against the phone page's SJCL vectors) and Restore
+// Workspace's saved form, on cases the Windows tests share (run by the Mac CI).
+if command == "features-check" {
+    var problems = PhoneCrypto.selfTest()
+    let stripe = "sk" + "_live_" + "4eC39HqLyjWDarjtT1zdp7dc"  // split so it is not taken for a real key
+    let awsSecret = "wJalrXUtnFEMI" + "/K7MDENG/" + "bPxRfiCYEXAMPLEKEY"
+    let azureKey = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsu" + "Fq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
+    let cases: [(String, String)] = [
+        ("password: hunter2!", "password: [redacted]"),
+        ("card 4111 1111 1111 1111 exp", "card [redacted] exp"),
+        ("key " + stripe, "key [redacted]"),
+        ("Meeting at 10:30 on 2026-10-18, call 555-123-4567", "Meeting at 10:30 on 2026-10-18, call 555-123-4567"),
+        ("Forgot password? Reset it here", "Forgot password? Reset it here"),
+        ("AWS_SECRET_ACCESS_KEY=" + awsSecret, "AWS_SECRET_ACCESS_KEY=[redacted]"),
+        ("aws_secret_access_key = " + awsSecret, "aws_secret_access_key = [redacted]"),
+        ("AccountName=acme;AccountKey=" + azureKey + ";EndpointSuffix=core.windows.net", "AccountName=acme;AccountKey=[redacted];EndpointSuffix=core.windows.net"),
+        ("export GITHUB_TOKEN=" + "abc123def456" + "ghi789", "export GITHUB_TOKEN=[redacted]"),
+        ("db at postgres://app:" + "Tr0ub4dor" + "@db.internal:5432/main", "db at postgres://app:[redacted]@db.internal:5432/main"),
+        ("key " + awsSecret + " end", "key [redacted] end"),
+        ("/Users/sam/Projects/OpenRewind2024/Sources/openrewind/Recorder.swift", "/Users/sam/Projects/OpenRewind2024/Sources/openrewind/Recorder.swift"),
+        ("https://github.com/frickgav/OpenRewind/pull/57/files", "https://github.com/frickgav/OpenRewind/pull/57/files"),
+        ("SORT_KEY=timestamp PRIMARY_KEY=id CACHE_KEY=user_profile", "SORT_KEY=timestamp PRIMARY_KEY=id CACHE_KEY=user_profile"),
+    ]
+    // Named without ':' or '=', hex keys near their name, more prefixes and OCR quirks (SecretsNamedAndPrefixed).
+    let hex = "8f14e45fceea167a" + "5a36dedd4bea2543"
+    let whsec = "whsec_" + "MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"
+    let named: [(String, String)] = [
+        ("Signing Secret  " + hex, "Signing Secret  [redacted]"),
+        ("Signing secret\n" + whsec, "Signing secret\n[redacted]"),
+        ("Webhook secret  " + "Ab3dE5fG7hI9" + "jK1lM3nO5pQ7", "Webhook secret  [redacted]"),
+        ("Client secret\t" + "GOCSPX-" + "1a2b3c4d5e6f7g8h9i0jKLMN", "Client secret\t[redacted]"),
+        ("Secret key " + "Zx9Qm2Lp7Wv4" + "Rt8Yb3", "Secret key [redacted]"),
+        ("Auth token  " + hex, "Auth token  [redacted]"),
+        ("API key " + "AT9x8w7v6u" + "5t4s3r2q1p", "API key [redacted]"),
+        ("Access token " + "Vc1Xa9Rt5Y" + "m2Kp8Lq3Wz7N", "Access token [redacted]"),
+        ("Token\n" + "Vc1Xa9Rt5Y" + "m2Kp8Lq3Wz7N", "Token\n[redacted]"),
+        ("Shared secret Copy " + "Ab3dE5fG7hI9" + "jK1lM3nO5pQ7", "Shared secret Copy [redacted]"),
+        ("App secret: " + hex, "App secret: [redacted]"),
+        ("Consumer secret " + hex, "Consumer secret [redacted]"),
+        ("Signing key " + hex, "Signing key [redacted]"),
+        ("Encryption key (AES-256) " + hex, "Encryption key (AES-256) [redacted]"),
+        ("Auth Token  Reveal\n" + hex + " (hidden)", "Auth Token  Reveal\n[redacted] (hidden)"),
+        ("Account SID " + "AC" + hex, "Account SID [redacted]"),
+        ("API key SID " + "SK" + hex, "API key SID [redacted]"),
+        ("endpoint " + whsec, "endpoint [redacted]"),
+        ("glpat-" + "xYz12AbC34dEf56GhI78", "[redacted]"),
+        ("npm_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8", "[redacted]"),
+        ("hf_" + "aBcDeFgHiJkLmNoPqRsTuVwXyZ012345", "[redacted]"),
+        ("pypi-AgE" + "IcHlwaS5vcmcCJDEyMzQ1Njc4", "[redacted]"),
+        ("SG." + "aBcDeFgHiJkLmNoPqRsTuV" + "." + "wXyZ0123456789aBcDeFgHiJkLmNoPqRsTuVwXyZ0123", "[redacted]"),
+        ("shpat_" + hex, "[redacted]"),
+        ("xapp-" + "1-A0123456789-0123456789-abcdef", "[redacted]"),
+        ("dop_v1_" + hex + hex, "[redacted]"),
+        ("ya29." + "a0AfH6SMBx1y2z3AbCdEfGh", "[redacted]"),
+        ("EAAG" + "m0PX4ZCpsBAaBcDeFgHiJkLmNoPqRsTuVwXyZ0123", "[redacted]"),
+        ("whsec_" + "MfKQ9r8GKYqrTwjUPD8I" + " LPZIa1b2c3 done", "[redacted] done"),
+        ("Signing secret " + "8f14e45fceea167a" + " 5a36dedd4bea2543", "Signing secret [redacted]"),
+    ]
+    let leave = [
+        "commit 3f786850e387550fdab836ed7e6dc881de23001b",
+        "Merged 3f786850e387550fdab836ed7e6dc881de23001b into main",
+        "sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "id 123e4567-e89b-12d3-a456-426614174000",
+        hex,
+        "Signing secret Reveal",
+        "Signing secret  Reveal  Copy",
+        "API key ••••••••",
+        "API key •••••••••••• Reveal",
+        "Webhook secret: Reveal",
+        "Your access token expires in 30 days",
+        "Keep the secret recipe safe until 2026",
+        "The token was revoked on 2026-10-25",
+        "API key rotation is scheduled for Q4 2026",
+        "Token count: 1532 tokens used",
+        "Access token\nSettings",
+        "password\n/Users/sam/Projects/App2024/Sources",
+        "Create a token for the release-2026-q4-build pipeline",
+    ]
+    for (input, want) in cases + named + leave.map({ ($0, $0) }) where Secrets.redact(input) != want { problems.append("redact \"\(input.prefix(12))…\" gave \"\(Secrets.redact(input))\"") }
+    if Secrets.redactURL("https://user:hunter22@example.com/a?token=abc123def456&q=x").contains("hunter22") { problems.append("redactURL password") }
+    // OCR quirks: a quick read turned "whsec_P30x…" into "whsec P30x… asEC… j PP" (fake keys, SecretsTests.HidesKeysOcrBrokeUp).
+    for line in ["whsec P30x05bXkdXj asECmrtf5xNDbvB0E j PP", "whsec_P30x05bXkdXj asECmrtf5xNDbvB0E",
+                 "ghp 1a2B3c4D5e6F7g8H9i0J kLmNoPqRsTuVwXyZ12", "sk proj 4fG7hJ2kL9mN3pQ8 rS1tU6vW0xY5zA"]
+        where !Secrets.findInLines(["Settings", line]).contains(where: { $0.line == 1 && $0.range.location == 0 }) {
+        problems.append("broken-up key \"\(line.prefix(8))…\" not found")
+    }
+    if !Secrets.findInLines(["Signing Secret", "P30x05bXkdXj asECmrtf5xNDbvB0E"]).contains(where: { $0.line == 1 }) {
+        problems.append("broken-up key under its name not found")
+    }
+    for pair in [["Password", "Must be 8 characters with 2 numbers"], ["API key", "Created on Oct 25 2026 by Gavien"],
+                 ["Settings", "npm install react-dom typescript"], ["Settings", "github.com/frickgav/OpenRewind pull 57"],
+                 ["Token", "Expires in 30 days"], ["Meeting notes", "sk 2 items left for Q4 review"]]
+        where !Secrets.findInLines(pair).isEmpty {
+        problems.append("ordinary line taken for a key: \(pair[1])")
+    }
+    let knownKey = "whsec_" + "P30x05bXkdXjlasECmrtf5xNDbvB0E"
+    let located = Secrets.locate([knownKey], in: ["Webhooks", "whsec P3Ox05bXkdXj1asEC mrtf5xNDbvBOE", "Done"])
+    if located.count != 1 || located.first?.line != 1 { problems.append("known secret not located where OCR misread it") }
+    if !Secrets.locate([knownKey], in: ["README", "Install with brew"]).isEmpty { problems.append("known secret located where it is not") }
+    if !Secrets.mightHave("Signing Secret ••••••••") || !Secrets.mightHave("whsec P30x05bX") || Secrets.mightHave("Weekly report draft") {
+        problems.append("mightHave")
+    }
+    let items = [WorkspaceItem(kind: Workspace.tab, app: "Safari", appID: "com.apple.Safari", title: "Docs", url: "https://example.com/a", path: "")]
+    if Workspace.parse(Workspace.json(items)) != items { problems.append("workspace json round trip") }
+    for p in problems { print("FAIL: \(p)") }
+    print(problems.isEmpty ? "features check passed" : "features check failed (\(problems.count))")
+    exit(problems.isEmpty ? 0 : 1)
+}
+
 // Hidden: Delete on the timeline on a throwaway database, deleted text included (DeleteSelfTest.swift), run by the Mac CI.
 if command == "delete-check" {
     exit(DeleteSelfTest.run() ? 0 : 1)

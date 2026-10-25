@@ -47,6 +47,9 @@ jobs:
       # Parakeet's 30 s audio windows on clip lengths around the cut points (30.01 s used to crash), no model needed.
       - name: Parakeet window check
         run: dist/OpenRewind.app/Contents/MacOS/OpenRewind parakeet-check
+      # Secret redaction, Phone Access encryption against the phone page's SJCL vectors, Restore Workspace JSON.
+      - name: Features check
+        run: dist/OpenRewind.app/Contents/MacOS/OpenRewind features-check
       - name: Check the notices ship
         run: test -s dist/OpenRewind.app/Contents/Resources/THIRD_PARTY_NOTICES.txt
       # Compress Older Recordings for real: encode made-up screenshots, read every frame back, delete, rewrite.

@@ -49,6 +49,8 @@ public sealed partial class Database : IDisposable
     SqliteConnection conn;
     readonly object gate = new();
     readonly string path;
+    /// Take passwords, keys and card numbers out of audio transcripts before they are saved (Settings → Privacy).
+    public static bool RedactSecrets { get; set; } = true;
     /// The frame columns to read. A read-only open (the MCP server) may see a database the recording app
     /// has not migrated yet; each missing column then reads as its default (a still, not blocked).
     readonly string cols = FullCols;
@@ -232,6 +234,9 @@ public sealed partial class Database : IDisposable
         MigrateMeaning();
         MigrateMeetings();
         MigrateStars();
+        MigrateWorkspaces();
+        MigratePromises();
+        MigratePhone();
     }
 
     /// Indexes that take a while on a big database (the whole frames table is read, screen text and
@@ -459,7 +464,7 @@ public sealed partial class Database : IDisposable
             foreach (var s in segments)
             {
                 using var cmd = Cmd("INSERT INTO audio_transcriptions (audio_chunk_id, timestamp, start_time, end_time, transcription, device, is_input, engine) VALUES (?,?,?,?,?,?,?,?)",
-                    chunk.Id, Time.Iso(start.AddSeconds(s.Start)), s.Start, s.End, s.Text, chunk.Device, chunk.IsInput ? 1 : 0, engine);
+                    chunk.Id, Time.Iso(start.AddSeconds(s.Start)), s.Start, s.End, RedactSecrets ? Secrets.Redact(s.Text) : s.Text, chunk.Device, chunk.IsInput ? 1 : 0, engine);
                 cmd.Transaction = tx;
                 cmd.ExecuteNonQuery();
             }

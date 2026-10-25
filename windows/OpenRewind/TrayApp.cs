@@ -40,6 +40,11 @@ sealed partial class TrayApp : ApplicationContext
     readonly System.Windows.Forms.Timer recapTimer = new() { Interval = 60_000 };
     bool writingRecap;
     readonly MeetingWatcher meetings;
+    /// Saves what is open about once a minute, for Restore Workspace.
+    readonly WorkspaceWatcher workspaces;
+    readonly PhoneAccessController phone;
+    /// "You promised" reminders.
+    readonly PromiseJobs promises;
 
     public TrayApp(Engine engine)
     {
@@ -71,6 +76,7 @@ sealed partial class TrayApp : ApplicationContext
         if (settings.LocalSearchServer) StartServer();
         engine.StartTranscriber();
         engine.Recorder.MinorChangeGap = settings.TypingFrameGap;
+        engine.Recorder.RedactSecrets = Database.RedactSecrets = settings.RedactSecrets;
         engine.Config.SnapshotScale = ScreenshotSizes.Scale(settings.ScreenshotPercent);
         resumeTimer.Tick += (_, _) => CheckPause();
         retention = new RetentionJob(engine.Db, settings.Screen, settings.Audio);
@@ -86,7 +92,14 @@ sealed partial class TrayApp : ApplicationContext
 
         // Finds meetings (and asks about notes) within seconds of a call; the window and the AI notes read what it stores.
         meetings = new MeetingWatcher(engine.Db, settings, engine.Config.AudioChunkSeconds, () => engine.Transcriber != null, a => overlay.BeginInvoke(a));
+        promises = new PromiseJobs(engine.Db, settings, (title, text) => icon?.ShowBalloonTip(8000, title, text, ToolTipIcon.Info));
+        promises.Locked = () => !appLock.IsUnlocked;
+        AiTools.PromisesOn = () => settings.PromisesOn;
+        meetings.Ended = m => promises.MeetingEnded(m);
         meetings.Start();
+        workspaces = new WorkspaceWatcher(engine.Db, () => engine.ScreenOn && PausedUntil == null);
+        phone = new PhoneAccessController(engine, settings, () => !appLock.IsUnlocked, overlay);
+        phone.Resume();
 
         // Ctrl+Alt+T (or the shortcut picked in Settings) opens the timeline from anywhere.
         hotKey = new HotKey(Shortcut, ToggleTimeline);
@@ -143,6 +156,7 @@ sealed partial class TrayApp : ApplicationContext
         SettingsForm.Release();
         JournalForm.Release();
         MeetingsForm.Release();
+        PromisesForm.CloseIfOpen();
         InsightsForm.Release();
         ConnectAiAppsForm.Release();
         Task.Run(FrameImages.ReleaseAll);
@@ -195,6 +209,36 @@ sealed partial class TrayApp : ApplicationContext
         }
         catch (Exception e) { Log.Write($"automatic journal recap for {key} failed: {e.Message}"); }
         finally { writingRecap = false; }
+    }
+
+    /// What the user promised (behind App Lock: it quotes meetings and chats), with jumps to the moment.
+    void ShowPromises() => appLock.Run("Unlock OpenRewind to see your promises", () => PromisesForm.Open(engine.Db, promises, OpenMoment));
+
+    /// Turning it on says plainly what it sends and that it costs tokens.
+    void TogglePromises()
+    {
+        if (settings.PromisesOn)
+        {
+            settings.PromisesOn = false;
+            settings.PromisesProvider = null;
+            settings.Save();
+            Log.Write("promise reminders off");
+            return;
+        }
+        var ai = settings.Ai();
+        if (!ai.IsReady)
+        {
+            if (MessageBox.Show("Promise reminders use your own AI key. Set up a provider in AI Settings first, then turn this on.",
+                                "You Promised Reminders", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) == DialogResult.OK) OpenAiSettings();
+            return;
+        }
+        if (MessageBox.Show(PromiseJobs.ConsentText(ai.Kind.Title()), "Look for things you promised?", MessageBoxButtons.OKCancel,
+                            MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.OK) return;
+        settings.PromisesOn = true;
+        settings.PromisesProvider = MeetingNotes.ConsentKey(ai);
+        settings.PromisesLastScan = DateTime.UtcNow;  // from now on, not the last 3 hours
+        settings.Save();
+        Log.Write("promise reminders on");
     }
 
     void ShowMeetings() => appLock.Run("Unlock OpenRewind to see your meetings",
@@ -336,6 +380,8 @@ sealed partial class TrayApp : ApplicationContext
         menu.Items.Add(Item("Ask AI…", ShowAiChat));
         menu.Items.Add(Item("Journal…", ShowJournal));
         menu.Items.Add(Item("Meetings…", ShowMeetings));
+        var due = settings.PromisesOn ? engine.Db.PromiseList(Promises.Open).Count(p => p.RemindAt is DateTime d && d <= DateTime.UtcNow) : 0;
+        menu.Items.Add(Item(due > 0 ? $"You Promised…  ({due} due)" : "You Promised…", ShowPromises));
         menu.Items.Add(Item("Insights…", ShowInsights));
         menu.Items.Add(Item("Show Data Folder", () => appLock.Run("Unlock OpenRewind to open its data folder", () => Open(engine.Config.Home))));
         foreach (var line in StorageLines()) menu.Items.Add(new ToolStripMenuItem("   " + line) { Enabled = false });
@@ -792,6 +838,9 @@ sealed partial class TrayApp : ApplicationContext
         meaning.Dispose();
         updater.Dispose();
         meetings.Dispose();
+        workspaces.Dispose();
+        phone.Dispose();
+        promises.Dispose();
         engine.Shutdown();
         // Deletes the decrypted copies of open videos.
         FrameImages.ReleaseAll();

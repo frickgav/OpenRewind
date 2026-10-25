@@ -132,7 +132,18 @@ struct SettingsView: View {
         switch model.tab {
         case .privacy:
             // Has its own scrolling lists, so it fills the tab instead of scrolling as a whole.
-            BlockedAppsView(db: app.engine.db, embedded: true)
+            VStack(spacing: 0) {
+                SettingsRow("Secrets") {
+                    Toggle("Hide passwords, API keys and card numbers", isOn: model.toggle({ Secrets.enabled }, { Secrets.enabled.toggle() }))
+                    SettingsNote("Before a screenshot is saved, password fields, API keys and tokens, private keys and card numbers are " +
+                                 "blurred and their text becomes [redacted], so search, AI and the local server never see them. " +
+                                 "Older recordings are not changed.")
+                }
+                .padding(.horizontal, 36).padding(.top, 20).padding(.bottom, 4)
+                .frame(maxWidth: 720, alignment: .leading)
+                .frame(maxWidth: .infinity)
+                BlockedAppsView(db: app.engine.db, embedded: true)
+            }
         case .ai:
             page {
                 AISettingsView(embedded: true) { app.savedAISettings() }
@@ -338,6 +349,17 @@ struct SettingsView: View {
             Toggle("Write each day's recap automatically", isOn: model.toggle({ app.autoRecapOn }, app.toggleDailyRecap))
             SettingsNote(Journal.autoRecapInfo(AISettings.load().kind.title))
         }
+        SettingsRow("Promises") {
+            Toggle("Remind me of things I promised", isOn: model.toggle({ app.promisesOn }, app.togglePromiseReminders))
+            SettingsNote("After meetings you take notes for, and every 3 hours, sends the transcript or the text of chat and mail apps on screen "
+                         + "to \(AISettings.load().kind.title) to find what you said you would do, who for and by when. Blocked apps and sites "
+                         + "are never sent; passwords and keys are taken out first. Uses your key and costs tokens. Off by default.")
+            if app.promisesPaused {
+                Text("Paused: AI Settings point at another provider than the one you agreed to. Turn it off and on to use this one.")
+                    .font(.system(size: 12)).foregroundColor(SetupTheme.warn).fixedSize(horizontal: false, vertical: true)
+            }
+            Button("You Promised…") { app.openPromises() }
+        }
         SettingsRow("AI apps") {
             Toggle("Allow AI apps to read my history (MCP)", isOn: model.toggle({ app.mcpOn }, app.toggleAIApps))
             SettingsNote("Lets Claude, ChatGPT, Cursor and other AI apps search your history on this Mac. " + ConnectAIAppsView.whatTheyGet)
@@ -377,6 +399,43 @@ struct SettingsView: View {
         SettingsRow("Local server") {
             Toggle("Local search server (127.0.0.1:\(app.serverPort))", isOn: model.toggle({ app.serverOn }, app.toggleLocalServer))
             SettingsNote("Search in the browser and let local scripts read your history through the API. Only this Mac can connect.")
+        }
+        SettingsRow("Phone Access") {
+            Toggle("Search and ask from my phone on this Wi-Fi", isOn: model.toggle({ app.phoneOn }, app.togglePhoneAccess))
+            SettingsNote("Paired phones can search screen text and transcripts, ask AI and see promises, encrypted end to end with a key only "
+                         + "they have. Screenshots and audio stay on this Mac. Works on the same network, or from anywhere over a VPN such as Tailscale.")
+            if let p = app.phoneProblem {
+                Text(p).font(.system(size: 12)).foregroundColor(SetupTheme.warn).fixedSize(horizontal: false, vertical: true)
+            }
+            if app.phoneOn {
+                Text("Listening on " + app.phoneURLs.joined(separator: ", ")).font(.system(size: 12)).foregroundColor(SetupTheme.dim)
+                    .textSelection(.enabled)
+            }
+            HStack(spacing: 10) {
+                Button("Pair a Phone…") { app.pairPhone(); model.refresh() }.disabled(!app.phoneOn)
+                Text("Turn off after").font(.system(size: 13))
+                Picker("", selection: model.choice({ app.phoneAutoOff }, { app.phoneAutoOff = $0 })) {
+                    ForEach(PhoneAccess.autoOffChoices, id: \.self) { h in
+                        Text(h == 0 ? "Never" : h == 1 ? "1 hour unused" : "\(h) hours unused" + (h == 4 ? " (default)" : "")).tag(h)
+                    }
+                }
+                .labelsHidden().frame(width: 190)
+            }
+            let devices = model.tick >= 0 ? app.phoneDevices : []
+            ForEach(devices) { d in
+                HStack(spacing: 10) {
+                    Image(systemName: "iphone").foregroundColor(SetupTheme.dim)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(d.name.isEmpty ? "Phone" : d.name).font(.system(size: 13, weight: .medium))
+                        Text("Paired " + d.created.formatted(date: .abbreviated, time: .omitted)
+                             + (d.lastSeen.map { ", last used " + $0.formatted(date: .abbreviated, time: .shortened) } ?? ""))
+                            .font(.system(size: 11.5)).foregroundColor(SetupTheme.faint)
+                    }
+                    Spacer()
+                    Button("Revoke") { app.revokePhone(d); model.refresh() }
+                }
+                .frame(maxWidth: 460)
+            }
         }
     }
 
