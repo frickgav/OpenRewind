@@ -16,6 +16,13 @@ final class PermissionHelper {
 
     /// Ask for `p` and guide the user to it. Microphone has no list to drop into, so it only opens Settings.
     func show(_ p: Permission) {
+        if !p.granted {
+            // Each update replaces the app, and macOS ties the switch to the exact build it was turned
+            // on for. So the switch can show on in System Settings while this build is still refused.
+            // Clear OpenRewind's row first; the request below adds a fresh one for this build.
+            p.reset()
+            log("reset \(p.title) permission so it can be turned on for this version")
+        }
         p.request()
         NSWorkspace.shared.open(p.settingsURL)
         // A drag only helps from the real .app (not `swift run`), and only for lists that take one.
