@@ -1,0 +1,9 @@
+node_modules/
+stills/
+*.mp4
+*.webm
+audio/venv/
+audio/node_modules/
+audio/*.onnx
+audio/voices.npz
+audio/soundtrack.wav

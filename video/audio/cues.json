@@ -1,0 +1,210 @@
+{
+ "duration": 29,
+ "labels": {
+  "reveal": 4,
+  "showcase": 9,
+  "outro": 23.7
+ },
+ "cues": [
+  {
+   "name": "sfx:hit",
+   "at": 0.08,
+   "t": 0.08
+  },
+  {
+   "name": "vo:saw",
+   "at": 0.1,
+   "t": 0.1
+  },
+  {
+   "name": "sfx:hit",
+   "at": 1.15,
+   "t": 1.15
+  },
+  {
+   "name": "vo:read",
+   "at": 1.17,
+   "t": 1.17
+  },
+  {
+   "name": "sfx:hit",
+   "at": 2.2,
+   "t": 2.2
+  },
+  {
+   "name": "vo:forgot",
+   "at": 2.22,
+   "t": 2.22
+  },
+  {
+   "name": "sfx:glitch",
+   "at": 2.98,
+   "t": 2.98
+  },
+  {
+   "name": "sfx:dissolve",
+   "at": 3.2,
+   "t": 3.2
+  },
+  {
+   "name": "sfx:rewind",
+   "at": 3.56,
+   "t": 3.56
+  },
+  {
+   "name": "sfx:logo",
+   "at": 0,
+   "t": 4
+  },
+  {
+   "name": "vo:meet",
+   "at": 0.15,
+   "t": 4.15
+  },
+  {
+   "name": "sfx:whoosh",
+   "at": 1.5499999999999998,
+   "t": 5.55
+  },
+  {
+   "name": "vo:memory",
+   "at": 1.7000000000000002,
+   "t": 5.7
+  },
+  {
+   "name": "sfx:pop",
+   "at": 2.05,
+   "t": 6.05
+  },
+  {
+   "name": "sfx:click",
+   "at": 4.08,
+   "t": 8.08
+  },
+  {
+   "name": "sfx:click",
+   "at": 4.9,
+   "t": 8.9
+  },
+  {
+   "name": "sfx:whoosh",
+   "at": 5.02,
+   "t": 9.02
+  },
+  {
+   "name": "vo:snap",
+   "at": 0.65,
+   "t": 9.65
+  },
+  {
+   "name": "sfx:shutter",
+   "at": 0.85,
+   "t": 9.85
+  },
+  {
+   "name": "sfx:shutter",
+   "at": 1.2,
+   "t": 10.2
+  },
+  {
+   "name": "sfx:shutter",
+   "at": 1.55,
+   "t": 10.55
+  },
+  {
+   "name": "sfx:whoosh",
+   "at": 3.0999999999999996,
+   "t": 12.1
+  },
+  {
+   "name": "vo:scroll",
+   "at": 3.25,
+   "t": 12.25
+  },
+  {
+   "name": "sfx:rewind",
+   "at": 3.45,
+   "dur": 1.05,
+   "t": 12.45
+  },
+  {
+   "name": "vo:search",
+   "at": 5.7,
+   "t": 14.7
+  },
+  {
+   "name": "sfx:type",
+   "at": 5.78,
+   "dur": 0.5,
+   "n": 11,
+   "t": 14.78
+  },
+  {
+   "name": "sfx:ding",
+   "at": 6.32,
+   "t": 15.32
+  },
+  {
+   "name": "vo:ask",
+   "at": 8.5,
+   "t": 17.5
+  },
+  {
+   "name": "sfx:click",
+   "at": 8.88,
+   "t": 17.88
+  },
+  {
+   "name": "sfx:whoosh",
+   "at": 8.95,
+   "t": 17.95
+  },
+  {
+   "name": "sfx:type",
+   "at": 9.12,
+   "dur": 0.38,
+   "n": 25,
+   "t": 18.12
+  },
+  {
+   "name": "sfx:pop",
+   "at": 9.62,
+   "t": 18.62
+  },
+  {
+   "name": "sfx:whoosh",
+   "at": 12.5,
+   "t": 21.5
+  },
+  {
+   "name": "vo:local",
+   "at": 12.58,
+   "t": 21.58
+  },
+  {
+   "name": "sfx:lock",
+   "at": 12.7,
+   "t": 21.7
+  },
+  {
+   "name": "sfx:pop",
+   "at": 12.879999999999999,
+   "t": 21.88
+  },
+  {
+   "name": "sfx:impact",
+   "at": 0.35,
+   "t": 24.05
+  },
+  {
+   "name": "vo:cta",
+   "at": 0.4,
+   "t": 24.1
+  },
+  {
+   "name": "sfx:pop",
+   "at": 0.65,
+   "t": 24.35
+  }
+ ]
+}
