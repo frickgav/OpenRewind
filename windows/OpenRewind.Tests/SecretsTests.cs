@@ -167,3 +167,72 @@ public class SecretsMoreFormats
     [InlineData("src/components/Timeline/TimelineView2.swift and Sources/openrewind/AITools.swift")]
     public void LeavesPathsAndSettingsAlone(string text) => Assert.Equal(text, Secrets.Redact(text));
 }
+
+/// Secrets named without ':' or '=' (the value after spaces or on the next line), hex keys next to their
+/// name, more key prefixes, and OCR quirks. The Mac CI checks the same cases (features-check in main.swift).
+public class SecretsNamedAndPrefixed
+{
+    // Put together at run time so secret scanners do not flag this file. None is real.
+    static readonly string hex = "8f14e45fceea167a" + "5a36dedd4bea2543";
+    static readonly string whsec = "whsec_" + "MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw";
+
+    public static IEnumerable<object[]> Found() => new[]
+    {
+        new object[] { "Signing Secret  " + hex, "Signing Secret  [redacted]" },
+        new object[] { "Signing secret\n" + whsec, "Signing secret\n[redacted]" },
+        new object[] { "Webhook secret  " + "Ab3dE5fG7hI9" + "jK1lM3nO5pQ7", "Webhook secret  [redacted]" },
+        new object[] { "Client secret\t" + "GOCSPX-" + "1a2b3c4d5e6f7g8h9i0jKLMN", "Client secret\t[redacted]" },
+        new object[] { "Secret key " + "Zx9Qm2Lp7Wv4" + "Rt8Yb3", "Secret key [redacted]" },
+        new object[] { "Auth token  " + hex, "Auth token  [redacted]" },
+        new object[] { "API key " + "AT9x8w7v6u" + "5t4s3r2q1p", "API key [redacted]" },
+        new object[] { "Access token " + "Vc1Xa9Rt5Y" + "m2Kp8Lq3Wz7N", "Access token [redacted]" },
+        new object[] { "Token\n" + "Vc1Xa9Rt5Y" + "m2Kp8Lq3Wz7N", "Token\n[redacted]" },
+        new object[] { "Shared secret Copy " + "Ab3dE5fG7hI9" + "jK1lM3nO5pQ7", "Shared secret Copy [redacted]" },
+        new object[] { "App secret: " + hex, "App secret: [redacted]" },
+        new object[] { "Consumer secret " + hex, "Consumer secret [redacted]" },
+        new object[] { "Signing key " + hex, "Signing key [redacted]" },
+        new object[] { "Encryption key (AES-256) " + hex, "Encryption key (AES-256) [redacted]" },
+        new object[] { "Auth Token  Reveal\n" + hex + " (hidden)", "Auth Token  Reveal\n[redacted] (hidden)" },
+        new object[] { "Account SID " + "AC" + hex, "Account SID [redacted]" },
+        new object[] { "API key SID " + "SK" + hex, "API key SID [redacted]" },
+        new object[] { "endpoint " + whsec, "endpoint [redacted]" },
+        new object[] { "glpat-" + "xYz12AbC34dEf56GhI78", "[redacted]" },
+        new object[] { "npm_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8", "[redacted]" },
+        new object[] { "hf_" + "aBcDeFgHiJkLmNoPqRsTuVwXyZ012345", "[redacted]" },
+        new object[] { "pypi-AgE" + "IcHlwaS5vcmcCJDEyMzQ1Njc4", "[redacted]" },
+        new object[] { "SG." + "aBcDeFgHiJkLmNoPqRsTuV" + "." + "wXyZ0123456789aBcDeFgHiJkLmNoPqRsTuVwXyZ0123", "[redacted]" },
+        new object[] { "shpat_" + hex, "[redacted]" },
+        new object[] { "xapp-" + "1-A0123456789-0123456789-abcdef", "[redacted]" },
+        new object[] { "dop_v1_" + hex + hex, "[redacted]" },
+        new object[] { "ya29." + "a0AfH6SMBx1y2z3AbCdEfGh", "[redacted]" },
+        new object[] { "EAAG" + "m0PX4ZCpsBAaBcDeFgHiJkLmNoPqRsTuVwXyZ0123", "[redacted]" },
+        // OCR read one key as two words.
+        new object[] { "whsec_" + "MfKQ9r8GKYqrTwjUPD8I" + " LPZIa1b2c3 done", "[redacted] done" },
+        new object[] { "Signing secret " + "8f14e45fceea167a" + " 5a36dedd4bea2543", "Signing secret [redacted]" },
+    };
+
+    [Theory]
+    [MemberData(nameof(Found))]
+    public void Finds(string input, string want) => Assert.Equal(want, Secrets.Redact(input));
+
+    [Theory]
+    [InlineData("commit 3f786850e387550fdab836ed7e6dc881de23001b")]
+    [InlineData("Merged 3f786850e387550fdab836ed7e6dc881de23001b into main")]
+    [InlineData("sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")]
+    [InlineData("id 123e4567-e89b-12d3-a456-426614174000")]
+    [InlineData("8f14e45fceea167a5a36dedd4bea2543")]
+    [InlineData("Signing secret Reveal")]
+    [InlineData("Signing secret  Reveal  Copy")]
+    [InlineData("API key ••••••••")]
+    [InlineData("API key •••••••••••• Reveal")]
+    [InlineData("Webhook secret: Reveal")]
+    [InlineData("Your access token expires in 30 days")]
+    [InlineData("Keep the secret recipe safe until 2026")]
+    [InlineData("The token was revoked on 2026-10-25")]
+    [InlineData("API key rotation is scheduled for Q4 2026")]
+    [InlineData("Token count: 1532 tokens used")]
+    [InlineData("Access token\nSettings")]
+    [InlineData("password\n/Users/sam/Projects/App2024/Sources")]
+    [InlineData("Create a token for the release-2026-q4-build pipeline")]
+    public void LeavesThisAlone(string text) => Assert.Equal(text, Secrets.Redact(text));
+}

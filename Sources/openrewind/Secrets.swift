@@ -21,19 +21,48 @@ enum Secrets {
     /// Rules whose whole match is the secret.
     private static let whole: [NSRegularExpression] = [
         re(#"-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----[\s\S]*?(-----END [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----|\z)"#),
-        re(#"(?<![A-Za-z0-9])sk-[A-Za-z0-9_\-]{20,}"#),                     // OpenAI, Anthropic
-        re(#"(?<![A-Za-z0-9])(sk|rk)_(live|test)_[A-Za-z0-9]{16,}"#),         // Stripe secret keys
+        re(#"(?<![A-Za-z0-9])eyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"#),
+    ]
+    /// Prefixed keys, which OCR may split in two at a space (see extend).
+    private static let prefixed: [NSRegularExpression] = [
+        re(#"(?<![A-Za-z0-9])sk-[A-Za-z0-9_\-]{20,}"#),
+        re(#"(?<![A-Za-z0-9])(sk|rk)_(live|test)_[A-Za-z0-9]{16,}"#),
         re(#"(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{30,}"#),
         re(#"(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{40,}"#),
         re(#"(?<![A-Za-z0-9])xox[abposre]-[A-Za-z0-9\-]{10,}"#),
         re(#"(?<![A-Za-z0-9])(AKIA|ASIA)[0-9A-Z]{16}(?![A-Za-z0-9])"#),
         re(#"(?<![A-Za-z0-9])AIza[0-9A-Za-z_\-]{35}(?![A-Za-z0-9_\-])"#),
-        re(#"(?<![A-Za-z0-9])eyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"#),
+        re(#"(?<![A-Za-z0-9])whsec_[A-Za-z0-9+/=]{20,}"#),            // Stripe, Svix
+        re(#"(?<![A-Za-z0-9])glpat-[A-Za-z0-9_\-]{20,}"#),
+        re(#"(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36,}"#),
+        re(#"(?<![A-Za-z0-9])hf_[A-Za-z0-9]{30,}"#),
+        re(#"(?<![A-Za-z0-9])pypi-AgE[A-Za-z0-9_\-]{20,}"#),
+        re(#"(?<![A-Za-z0-9])SG\.[A-Za-z0-9_\-]{16,32}\.[A-Za-z0-9_\-]{16,64}"#),
+        re(#"(?<![A-Za-z0-9])shp(at|ss|ca|pa)_[a-fA-F0-9]{32}"#),
+        re(#"(?<![A-Za-z0-9])xapp-[A-Za-z0-9\-]{10,}"#),
+        re(#"(?<![A-Za-z0-9])do[opr]_v1_[a-fA-F0-9]{32,}"#),
+        re(#"(?<![A-Za-z0-9])ya29\.[A-Za-z0-9_\-]{20,}"#),
+        re(#"(?<![A-Za-z0-9])EAA[A-Za-z0-9]{40,}"#),
     ]
+
+    /// Names of secrets, for a value with no ':' or '=' after them ("Signing secret  whsec_…", or the value
+    /// on the next line) and for long hex values near them. Longer names first.
+    private static let names = #"signing[ _\-]?secret|webhook[ _\-]?secret|signing[ _\-]?key|shared[ _\-]?secret|app[ _\-]?secret"#
+        + #"|consumer[ _\-]?secret|encryption[ _\-]?key|client[ _\-]?secret|secret[ _\-]?access[ _\-]?key|secret[ _\-]?key"#
+        + #"|auth[ _\-]?token|api[ _\-]?key|access[ _\-]?token|refresh[ _\-]?token|private[ _\-]?key|password|token|secret"#
+    /// A name, then the value after spaces or on the next line (one line at most), maybe past a Reveal or
+    /// Copy button. The value counts only when it looks like a key (looksLikeKey).
+    private static let near = re(#"(?i)(?<![A-Za-z])(?:"# + names
+        + #")(?![A-Za-z])(?<sep>[ \t]*[:=]?(?:[ \t]+(?:reveal|show|copy|hide|view)(?![A-Za-z]))?(?:[ \t]*\r?\n)?[ \t]*)["']?(?<v>[A-Za-z0-9_+/=\-]{6,})"#)
+    /// Hex values (32 to 128 digits, maybe split in two by OCR) are secrets only near a name, so commit
+    /// hashes and checksums on their own stay. Twilio keys: SK + 32 hex digits.
+    private static let hexRun = re(#"(?<![A-Za-z0-9_\-])(?:SK)?[0-9a-fA-F]{8,130}(?: [0-9a-fA-F]{8,130})?(?![A-Za-z0-9_\-])"#)
+    private static let hexName = re(#"(?i)(?<![A-Za-z])(?:"# + names + #"|account[ _\-]?sid|twilio)(?![A-Za-z])"#)
+    private static let keyChars = re(#"^[A-Za-z0-9_+/=\-]+$"#)
 
     /// Rules where only the `v` group is the secret: what follows a label.
     private static let labeled = re(
-        #"(?i)(?<![A-Za-z])(password|passwd|passcode|pwd|api[ _\-]?key|secret[ _\-]?key|(?:aws[ _\-]?)?secret[ _\-]?access[ _\-]?key|access[ _\-]?key|account[ _\-]?key|private[ _\-]?key|client[ _\-]?secret|access[ _\-]?token|auth[ _\-]?token|refresh[ _\-]?token|bearer)[ \t]*[:=][ \t]*["']?(?<v>[^\s"';]{4,})"#)
+        #"(?i)(?<![A-Za-z])(password|passwd|passcode|pwd|api[ _\-]?key|signing[ _\-]?secret|webhook[ _\-]?secret|signing[ _\-]?key|shared[ _\-]?secret|app[ _\-]?secret|consumer[ _\-]?secret|encryption[ _\-]?key|secret[ _\-]?key|(?:aws[ _\-]?)?secret[ _\-]?access[ _\-]?key|access[ _\-]?key|account[ _\-]?key|private[ _\-]?key|client[ _\-]?secret|access[ _\-]?token|auth[ _\-]?token|refresh[ _\-]?token|bearer)[ \t]*[:=][ \t]*["']?(?<v>[^\s"';]{4,})"#)
     /// Environment variables and settings named like a secret: FOO_SECRET=…, GITHUB_TOKEN=…, STRIPE_KEY=….
     private static let envVar = re(
         #"(?<![A-Za-z0-9_])[A-Z][A-Z0-9_]*_(SECRET|TOKEN|KEY|PASSWORD|PASS|PWD|APIKEY|CREDENTIALS?)[ \t]*[:=][ \t]*["']?(?<v>[^\s"';]{8,})"#)
@@ -59,6 +88,28 @@ enum Secrets {
         let all = NSRange(location: 0, length: ns.length)
         var hits: [NSRange] = []
         for r in whole { hits += r.matches(in: text, range: all).map(\.range) }
+        // OCR may read one key as two words: take the second half too.
+        for r in prefixed {
+            for m in r.matches(in: text, range: all) {
+                let end = extend(ns, m.range.location + m.range.length)
+                hits.append(NSRange(location: m.range.location, length: end - m.range.location))
+            }
+        }
+        for m in near.matches(in: text, range: all) {
+            let v = m.range(withName: "v")
+            // "token1234…" is one word.
+            guard v.location != NSNotFound, m.range(withName: "sep").length > 0 else { continue }
+            let end = extend(ns, v.location + v.length)
+            let r = NSRange(location: v.location, length: end - v.location)
+            if looksLikeKey(ns.substring(with: r)) { hits.append(r) }
+        }
+        for m in hexRun.matches(in: text, range: all) {
+            var hex = ns.substring(with: m.range).replacingOccurrences(of: " ", with: "")
+            if hex.hasPrefix("SK") { hex.removeFirst(2) }
+            let digits = hex.filter { $0.isASCII && $0.isNumber }.count
+            guard (32...130).contains(hex.count), digits >= 2, hex.count - digits >= 2 else { continue }
+            if nearName(ns, m.range.location) { hits.append(m.range) }
+        }
         for r in [labeled, bearer, envVar, textUserinfo] {
             for m in r.matches(in: text, range: all) {
                 let v = m.range(withName: "v")
@@ -71,6 +122,48 @@ enum Secrets {
         for m in digits.matches(in: text, range: all) where isCardNumber(ns.substring(with: m.range)) { hits.append(m.range) }
         for m in token.matches(in: text, range: all) where isRandom(ns.substring(with: m.range)) { hits.append(m.range) }
         return merge(hits)
+    }
+
+    /// A secret's name on the same line before `at` (UTF-16), or on the line above.
+    private static func nearName(_ ns: NSString, _ at: Int) -> Bool {
+        let nl = UInt16(UInt8(ascii: "\n"))
+        var line = at - 1
+        while line >= 0, ns.character(at: line) != nl { line -= 1 }
+        var from = 0
+        if line > 0 {
+            from = line - 1
+            while from >= 0, ns.character(at: from) != nl { from -= 1 }
+            from += 1
+        }
+        return hexName.firstMatch(in: ns as String, range: NSRange(location: from, length: at - from)) != nil
+    }
+
+    /// Where a key ends when OCR split it in two at a space: the next word joins it when it is made of key
+    /// characters and has letters and digits (so "Copy", a date or a sentence do not).
+    private static func extend(_ ns: NSString, _ end: Int) -> Int {
+        guard end + 1 < ns.length, ns.character(at: end) == 32 else { return end }
+        var e = end + 1
+        let ws = CharacterSet.whitespacesAndNewlines
+        while e < ns.length, let u = Unicode.Scalar(ns.character(at: e)), !ws.contains(u) { e += 1 }
+        let w = ns.substring(with: NSRange(location: end + 1, length: e - end - 1))
+        guard w.count >= 4, matches(keyChars, w), w.contains(where: { $0.isASCII && $0.isNumber }),
+              w.contains(where: { $0.isASCII && $0.isLetter }) else { return end }
+        return e
+    }
+
+    /// A value after a secret's name that is a key, not a word, a button or a masked placeholder: 16 or more
+    /// key characters (one space allowed, from OCR), mostly letters and digits with at least two of each,
+    /// and not a path or words joined by dashes.
+    static func looksLikeKey(_ v: String) -> Bool {
+        let s = v.replacingOccurrences(of: " ", with: "")
+        guard (16...512).contains(s.count), matches(keyChars, s) else { return false }
+        let letters = s.filter { $0.isASCII && $0.isLetter }.count
+        let digits = s.filter { $0.isASCII && $0.isNumber }.count
+        guard letters >= 2, digits >= 2, Double(letters + digits) >= Double(s.count) * 0.8 else { return false }
+        let parts = s.split(whereSeparator: { $0 == "-" || $0 == "_" })
+        if parts.count > 3, parts.allSatisfy({ $0.count < 12 }) { return false }
+        if s.hasPrefix("/") || s.contains("//") || (s.contains("/") && s.split(separator: "/").contains(where: { matches(pathWord, String($0)) })) { return false }
+        return true
     }
 
     static func has(_ text: String) -> Bool { !find(text).isEmpty }
@@ -191,7 +284,9 @@ enum Secrets {
         while let last = lower.last, ".,;)".contains(last) { lower.removeLast() }
         return ![
             "required", "optional", "hidden", "none", "null", "undefined", "true", "false", "forgot", "reset",
-            "change", "show", "enter", "your", "must", "should", "cannot", "needs", "[redacted]",
+            "change", "show", "enter", "your", "must", "should", "cannot", "needs", "reveal", "copy", "view", "hide",
+            "regenerate", "roll", "generate", "create", "revoke", "delete", "manage", "edit", "expired", "invalid",
+            "missing", "[redacted]",
         ].contains(lower)
     }
 

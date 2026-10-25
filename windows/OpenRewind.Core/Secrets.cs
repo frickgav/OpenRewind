@@ -32,11 +32,40 @@ public static class Secrets
         ("aws key", new Regex(@"(?<![A-Za-z0-9])(AKIA|ASIA)[0-9A-Z]{16}(?![A-Za-z0-9])", Opts)),
         ("google key", new Regex(@"(?<![A-Za-z0-9])AIza[0-9A-Za-z_\-]{35}(?![A-Za-z0-9_\-])", Opts)),
         ("jwt", new Regex(@"(?<![A-Za-z0-9])eyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}", Opts)),
+        ("webhook secret", new Regex(@"(?<![A-Za-z0-9])whsec_[A-Za-z0-9+/=]{20,}", Opts)),           // Stripe, Svix
+        ("gitlab token", new Regex(@"(?<![A-Za-z0-9])glpat-[A-Za-z0-9_\-]{20,}", Opts)),
+        ("npm token", new Regex(@"(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36,}", Opts)),
+        ("hugging face token", new Regex(@"(?<![A-Za-z0-9])hf_[A-Za-z0-9]{30,}", Opts)),
+        ("pypi token", new Regex(@"(?<![A-Za-z0-9])pypi-AgE[A-Za-z0-9_\-]{20,}", Opts)),
+        ("sendgrid key", new Regex(@"(?<![A-Za-z0-9])SG\.[A-Za-z0-9_\-]{16,32}\.[A-Za-z0-9_\-]{16,64}", Opts)),
+        ("shopify token", new Regex(@"(?<![A-Za-z0-9])shp(at|ss|ca|pa)_[a-fA-F0-9]{32}", Opts)),
+        ("slack token", new Regex(@"(?<![A-Za-z0-9])xapp-[A-Za-z0-9\-]{10,}", Opts)),
+        ("digitalocean token", new Regex(@"(?<![A-Za-z0-9])do[opr]_v1_[a-fA-F0-9]{32,}", Opts)),
+        ("google token", new Regex(@"(?<![A-Za-z0-9])ya29\.[A-Za-z0-9_\-]{20,}", Opts)),
+        ("facebook token", new Regex(@"(?<![A-Za-z0-9])EAA[A-Za-z0-9]{40,}", Opts)),
     };
+
+    /// Names of secrets, for a value with no ':' or '=' after them ("Signing secret  whsec_…", or the value
+    /// on the next line) and for long hex values near them. Longer names first.
+    const string Names = @"signing[ _\-]?secret|webhook[ _\-]?secret|signing[ _\-]?key|shared[ _\-]?secret|app[ _\-]?secret"
+        + @"|consumer[ _\-]?secret|encryption[ _\-]?key|client[ _\-]?secret|secret[ _\-]?access[ _\-]?key|secret[ _\-]?key"
+        + @"|auth[ _\-]?token|api[ _\-]?key|access[ _\-]?token|refresh[ _\-]?token|private[ _\-]?key|password|token|secret";
+
+    /// A name, then the value after spaces or on the next line (one line at most), maybe past a Reveal or
+    /// Copy button. The value counts only when it looks like a key (LooksLikeKey).
+    static readonly Regex near = new(
+        @"(?i)(?<![A-Za-z])(?:" + Names + @")(?![A-Za-z])(?<sep>[ \t]*[:=]?(?:[ \t]+(?:reveal|show|copy|hide|view)(?![A-Za-z]))?(?:[ \t]*\r?\n)?[ \t]*)[""']?(?<v>[A-Za-z0-9_+/=\-]{6,})",
+        Opts);
+    /// Hex values (32 to 128 digits, maybe split in two by OCR) are secrets only near a name, so commit
+    /// hashes and checksums on their own stay. Twilio keys: SK + 32 hex digits.
+    static readonly Regex hexRun = new(@"(?<![A-Za-z0-9_\-])(?:SK)?[0-9a-fA-F]{8,130}(?: [0-9a-fA-F]{8,130})?(?![A-Za-z0-9_\-])", Opts);
+    static readonly Regex hexName = new(@"(?i)(?<![A-Za-z])(?:" + Names + @"|account[ _\-]?sid|twilio)(?![A-Za-z])", Opts);
+    static readonly Regex keyChars = new(@"^[A-Za-z0-9_+/=\-]+$", Opts);
+    static readonly Regex pathWord = new(@"^[A-Z]?[a-z]{3,}$", Opts);
 
     /// Rules where only the `v` group is the secret: what follows a label.
     static readonly Regex labeled = new(
-        @"(?i)(?<![A-Za-z])(password|passwd|passcode|pwd|api[ _\-]?key|secret[ _\-]?key|(?:aws[ _\-]?)?secret[ _\-]?access[ _\-]?key|access[ _\-]?key|account[ _\-]?key|private[ _\-]?key|client[ _\-]?secret|access[ _\-]?token|auth[ _\-]?token|refresh[ _\-]?token|bearer)[ \t]*[:=][ \t]*[""']?(?<v>[^\s""';]{4,})",
+        @"(?i)(?<![A-Za-z])(password|passwd|passcode|pwd|api[ _\-]?key|signing[ _\-]?secret|webhook[ _\-]?secret|signing[ _\-]?key|shared[ _\-]?secret|app[ _\-]?secret|consumer[ _\-]?secret|encryption[ _\-]?key|secret[ _\-]?key|(?:aws[ _\-]?)?secret[ _\-]?access[ _\-]?key|access[ _\-]?key|account[ _\-]?key|private[ _\-]?key|client[ _\-]?secret|access[ _\-]?token|auth[ _\-]?token|refresh[ _\-]?token|bearer)[ \t]*[:=][ \t]*[""']?(?<v>[^\s""';]{4,})",
         Opts);
     /// Environment variables and settings named like a secret: FOO_SECRET=…, GITHUB_TOKEN=…, STRIPE_KEY=….
     static readonly Regex envVar = new(
@@ -58,7 +87,26 @@ public static class Secrets
         var hits = new List<Hit>();
         if (string.IsNullOrEmpty(text)) return hits;
         foreach (var (kind, re) in whole)
-            foreach (Match m in re.Matches(text)) hits.Add(new Hit(m.Index, m.Length, kind));
+            foreach (Match m in re.Matches(text))
+            {
+                // OCR may read one key as two words: take the second half too.
+                int end = kind is "private key" or "jwt" ? m.Index + m.Length : Extend(text, m.Index + m.Length);
+                hits.Add(new Hit(m.Index, end - m.Index, kind));
+            }
+        foreach (Match m in near.Matches(text))
+        {
+            var v = m.Groups["v"];
+            if (m.Groups["sep"].Length == 0) continue;  // "token1234…" is one word
+            int end = Extend(text, v.Index + v.Length);
+            if (LooksLikeKey(text[v.Index..end])) hits.Add(new Hit(v.Index, end - v.Index, "secret"));
+        }
+        foreach (Match m in hexRun.Matches(text))
+        {
+            var hex = m.Value.Replace(" ", "");
+            if (hex.StartsWith("SK")) hex = hex[2..];
+            if (hex.Length is < 32 or > 130 || hex.Count(char.IsAsciiDigit) < 2 || hex.Count(char.IsAsciiLetter) < 2) continue;
+            if (NearName(text, m.Index)) hits.Add(new Hit(m.Index, m.Length, "secret"));
+        }
         foreach (var re in new[] { labeled, bearer, envVar, userinfo })
             foreach (Match m in re.Matches(text))
             {
@@ -73,6 +121,41 @@ public static class Secrets
         foreach (Match m in token.Matches(text))
             if (IsRandom(m.Value)) hits.Add(new Hit(m.Index, m.Length, "token"));
         return Merge(hits);
+    }
+
+    /// A secret's name on the same line before `at`, or on the line above.
+    static bool NearName(string text, int at)
+    {
+        int line = at > 0 ? text.LastIndexOf('\n', at - 1) : -1;
+        int from = line > 0 ? text.LastIndexOf('\n', line - 1) + 1 : 0;
+        return hexName.IsMatch(text[from..at]);
+    }
+
+    /// Where a key ends when OCR split it in two at a space: the next word joins it when it is made of key
+    /// characters and has letters and digits (so "Copy", a date or a sentence do not).
+    static int Extend(string text, int end)
+    {
+        if (end + 1 >= text.Length || text[end] != ' ') return end;
+        int e = end + 1;
+        while (e < text.Length && !char.IsWhiteSpace(text[e])) e++;
+        var w = text[(end + 1)..e];
+        if (w.Length < 4 || !keyChars.IsMatch(w) || !w.Any(char.IsAsciiDigit) || !w.Any(char.IsAsciiLetter)) return end;
+        return e;
+    }
+
+    /// A value after a secret's name that is a key, not a word, a button or a masked placeholder: 16 or more
+    /// key characters (one space allowed, from OCR), mostly letters and digits with at least two of each,
+    /// and not a path or words joined by dashes.
+    public static bool LooksLikeKey(string v)
+    {
+        var s = v.Replace(" ", "");
+        if (s.Length < 16 || s.Length > 512 || !keyChars.IsMatch(s)) return false;
+        int letters = s.Count(char.IsAsciiLetter), digits = s.Count(char.IsAsciiDigit);
+        if (letters < 2 || digits < 2 || letters + digits < s.Length * 0.8) return false;
+        var parts = s.Split('-', '_');
+        if (parts.Length > 3 && parts.All(p => p.Length < 12)) return false;
+        if (s.StartsWith('/') || s.Contains("//") || (s.Contains('/') && s.Split('/').Any(p => pathWord.IsMatch(p)))) return false;
+        return true;
     }
 
     /// True when `text` has a secret in it.
@@ -201,7 +284,7 @@ public static class Secrets
         var parts = s.Split('-', '_');
         if (parts.Length > 3 && parts.All(p => p.Length < 12)) return false;
         // Paths ("Users/sam/Projects/App2024/Sources"): a word between slashes, or "//".
-        if (s.Contains('/') && (s.Contains("//") || s.Split('/').Any(p => Regex.IsMatch(p, "^[A-Z]?[a-z]{3,}$")))) return false;
+        if (s.Contains('/') && (s.Contains("//") || s.Split('/').Any(p => pathWord.IsMatch(p)))) return false;
         return Entropy(s) >= 4.2;
     }
 
@@ -227,7 +310,8 @@ public static class Secrets
         var lower = v.ToLowerInvariant().TrimEnd('.', ',', ';', ')');
         return lower is not ("required" or "optional" or "hidden" or "none" or "null" or "undefined" or "true" or "false"
             or "forgot" or "reset" or "change" or "show" or "enter" or "your" or "must" or "should" or "cannot" or "needs"
-            or "[redacted]");
+            or "reveal" or "copy" or "view" or "hide" or "regenerate" or "roll" or "generate" or "create" or "revoke"
+            or "delete" or "manage" or "edit" or "expired" or "invalid" or "missing" or "[redacted]");
     }
 
     /// Sorted, with overlapping hits joined.

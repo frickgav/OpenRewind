@@ -85,7 +85,62 @@ if command == "features-check" {
         ("https://github.com/frickgav/OpenRewind/pull/57/files", "https://github.com/frickgav/OpenRewind/pull/57/files"),
         ("SORT_KEY=timestamp PRIMARY_KEY=id CACHE_KEY=user_profile", "SORT_KEY=timestamp PRIMARY_KEY=id CACHE_KEY=user_profile"),
     ]
-    for (input, want) in cases where Secrets.redact(input) != want { problems.append("redact \"\(input.prefix(12))…\" gave \"\(Secrets.redact(input))\"") }
+    // Named without ':' or '=', hex keys near their name, more prefixes and OCR quirks (SecretsNamedAndPrefixed).
+    let hex = "8f14e45fceea167a" + "5a36dedd4bea2543"
+    let whsec = "whsec_" + "MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"
+    let named: [(String, String)] = [
+        ("Signing Secret  " + hex, "Signing Secret  [redacted]"),
+        ("Signing secret\n" + whsec, "Signing secret\n[redacted]"),
+        ("Webhook secret  " + "Ab3dE5fG7hI9" + "jK1lM3nO5pQ7", "Webhook secret  [redacted]"),
+        ("Client secret\t" + "GOCSPX-" + "1a2b3c4d5e6f7g8h9i0jKLMN", "Client secret\t[redacted]"),
+        ("Secret key " + "Zx9Qm2Lp7Wv4" + "Rt8Yb3", "Secret key [redacted]"),
+        ("Auth token  " + hex, "Auth token  [redacted]"),
+        ("API key " + "AT9x8w7v6u" + "5t4s3r2q1p", "API key [redacted]"),
+        ("Access token " + "Vc1Xa9Rt5Y" + "m2Kp8Lq3Wz7N", "Access token [redacted]"),
+        ("Token\n" + "Vc1Xa9Rt5Y" + "m2Kp8Lq3Wz7N", "Token\n[redacted]"),
+        ("Shared secret Copy " + "Ab3dE5fG7hI9" + "jK1lM3nO5pQ7", "Shared secret Copy [redacted]"),
+        ("App secret: " + hex, "App secret: [redacted]"),
+        ("Consumer secret " + hex, "Consumer secret [redacted]"),
+        ("Signing key " + hex, "Signing key [redacted]"),
+        ("Encryption key (AES-256) " + hex, "Encryption key (AES-256) [redacted]"),
+        ("Auth Token  Reveal\n" + hex + " (hidden)", "Auth Token  Reveal\n[redacted] (hidden)"),
+        ("Account SID " + "AC" + hex, "Account SID [redacted]"),
+        ("API key SID " + "SK" + hex, "API key SID [redacted]"),
+        ("endpoint " + whsec, "endpoint [redacted]"),
+        ("glpat-" + "xYz12AbC34dEf56GhI78", "[redacted]"),
+        ("npm_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8", "[redacted]"),
+        ("hf_" + "aBcDeFgHiJkLmNoPqRsTuVwXyZ012345", "[redacted]"),
+        ("pypi-AgE" + "IcHlwaS5vcmcCJDEyMzQ1Njc4", "[redacted]"),
+        ("SG." + "aBcDeFgHiJkLmNoPqRsTuV" + "." + "wXyZ0123456789aBcDeFgHiJkLmNoPqRsTuVwXyZ0123", "[redacted]"),
+        ("shpat_" + hex, "[redacted]"),
+        ("xapp-" + "1-A0123456789-0123456789-abcdef", "[redacted]"),
+        ("dop_v1_" + hex + hex, "[redacted]"),
+        ("ya29." + "a0AfH6SMBx1y2z3AbCdEfGh", "[redacted]"),
+        ("EAAG" + "m0PX4ZCpsBAaBcDeFgHiJkLmNoPqRsTuVwXyZ0123", "[redacted]"),
+        ("whsec_" + "MfKQ9r8GKYqrTwjUPD8I" + " LPZIa1b2c3 done", "[redacted] done"),
+        ("Signing secret " + "8f14e45fceea167a" + " 5a36dedd4bea2543", "Signing secret [redacted]"),
+    ]
+    let leave = [
+        "commit 3f786850e387550fdab836ed7e6dc881de23001b",
+        "Merged 3f786850e387550fdab836ed7e6dc881de23001b into main",
+        "sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "id 123e4567-e89b-12d3-a456-426614174000",
+        hex,
+        "Signing secret Reveal",
+        "Signing secret  Reveal  Copy",
+        "API key ••••••••",
+        "API key •••••••••••• Reveal",
+        "Webhook secret: Reveal",
+        "Your access token expires in 30 days",
+        "Keep the secret recipe safe until 2026",
+        "The token was revoked on 2026-10-25",
+        "API key rotation is scheduled for Q4 2026",
+        "Token count: 1532 tokens used",
+        "Access token\nSettings",
+        "password\n/Users/sam/Projects/App2024/Sources",
+        "Create a token for the release-2026-q4-build pipeline",
+    ]
+    for (input, want) in cases + named + leave.map({ ($0, $0) }) where Secrets.redact(input) != want { problems.append("redact \"\(input.prefix(12))…\" gave \"\(Secrets.redact(input))\"") }
     if Secrets.redactURL("https://user:hunter22@example.com/a?token=abc123def456&q=x").contains("hunter22") { problems.append("redactURL password") }
     let items = [WorkspaceItem(kind: Workspace.tab, app: "Safari", appID: "com.apple.Safari", title: "Docs", url: "https://example.com/a", path: "")]
     if Workspace.parse(Workspace.json(items)) != items { problems.append("workspace json round trip") }
