@@ -109,4 +109,23 @@ public class TimelineDeleteTests : IDisposable
         Assert.False(OnDisk("qqwvtoken555"));
         Assert.Equal(100, db.Search(new SearchQuery { Q = "kept" }).Total);
     }
+    [Fact]
+    public void SelectedStretchTakesOnlyWhatTheTimelineShows()
+    {
+        var m = DateTime.UtcNow.AddMinutes(-30);
+        var slack = new List<long>();
+        var other = new List<long>();
+        for (int i = 0; i < 6; i++)
+        {
+            slack.Add(AddFrame(m.AddSeconds(4 * i), "Slack", $"slack {i}"));
+            other.Add(AddFrame(m.AddSeconds(4 * i + 2), i % 2 == 0 ? "Safari" : "Game", $"other {i}"));
+        }
+        var to = m.AddSeconds(30);
+        Assert.Equal(slack, AppFilter.ShownIds(db, m, to, "Slack", null));
+        Assert.Equal(new[] { other[0], slack[1] }, AppFilter.ShownIds(db, m.AddSeconds(2), m.AddSeconds(6), null, Array.Empty<string>()));   // end not included
+        Assert.Equal(6, AppFilter.ShownIds(db, m, to, "Slack", null).Sum(id => db.DeleteFrame(id)));
+        foreach (var id in slack) Assert.Null(db.FrameById(id));
+        foreach (var id in other) Assert.NotNull(db.FrameById(id));
+        Assert.Equal(new[] { other[0], other[2], other[4] }, AppFilter.ShownIds(db, m, to, null, new[] { "Game" }));
+    }
 }

@@ -66,6 +66,23 @@ enum DeleteSelfTest {
             check(!onDisk("zqxsecretvalue987"), "deleted text is still in the database file")
             check(count("ordinary") == 200, "screenshots that were not deleted went missing")
 
+            // A stretch while the timeline shows one app: only that app's screenshots go, and hidden apps stay.
+            let m = Date().addingTimeInterval(-7200)
+            var slack: [Int64] = [], other: [Int64] = []
+            for i in 0..<6 {
+                slack.append(try add(m.addingTimeInterval(Double(4 * i)), "Slack", "chat \(i)"))
+                other.append(try add(m.addingTimeInterval(Double(4 * i + 2)), i % 2 == 0 ? "Safari" : "Game", "page \(i)"))
+            }
+            let shown = TimelineModel.shownIds(db, from: m, to: m.addingTimeInterval(24), app: "Slack", hidden: [])
+            check(shown == slack, "the stretch with the Slack filter picked other apps' screenshots")
+            for id in shown { db.deleteFrame(id: id) }
+            check(slack.allSatisfy { db.frame(id: $0) == nil } && other.allSatisfy { db.frame(id: $0) != nil },
+                  "deleting the filtered stretch took other apps' screenshots")
+            let unhidden = TimelineModel.shownIds(db, from: m, to: m.addingTimeInterval(24), app: nil, hidden: ["game"])
+            check(unhidden == other.enumerated().filter { $0.offset % 2 == 0 }.map(\.element), "a hidden app's screenshots were picked")
+            check(TimelineModel.shownIds(db, from: m.addingTimeInterval(2), to: m.addingTimeInterval(6), app: nil, hidden: []) == [other[0]],
+                  "the end of a stretch was not left out")
+
             // A range, the same.
             let r = Date().addingTimeInterval(-1800)
             _ = try add(r.addingTimeInterval(101), "Browser", "qqwvtoken555 on the page")

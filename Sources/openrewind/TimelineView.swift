@@ -520,7 +520,8 @@ struct TimelineView: View {
         HStack(spacing: 10) {
             if let r = model.markedRange {
                 Image(systemName: "selection.pin.in.out").foregroundColor(.accentColor)
-                Text("Selected \(r.from.formatted(date: .omitted, time: .standard)) – \(r.to.formatted(date: .omitted, time: .standard))")
+                Text("Selected \(r.from.formatted(date: .omitted, time: .standard)) – \(r.to.formatted(date: .omitted, time: .standard))"
+                     + (model.appFilter.map { " · only \($0)" } ?? ""))
                     .font(.system(size: 12, weight: .semibold)).monospacedDigit()
                 Button { model.deleteMarkedRange() } label: { Label("Delete…", systemImage: "trash") }
                     .buttonStyle(.borderedProminent).tint(.red).controlSize(.small)

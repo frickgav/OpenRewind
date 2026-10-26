@@ -35,6 +35,16 @@ public static class AppFilter
         return out_;
     }
 
+    /// The ids of the screenshots the timeline shows from `from` up to (not including) `to` with this app filter
+    /// and these hidden apps, oldest first: what a delete of a selected stretch takes.
+    public static List<long> ShownIds(Database db, DateTime from, DateTime to, string? app, IReadOnlyCollection<string>? hidden)
+    {
+        // Compared as the database stores times (to the millisecond); TimelineFrames also adds the first one after `to`.
+        var end = Time.Iso(to);
+        return Apply(db.TimelineFrames(from, to), app, hidden)
+            .Where(f => string.CompareOrdinal(Time.Iso(f.Time), end) < 0).Select(f => f.Id).ToList();
+    }
+
     /// True when, at `t`, an app in `hidden` was in front: `t` falls inside a screenshot of it in `all`
     /// (every app, time-sorted), which lasts until the next screenshot, at most 60 s.
     public static bool HiddenAt(List<TimelineFrame> all, DateTime t, IReadOnlyCollection<string>? hidden)

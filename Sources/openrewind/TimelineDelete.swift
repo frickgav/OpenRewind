@@ -25,25 +25,44 @@ extension TimelineModel {
         }
     }
 
-    /// The marked range, in every app (also ones hidden from the timeline or filtered out).
+    /// The marked range, as the timeline shows it: with the app filter on, only that app's screenshots go, and
+    /// apps hidden from the timeline are never touched. Without either, every screenshot in the range goes.
     func deleteMarkedRange() {
         guard let range = markedRange else { show(notice: "Mark where to start and end with [ and ] first"); return }
-        let n = db.scalarInt("SELECT COUNT(*) FROM frames WHERE timestamp >= ? AND timestamp < ?",
-                             [.text(Time.iso.string(from: range.from)), .text(Time.iso.string(from: range.to))])
+        let app = appFilter, hidden = hiddenKeys
+        let filtered = app != nil || !hidden.isEmpty
+        let ids = filtered ? Self.shownIds(db, from: range.from, to: range.to, app: app, hidden: hidden) : []
+        let n = filtered ? ids.count
+            : db.scalarInt("SELECT COUNT(*) FROM frames WHERE timestamp >= ? AND timestamp < ?",
+                           [.text(Time.iso.string(from: range.from)), .text(Time.iso.string(from: range.to))])
+        guard n > 0 else { show(notice: "No screenshots shown in that stretch"); return }
         let a = range.from.formatted(date: .abbreviated, time: .shortened), b = range.to.formatted(date: .omitted, time: .shortened)
-        let choice = confirm("Delete \(a) to \(b)?",
-                             "\(n) screenshot\(n == 1 ? "" : "s") from every app in that time and their screen text are deleted, with what search "
-                             + "and Ask AI learned from them, and the journal recap of that day. Audio is only deleted when you choose it "
-                             + "(each audio clip that starts in the range). This cannot be undone.",
-                             buttons: ["Delete Screenshots", "Delete Screenshots and Audio"])
+        let what = "\(n) screenshot\(n == 1 ? "" : "s")" + (app.map { " of \($0)" } ?? "")
+        let kept = app != nil ? " Other apps in that time are kept, and so is the audio."
+            : !hidden.isEmpty ? " Apps hidden from the timeline are kept." : ""
+        let text = "\(what) and their screen text are deleted, with what search and Ask AI learned from them, and the journal recap of "
+            + "that day.\(kept)" + (app == nil ? " Audio is only deleted when you choose it (each audio clip that starts in the range)." : "")
+            + " This cannot be undone."
+        let choice = confirm("Delete \(what) from \(a) to \(b)?", text,
+                             buttons: app == nil ? ["Delete Screenshots", "Delete Screenshots and Audio"] : ["Delete \(what)"])
         guard choice >= 0 else { return }
         let audio = choice == 1
         clearMarks()
         runDelete(at: range.from) { db in
-            let f = db.deleteFrames(from: range.from, to: range.to)
+            let f = filtered ? ids.reduce(0) { $0 + db.deleteFrame(id: $1) } : db.deleteFrames(from: range.from, to: range.to)
             let s = audio ? db.deleteAudio(from: range.from, to: range.to) : 0
-            return "Deleted \(f) screenshot\(f == 1 ? "" : "s")" + (audio ? " and \(s) audio clip\(s == 1 ? "" : "s")" : "")
+            return "Deleted \(f) screenshot\(f == 1 ? "" : "s")" + (app.map { " of \($0)" } ?? "")
+                + (audio ? " and \(s) audio clip\(s == 1 ? "" : "s")" : "")
         }
+    }
+
+    /// The screenshots the timeline shows from `from` up to `to` with this app filter and these hidden apps
+    /// (lowercased names), oldest first.
+    static func shownIds(_ db: Database, from: Date, to: Date, app: String?, hidden: Set<String>) -> [Int64] {
+        // Compared as the database stores times (to the millisecond); timelineFrames also adds the first one after `to`.
+        let end = Time.iso.string(from: to)
+        return AppFilter.apply(db.timelineFrames(from: from, to: to), app: app, hidden: hidden)
+            .filter { Time.iso.string(from: $0.time) < end }.map(\.id)
     }
 
     /// Every screenshot that has the words in the search box, in every app and at any time.
