@@ -73,9 +73,9 @@ enum DeleteSelfTest {
                 slack.append(try add(m.addingTimeInterval(Double(4 * i)), "Slack", "chat \(i)"))
                 other.append(try add(m.addingTimeInterval(Double(4 * i + 2)), i % 2 == 0 ? "Safari" : "Game", "page \(i)"))
             }
-            let shown = TimelineModel.shownIds(db, from: m, to: m.addingTimeInterval(24), app: "Slack", hidden: [])
-            check(shown == slack, "the stretch with the Slack filter picked other apps' screenshots")
-            for id in shown { db.deleteFrame(id: id) }
+            let inStretch = TimelineModel.shownIds(db, from: m, to: m.addingTimeInterval(24), app: "Slack", hidden: [])
+            check(inStretch == slack, "the stretch with the Slack filter picked other apps' screenshots")
+            for id in inStretch { _ = db.deleteFrame(id: id) }
             check(slack.allSatisfy { db.frame(id: $0) == nil } && other.allSatisfy { db.frame(id: $0) != nil },
                   "deleting the filtered stretch took other apps' screenshots")
             let unhidden = TimelineModel.shownIds(db, from: m, to: m.addingTimeInterval(24), app: nil, hidden: ["game"])
