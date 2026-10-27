@@ -236,13 +236,13 @@ public class SecretsNamedAndPrefixed
     [InlineData("Create a token for the release-2026-q4-build pipeline")]
     public void LeavesThisAlone(string text) => Assert.Equal(text, Secrets.Redact(text));
 
-    // OCR quirks: a quick read turned "whsec_P30x…" into "whsec P30x… asEC… j PP" (fake key, seen on a Mac).
+    // OCR quirks: a quick read turned "whsec_K70w…" into "whsec K70w… fcHU… j PP" (fake key).
     static HashSet<int> Hidden(string[] lines, IEnumerable<string>? known = null) =>
         Secrets.WordsToHide(lines.SelectMany((l, i) => l.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(w => (w, i))).ToList(), known);
 
     [Theory]
-    [InlineData("whsec P30x05bXkdXj asECmrtf5xNDbvB0E j PP")]
-    [InlineData("whsec_P30x05bXkdXj asECmrtf5xNDbvB0E")]
+    [InlineData("whsec K70w0aQnRtYp fcHUzhwq8vMPsnF0G j PP")]
+    [InlineData("whsec_K70w0aQnRtYp fcHUzhwq8vMPsnF0G")]
     [InlineData("ghp 1a2B3c4D5e6F7g8H9i0J kLmNoPqRsTuVwXyZ12")]
     [InlineData("sk proj 4fG7hJ2kL9mN3pQ8 rS1tU6vW0xY5zA")]
     public void HidesKeysOcrBrokeUp(string line)
@@ -256,7 +256,7 @@ public class SecretsNamedAndPrefixed
     [Fact]
     public void HidesBrokenKeyUnderItsName()
     {
-        var hide = Hidden(new[] { "Signing Secret", "P30x05bXkdXj asECmrtf5xNDbvB0E" });
+        var hide = Hidden(new[] { "Signing Secret", "K70w0aQnRtYp fcHUzhwq8vMPsnF0G" });
         Assert.Contains(2, hide);
         Assert.Contains(3, hide);
         Assert.DoesNotContain(0, hide);
@@ -275,8 +275,8 @@ public class SecretsNamedAndPrefixed
     public void FindsKnownSecretWhereOcrMisreadIt()
     {
         // Accessibility had the key; OCR read 0 as O, l as 1, and broke it up.
-        const string key = "whsec_P30x05bXkdXjlasECmrtf5xNDbvB0E";
-        var hide = Hidden(new[] { "Webhooks", "whsec P3Ox05bXkdXj1asEC mrtf5xNDbvBOE", "Done" }, new[] { key });
+        const string key = "whsec_" + "K70w0aQnRtYplfcHUzhwq8vMPsnF0G";
+        var hide = Hidden(new[] { "Webhooks", "whsec K7Ow0aQnRtYp1fcHU zhwq8vMPsnFOG", "Done" }, new[] { key });
         Assert.Contains(1, hide);
         Assert.Contains(2, hide);
         Assert.Contains(3, hide);
@@ -286,11 +286,11 @@ public class SecretsNamedAndPrefixed
 
     [Fact]
     public void KnownSecretNotOnScreenHidesNothing() =>
-        Assert.Empty(Hidden(new[] { "README", "Install with brew" }, new[] { "whsec_P30x05bXkdXjlasECmrtf5xNDbvB0E" }));
+        Assert.Empty(Hidden(new[] { "README", "Install with brew" }, new[] { "whsec_" + "K70w0aQnRtYplfcHUzhwq8vMPsnF0G" }));
 
     [Theory]
     [InlineData("Signing Secret ••••••••", true)]
-    [InlineData("whsec P30x05bX", true)]
+    [InlineData("whsec K70w0aQn", true)]
     [InlineData("Weekly report draft", false)]
     public void MightHave(string text, bool want) => Assert.Equal(want, Secrets.MightHave(text));
 }

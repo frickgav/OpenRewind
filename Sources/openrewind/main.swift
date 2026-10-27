@@ -142,13 +142,13 @@ if command == "features-check" {
     ]
     for (input, want) in cases + named + leave.map({ ($0, $0) }) where Secrets.redact(input) != want { problems.append("redact \"\(input.prefix(12))…\" gave \"\(Secrets.redact(input))\"") }
     if Secrets.redactURL("https://user:hunter22@example.com/a?token=abc123def456&q=x").contains("hunter22") { problems.append("redactURL password") }
-    // OCR quirks: a quick read turned "whsec_P30x…" into "whsec P30x… asEC… j PP" (fake keys, SecretsTests.HidesKeysOcrBrokeUp).
-    for line in ["whsec P30x05bXkdXj asECmrtf5xNDbvB0E j PP", "whsec_P30x05bXkdXj asECmrtf5xNDbvB0E",
+    // OCR quirks: a quick read turned "whsec_K70w…" into "whsec K70w… fcHU… j PP" (fake keys, SecretsTests.HidesKeysOcrBrokeUp).
+    for line in ["whsec K70w0aQnRtYp fcHUzhwq8vMPsnF0G j PP", "whsec_K70w0aQnRtYp fcHUzhwq8vMPsnF0G",
                  "ghp 1a2B3c4D5e6F7g8H9i0J kLmNoPqRsTuVwXyZ12", "sk proj 4fG7hJ2kL9mN3pQ8 rS1tU6vW0xY5zA"]
         where !Secrets.findInLines(["Settings", line]).contains(where: { $0.line == 1 && $0.range.location == 0 }) {
         problems.append("broken-up key \"\(line.prefix(8))…\" not found")
     }
-    if !Secrets.findInLines(["Signing Secret", "P30x05bXkdXj asECmrtf5xNDbvB0E"]).contains(where: { $0.line == 1 }) {
+    if !Secrets.findInLines(["Signing Secret", "K70w0aQnRtYp fcHUzhwq8vMPsnF0G"]).contains(where: { $0.line == 1 }) {
         problems.append("broken-up key under its name not found")
     }
     for pair in [["Password", "Must be 8 characters with 2 numbers"], ["API key", "Created on Oct 25 2026 by Gavien"],
@@ -157,11 +157,11 @@ if command == "features-check" {
         where !Secrets.findInLines(pair).isEmpty {
         problems.append("ordinary line taken for a key: \(pair[1])")
     }
-    let knownKey = "whsec_" + "P30x05bXkdXjlasECmrtf5xNDbvB0E"
-    let located = Secrets.locate([knownKey], in: ["Webhooks", "whsec P3Ox05bXkdXj1asEC mrtf5xNDbvBOE", "Done"])
+    let knownKey = "whsec_" + "K70w0aQnRtYplfcHUzhwq8vMPsnF0G"
+    let located = Secrets.locate([knownKey], in: ["Webhooks", "whsec K7Ow0aQnRtYp1fcHU zhwq8vMPsnFOG", "Done"])
     if located.count != 1 || located.first?.line != 1 { problems.append("known secret not located where OCR misread it") }
     if !Secrets.locate([knownKey], in: ["README", "Install with brew"]).isEmpty { problems.append("known secret located where it is not") }
-    if !Secrets.mightHave("Signing Secret ••••••••") || !Secrets.mightHave("whsec P30x05bX") || Secrets.mightHave("Weekly report draft") {
+    if !Secrets.mightHave("Signing Secret ••••••••") || !Secrets.mightHave("whsec K70w0aQn") || Secrets.mightHave("Weekly report draft") {
         problems.append("mightHave")
     }
     let items = [WorkspaceItem(kind: Workspace.tab, app: "Safari", appID: "com.apple.Safari", title: "Docs", url: "https://example.com/a", path: "")]

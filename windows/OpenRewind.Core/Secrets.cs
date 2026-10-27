@@ -208,7 +208,7 @@ public static class Secrets
     public static bool MightHave(string text) =>
         !string.IsNullOrEmpty(text) && (hint.IsMatch(text) || nameOnly.IsMatch(text) || Has(text));
 
-    /// Secrets in OCR lines that Find misses because OCR put spaces inside a key ("whsec P30x 05bX…"): a run
+    /// Secrets in OCR lines that Find misses because OCR put spaces inside a key ("whsec K70w 0aQn…"): a run
     /// of words with one space between them that starts with a known prefix, or that follows a secret's name
     /// (on the same line or the line above) from its first word with letters and digits, and that looks like
     /// a key once the spaces are taken out. Ranges are within each line.

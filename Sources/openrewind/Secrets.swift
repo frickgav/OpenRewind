@@ -181,7 +181,7 @@ enum Secrets {
         !text.isEmpty && (matches(hint, text) || matches(nameOnly, text) || has(text))
     }
 
-    /// Secrets in OCR lines that find misses because OCR put spaces inside a key ("whsec P30x 05bX…"): a run
+    /// Secrets in OCR lines that find misses because OCR put spaces inside a key ("whsec K70w 0aQn…"): a run
     /// of words with one space between them that starts with a known prefix, or that follows a secret's name
     /// (on the same line or the line above) from its first word with letters and digits, and that looks like
     /// a key once the spaces are taken out. Ranges are within each line (UTF-16). Same as Secrets.cs.
