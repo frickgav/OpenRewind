@@ -320,8 +320,9 @@ Delete things from the timeline, on the Mac and on Windows (each asks first, and
 - **Select a stretch**: **⇧-drag** / **Shift-drag** across the bar at the bottom (or pick **Select a
   Stretch to Delete…** from the trash button, then drag), or press **[** where it starts and **]**
   where it ends. A bar over the dock shows what is selected, with **Delete…**, **Export Clip…** and
-  ✕. A stretch takes every app's screenshots in it (also ones hidden or filtered out); you choose
-  whether the audio clips that start in it go too.
+  ✕. A stretch takes only what the timeline shows in it: with the app filter on, only that app's
+  screenshots go ("Delete 312 screenshots of Slack"), and apps hidden from the timeline are never
+  touched. With all apps shown, you choose whether the audio clips that start in it go too.
 - **⌫** / **Delete** deletes the selected stretch, or the shown screenshot when nothing is selected.
 - **Delete Every Screenshot with "…"** (trash button, while keyword search has words in it)
   deletes every screenshot that has those words, in any app and on any day: for a password or key

@@ -33,26 +33,37 @@ sealed partial class TimelineModel
         RunDelete(f.Time, db => db.DeleteFrame(id) > 0 ? "Screenshot deleted" : "That screenshot was already gone");
     }
 
-    /// The marked range, in every app (also ones hidden from the timeline or filtered out).
+    /// The marked range, as the timeline shows it: with the app filter on, only that app's screenshots go, and
+    /// apps hidden from the timeline are never touched. Without either, every screenshot in the range goes.
     public void DeleteMarkedRange(ConfirmDelete confirm)
     {
         if (MarkedRange is not (DateTime from, DateTime to)) { ShowNotice("Mark where to start and end with [ and ] first"); return; }
-        var n = Db.CountFrames(from, to);
+        var app = AppFilterName;
+        var hidden = HiddenAppNames.ToList();
+        var filtered = app != null || HiddenApps.Keys(hidden).Count > 0;
+        var ids = filtered ? AppFilter.ShownIds(Db, from, to, app, hidden) : new List<long>();
+        var n = filtered ? ids.Count : Db.CountFrames(from, to);
+        if (n == 0) { ShowNotice("No screenshots shown in that stretch"); return; }
         var a = from.ToLocalTime().ToString("g", CultureInfo.CurrentCulture);
         var b = to.ToLocalTime().ToString("t", CultureInfo.CurrentCulture);
-        var choice = confirm($"Delete {a} to {b}?",
-                             $"{n} screenshot{(n == 1 ? "" : "s")} from every app in that time and their screen text are deleted, with what search "
-                             + "and Ask AI learned from them, and the journal recap of that day. Audio is only deleted when you choose it "
-                             + "(each audio clip that starts in the range). This cannot be undone.",
-                             new[] { "Delete Screenshots", "Delete Screenshots and Audio" });
+        var what = $"{n} screenshot{(n == 1 ? "" : "s")}" + (app != null ? $" of {app}" : "");
+        var kept = app != null ? " Other apps in that time are kept, and so is the audio."
+            : filtered ? " Apps hidden from the timeline are kept." : "";
+        var choice = confirm($"Delete {what} from {a} to {b}?",
+                             $"{what} and their screen text are deleted, with what search and Ask AI learned from them, and the journal "
+                             + $"recap of that day.{kept}"
+                             + (app == null ? " Audio is only deleted when you choose it (each audio clip that starts in the range)." : "")
+                             + " This cannot be undone.",
+                             app == null ? new[] { "Delete Screenshots", "Delete Screenshots and Audio" } : new[] { $"Delete {what}" });
         if (choice < 0) return;
         var audio = choice == 1;
         ClearMarks();
         RunDelete(from, db =>
         {
-            var f = db.DeleteFrames(from, to);
+            var f = filtered ? ids.Sum(id => db.DeleteFrame(id)) : db.DeleteFrames(from, to);
             var s = audio ? db.DeleteAudio(from, to) : 0;
-            return $"Deleted {f} screenshot{(f == 1 ? "" : "s")}" + (audio ? $" and {s} audio clip{(s == 1 ? "" : "s")}" : "");
+            return $"Deleted {f} screenshot{(f == 1 ? "" : "s")}" + (app != null ? $" of {app}" : "")
+                + (audio ? $" and {s} audio clip{(s == 1 ? "" : "s")}" : "");
         });
     }
 

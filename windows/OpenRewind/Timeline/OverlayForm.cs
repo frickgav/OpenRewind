@@ -743,6 +743,7 @@ sealed class OverlayForm : Form
         var tf = Semibold(12.5f);
         string text = range is (DateTime a, DateTime b)
             ? $"Selected {a.ToLocalTime().ToString("T", CultureInfo.CurrentCulture)} – {b.ToLocalTime().ToString("T", CultureInfo.CurrentCulture)}"
+              + (model.AppFilterName is string only ? $" · only {only}" : "")
             : "Drag across the bar below to select what to delete";
         var ts = Draw.Measure(g, text, tf);
         const string del = "Delete…", exp = "Export Clip…";
